@@ -1,4 +1,4 @@
-module github.com/arquivei/sagas
+module github.com/rilder-almeida/sagas
 
 go 1.20
 
