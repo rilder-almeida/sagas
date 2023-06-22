@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,10 +14,8 @@ func Test_executionPlan_Add(t *testing.T) {
 	t.Parallel()
 
 	notificationA, _ := NewNotification(identifier("test"), Undefined)
-	actionA := func() Action { return func(context.Context) error { return nil } }
-	actionsA := Actions{
-		actionA(),
-	}
+	actionAFn := func() ActionFn { return func(context.Context) error { return nil } }
+	actionA := NewAction(actionAFn())
 
 	type args struct {
 		notification notification
@@ -33,9 +32,12 @@ func Test_executionPlan_Add(t *testing.T) {
 				notification: notificationA,
 			},
 			want: &ExecutionPlan{
-				notificationA.identifier: map[event]Actions{
-					notificationA.event: actionsA,
+				plan: plan{
+					notificationA.identifier: {
+						notificationA.event: []*Action{actionA},
+					},
 				},
+				mutex: sync.Mutex{},
 			},
 		},
 	}
@@ -46,7 +48,7 @@ func Test_executionPlan_Add(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
 				np := NewExecutionPlan()
-				np.Add(test.args.notification, actionsA)
+				np.Add(test.args.notification, actionA)
 				eq := fmt.Sprint(test.want) == fmt.Sprint(np)
 				assert.True(t, eq)
 			})
@@ -61,16 +63,10 @@ func Test_executionPlan_Run(t *testing.T) {
 	notificationB, _ := NewNotification(identifier("test1"), Completed)
 	notificationC, _ := NewNotification(identifier("test2"), Canceled)
 	notificationD, _ := NewNotification(identifier("test"), Canceled)
-	actionNil := func() Action { return func(context.Context) error { return nil } }
-	actionErr := func() Action { return func(context.Context) error { return errors.New("error") } }
-	actionsA := Actions{
-		actionNil(),
-		actionNil(),
-	}
-	actionsB := Actions{
-		actionErr(),
-		actionErr(),
-	}
+	actionNilFn := func() ActionFn { return func(context.Context) error { return nil } }
+	actionErrFn := func() ActionFn { return func(context.Context) error { return errors.New("error") } }
+	actionNil := NewAction(actionNilFn())
+	actionErr := NewAction(actionErrFn())
 
 	type args struct {
 		notification notification
@@ -90,15 +86,15 @@ func Test_executionPlan_Run(t *testing.T) {
 		},
 
 		{
-			name: "[ERROR] Run a execution plan",
+			name: "[SUCCESS] Run a execution plan",
 			args: args{
 				notification: notificationB,
 			},
-			expectedError: "errors while executing actions: error; error",
+			expectedError: "error",
 		},
 
 		{
-			name: "[ERROR] Run a execution plan with an notification that does not exist",
+			name: "[SUCCESS] Run a execution plan with an notification that does not exist",
 			args: args{
 				notification: notificationC,
 			},
@@ -106,7 +102,7 @@ func Test_executionPlan_Run(t *testing.T) {
 		},
 
 		{
-			name: "[ERROR] Run a execution plan with an event that does not exist",
+			name: "[SUCCESS] Run a execution plan with an event that does not exist",
 			args: args{
 				notification: notificationD,
 			},
@@ -122,17 +118,34 @@ func Test_executionPlan_Run(t *testing.T) {
 
 				np := NewExecutionPlan()
 
-				np.Add(notificationA, actionsA)
-				np.Add(notificationB, actionsB)
+				np.Add(notificationA, actionNil)
+				np.Add(notificationB, actionErr)
 
-				err := np.Run(context.Background(), test.args.notification)
+				np.Run(context.Background(), test.args.notification)
 
-				if err != nil {
-					assert.Equal(t, test.expectedError, err.Error())
+				if test.expectedError != "" {
+					assert.Equal(t, test.expectedError, err(np).Error())
 					return
 				}
-				assert.NoError(t, err)
+				assert.NoError(t, err(np))
 			})
 		})
 	}
+}
+
+func err(xp *ExecutionPlan) error {
+	var errs []error
+	for _, events := range xp.plan {
+		for _, actions := range events {
+			for _, action := range actions {
+				if action.getResult() != nil {
+					errs = append(errs, action.getResult())
+					fmt.Println(action.getResult())
+				}
+			}
+		}
+	}
+
+	err := errors.Join(errs...)
+	return err
 }

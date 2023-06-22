@@ -18,7 +18,7 @@ type saga struct {
 type planner struct {
 	identifier identifier
 	event      event
-	actions    Actions
+	actions    []*Action
 }
 
 type Controller struct {
@@ -63,7 +63,7 @@ func (c *Controller) Is(event event) *Controller {
 	return c
 }
 
-func (c *Controller) Then(actions ...Action) *Controller {
+func (c *Controller) Then(actions ...*Action) *Controller {
 	c.planner.actions = actions
 	return c
 }
@@ -72,7 +72,7 @@ func (c *Controller) Plan() *Controller {
 	c.expl.Add(notification{
 		identifier: c.planner.identifier,
 		event:      c.planner.event,
-	}, c.planner.actions)
+	}, c.planner.actions...)
 	c.planner = &planner{}
 	return c
 }
@@ -98,11 +98,11 @@ func (c *Controller) centralizeNorifiers() {
 
 func (c *Controller) spreadAllEvents(step *Step) {
 	for _, event := range eventList {
-		c.When(step).Is(event).Then(func(ctx context.Context) error {
+		c.When(step).Is(event).Then(NewAction(func(ctx context.Context) error {
 			n, _ := NewNotification(step.getIdentifier(), event)
 			c.getNotifier().Notify(ctx, n)
 			return nil
-		}).Plan()
+		})).Plan()
 	}
 }
 

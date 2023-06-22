@@ -8,13 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeActionNoError(ctx context.Context) Action {
+func makeActionNoError(ctx context.Context) ActionFn {
 	return func(ctx context.Context) error {
 		return nil
 	}
 }
 
-func makeActionError(ctx context.Context) Action {
+func makeActionError(ctx context.Context) ActionFn {
 	return func(ctx context.Context) error {
 		return errors.New("action failed")
 	}
@@ -25,7 +25,7 @@ func Test_MustNew(t *testing.T) {
 
 	type args struct {
 		name          string
-		action        Action
+		action        ActionFn
 		executionPlan *ExecutionPlan
 	}
 
@@ -33,7 +33,7 @@ func Test_MustNew(t *testing.T) {
 		name        string
 		args        args
 		wantName    string
-		wantAction  Action
+		wantAction  ActionFn
 		shouldPanic bool
 	}{
 		{
@@ -91,6 +91,7 @@ func Test_MustNew(t *testing.T) {
 				assert.Equal(t, Successed, got.GetStatus())
 				assert.Equal(t, Completed, got.GetState())
 				assert.IsType(t, NewIdentifier("string"), got.getIdentifier())
+				assert.Equal(t, test.wantName, got.GetName())
 			})
 		})
 	}
@@ -101,7 +102,7 @@ func Test_step_Run(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action Action
+		action ActionFn
 	}
 
 	tests := []struct {
@@ -155,7 +156,7 @@ func Test_step_Run_WithRetry(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action Action
+		action ActionFn
 	}
 
 	tests := []struct {

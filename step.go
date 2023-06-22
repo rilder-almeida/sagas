@@ -17,7 +17,7 @@ type Step struct {
 	name string
 	// actionFn is the function that will be executed returning
 	// a action that will be executed.
-	action Action
+	action ActionFn
 	// retry is the function that can be executed to retry a failed
 	retry Retrier
 	// status is the current status of the Step.
@@ -32,7 +32,7 @@ type Step struct {
 
 // NewStep creates a new Step with the given name and actionFn. The name is used to identify the Step.
 // The actionFn is used to execute the Step.
-func NewStep(name string, action Action, retrier Retrier) *Step {
+func NewStep(name string, action ActionFn, retrier Retrier) *Step {
 	if action == nil {
 		panic(errors.New("action cannot be nil"))
 	}

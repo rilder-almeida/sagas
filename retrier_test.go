@@ -16,7 +16,7 @@ func Test_retrier_Retry(t *testing.T) {
 		backoff    []time.Duration
 		classifier classifier
 		ctx        func() (context.Context, context.CancelFunc)
-		actionFn   func(context.Context, interface{}) Action
+		actionFn   func(context.Context, interface{}) ActionFn
 		input      interface{}
 	}
 
@@ -32,7 +32,7 @@ func Test_retrier_Retry(t *testing.T) {
 				backoff:    ConstantBackoff(3, 1*time.Second),
 				classifier: nil,
 				ctx:        func() (context.Context, context.CancelFunc) { return context.Background(), nil },
-				actionFn: func(ctx context.Context, input interface{}) Action {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return nil
 					}
@@ -47,7 +47,7 @@ func Test_retrier_Retry(t *testing.T) {
 				backoff:    ConstantBackoff(3, 1*time.Second),
 				classifier: NewDefaultClassifier(),
 				ctx:        func() (context.Context, context.CancelFunc) { return context.Background(), nil },
-				actionFn: func(ctx context.Context, input interface{}) Action {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return nil
 					}
@@ -62,7 +62,7 @@ func Test_retrier_Retry(t *testing.T) {
 				backoff:    ConstantBackoff(1, 1*time.Second),
 				classifier: NewDefaultClassifier(),
 				ctx:        func() (context.Context, context.CancelFunc) { return context.Background(), nil },
-				actionFn: func(ctx context.Context, input interface{}) Action {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return errors.New("error")
 					}
@@ -80,7 +80,7 @@ func Test_retrier_Retry(t *testing.T) {
 				ctx: func() (context.Context, context.CancelFunc) {
 					return context.WithTimeout(context.Background(), 1*time.Second)
 				},
-				actionFn: func(ctx context.Context, input interface{}) Action {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return errors.New("error")
 					}
