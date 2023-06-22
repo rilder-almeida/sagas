@@ -101,7 +101,7 @@ func Test_controller_Go(t *testing.T) {
 			assert.NotPanics(t, func() {
 				c := NewController()
 				c.AddSteps(test.args.starter, test.args.middle)
-				c.When(test.args.starter).Is(Completed).Then(func(ctx context.Context) error { return nil }).Plan()
+				c.When(test.args.starter).Is(Completed).Then(NewAction(func(ctx context.Context) error { return nil })).Plan()
 				observer := MustNewObserver(c.expl)
 				c.setObserver(observer)
 				c.centralizeNorifiers()
