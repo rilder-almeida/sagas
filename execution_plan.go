@@ -68,7 +68,7 @@ func (xp *executionPlan) runParallel(ctx context.Context, actions []*Action) {
 		wg.Add(1)
 		go func(a *Action) {
 			defer wg.Done()
-			a.result = a.run(ctx)
+			a.err = a.run(ctx)
 		}(action)
 	}
 	wg.Wait()
