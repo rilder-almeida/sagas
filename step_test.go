@@ -90,7 +90,7 @@ func Test_MustNew(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, Successed, got.GetStatus())
 				assert.Equal(t, Completed, got.GetState())
-				assert.IsType(t, NewIdentifier("string"), got.getIdentifier())
+				assert.IsType(t, NewIdentifier("string"), got.GetIdentifier())
 				assert.Equal(t, test.wantName, got.GetName())
 			})
 		})

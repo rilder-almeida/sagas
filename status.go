@@ -19,7 +19,7 @@ const (
 	Retry
 )
 
-func (s Status) string() string {
+func (s Status) String() string {
 	switch s {
 	case Undefined:
 		return "Undefined"

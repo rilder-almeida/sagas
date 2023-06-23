@@ -67,6 +67,11 @@ func (s *Step) GetState() State {
 	return s.state
 }
 
+// GetIdentifier returns the unique identifier for the Step.
+func (s *Step) GetIdentifier() identifier {
+	return s.identifier
+}
+
 // Run executes the Step's actionFn and returns the result. If the Step has a retrier,
 // it will be used to retry the actionFn if it fails. If the Step fails, it will be
 // set to a failed state. If the Step succeeds, it will be set to a succeed state.
@@ -101,11 +106,6 @@ func (s *Step) runWithRetry(ctx context.Context) error {
 
 	s.setStatus(ctx, Successed)
 	return nil
-}
-
-// getIdentifier returns the unique identifier for the Step.
-func (s *Step) getIdentifier() identifier {
-	return s.identifier
 }
 
 // setObserver sets the observer that will be notified of

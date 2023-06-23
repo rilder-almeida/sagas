@@ -143,8 +143,8 @@ func err(xp *executionPlan) error {
 	for _, events := range xp.plan {
 		for _, actions := range events {
 			for _, action := range actions {
-				if action.getResult() != nil {
-					errs = append(errs, action.getResult())
+				if action.GetErr() != nil {
+					errs = append(errs, action.GetErr())
 				}
 			}
 		}

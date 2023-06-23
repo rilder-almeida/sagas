@@ -6,7 +6,7 @@ import "errors"
 // It is used to define the type of the event in the notification struct and
 // can be a State or Status.
 type event interface {
-	string() string
+	String() string
 }
 
 // notification is a struct that represents a notification.

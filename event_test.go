@@ -96,6 +96,6 @@ func Test_NewEvent(t *testing.T) {
 
 type mockEvent struct{}
 
-func (m mockEvent) string() string {
+func (m mockEvent) String() string {
 	return "mock"
 }

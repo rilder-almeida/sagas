@@ -72,7 +72,7 @@ func Test_status_string(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				got := test.args.s.string()
+				got := test.args.s.String()
 				assert.Equal(t, test.want, got)
 			})
 		})

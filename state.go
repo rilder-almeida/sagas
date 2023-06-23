@@ -12,7 +12,7 @@ const (
 	Completed
 )
 
-func (s State) string() string {
+func (s State) String() string {
 	switch s {
 	case Idle:
 		return "Idle"

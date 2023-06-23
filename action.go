@@ -25,6 +25,6 @@ func (a *Action) run(ctx context.Context) error {
 	return a.actionFn(ctx)
 }
 
-func (a *Action) getResult() error {
+func (a *Action) GetErr() error {
 	return a.err
 }
