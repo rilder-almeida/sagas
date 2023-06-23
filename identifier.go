@@ -13,7 +13,7 @@ type identifier string
 // NewIdentifier is a function that creates a new identifier. It receives a name
 // as parameter and returns an identifier.
 func NewIdentifier(name string) identifier {
-	return identifier(makeUniqueIdentifier(name))
+	return identifier(name + ":" + makeUniqueIdentifier(name)[0:12])
 }
 
 // String is a method that returns the string representation of the identifier.

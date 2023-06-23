@@ -2,6 +2,8 @@ package sagas
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,36 +78,202 @@ func Test_controller_AddStep(t *testing.T) {
 func Test_controller_Go(t *testing.T) {
 	t.Parallel()
 
+	total := 0
+
 	type args struct {
 		starter *Step
 		middle  *Step
+		event   event
+	}
+
+	plusTenStepFn := func(ctx context.Context, value *int) actionFn {
+		return func(ctx context.Context) error {
+			*value += 10
+			return nil
+		}
+	}
+
+	minusTenStepFn := func(ctx context.Context, value *int) actionFn {
+		return func(ctx context.Context) error {
+			*value -= 10
+			return nil
+		}
+	}
+
+	failedStepFn := func(ctx context.Context, value *int) actionFn {
+		return func(ctx context.Context) error {
+			return fmt.Errorf("failed")
+		}
 	}
 
 	tests := []struct {
 		name string
 		args args
+		want int
 	}{
 		{
-			name: "[SUCCESS] Should remove a middle step from the controller",
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
 			args: args{
-				starter: NewStep("test", func(context.Context) error { return nil }, nil),
-				middle:  NewStep("test", func(context.Context) error { return nil }, nil),
+				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				event:   Completed,
 			},
+			want: 0,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 20",
+			args: args{
+				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", plusTenStepFn(context.Background(), &total), nil),
+				event:   Completed,
+			},
+			want: 20,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -20",
+			args: args{
+				starter: NewStep("starter", minusTenStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				event:   Completed,
+			},
+			want: -20,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -10",
+			args: args{
+				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				event:   Failed,
+			},
+			want: -10,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
+			args: args{
+				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", failedStepFn(context.Background(), &total), nil),
+				event:   Failed,
+			},
+			want: 0,
 		},
 	}
 
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			assert.NotPanics(t, func() {
+				total = 0
 				c := NewController()
 				c.AddSteps(test.args.starter, test.args.middle)
-				c.When(test.args.starter).Is(Completed).Then(NewAction(func(ctx context.Context) error { return nil })).Plan()
-				observer := NewObserver(c.expl)
-				c.setObserver(observer)
-				c.centralizeNorifiers()
-				c.Run(context.Background(), func() bool { return true })
+				c.When(test.args.starter).Is(test.args.event).Then(NewAction(test.args.middle.Run)).Plan()
+				c.Run(context.Background(), func() bool { return test.args.middle.GetState() == Completed })
+				assert.Equal(t, test.want, total)
+			})
+		})
+	}
+}
+
+func Test_controller_GetResults(t *testing.T) {
+	t.Parallel()
+
+	total := 0
+
+	type args struct {
+		starter *Step
+		middle  *Step
+		event   event
+	}
+
+	plusTenStepFn := func(ctx context.Context, value *int) actionFn {
+		return func(ctx context.Context) error {
+			*value += 10
+			return nil
+		}
+	}
+
+	minusTenStepFn := func(ctx context.Context, value *int) actionFn {
+		return func(ctx context.Context) error {
+			*value -= 10
+			return nil
+		}
+	}
+
+	failedStepFn := func(ctx context.Context, value *int) actionFn {
+		return func(ctx context.Context) error {
+			return errors.New("error")
+		}
+	}
+
+	tests := []struct {
+		name string
+		args args
+		want map[string][]string
+	}{
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
+			args: args{
+				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				event:   Completed,
+			},
+			want: nil,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 20",
+			args: args{
+				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", plusTenStepFn(context.Background(), &total), nil),
+				event:   Completed,
+			},
+			want: nil,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -20",
+			args: args{
+				starter: NewStep("starter", minusTenStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				event:   Completed,
+			},
+			want: nil,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -10",
+			args: args{
+				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				event:   Failed,
+			},
+			want: nil,
+		},
+
+		{
+			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
+			args: args{
+				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
+				middle:  NewStep("middle", failedStepFn(context.Background(), &total), nil),
+				event:   Failed,
+			},
+			want: map[string][]string{"Failed": {"error"}},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				total = 0
+				c := NewController()
+				c.AddSteps(test.args.starter, test.args.middle)
+				c.When(test.args.starter).Is(test.args.event).Then(NewAction(test.args.middle.Run)).Plan()
+				c.Run(context.Background(), func() bool { return test.args.middle.GetState() == Completed })
+				assert.Equal(t, test.want, c.GetResults()[test.args.starter.GetIdentifier()])
 			})
 		})
 	}

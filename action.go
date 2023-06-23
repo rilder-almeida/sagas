@@ -10,21 +10,15 @@ type actionFn func(context.Context) error
 
 type Action struct {
 	actionFn actionFn
-	err      error
 }
 
 // NewAction returns a new Action.
 func NewAction(actionFn actionFn) *Action {
 	return &Action{
 		actionFn: actionFn,
-		err:      nil,
 	}
 }
 
 func (a *Action) run(ctx context.Context) error {
 	return a.actionFn(ctx)
-}
-
-func (a *Action) GetErr() error {
-	return a.err
 }
