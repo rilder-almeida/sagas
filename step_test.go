@@ -8,13 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeActionNoError(ctx context.Context) ActionFn {
+func makeActionNoError(ctx context.Context) actionFn {
 	return func(ctx context.Context) error {
 		return nil
 	}
 }
 
-func makeActionError(ctx context.Context) ActionFn {
+func makeActionError(ctx context.Context) actionFn {
 	return func(ctx context.Context) error {
 		return errors.New("action failed")
 	}
@@ -25,15 +25,15 @@ func Test_MustNew(t *testing.T) {
 
 	type args struct {
 		name          string
-		action        ActionFn
-		executionPlan *ExecutionPlan
+		action        actionFn
+		executionPlan *executionPlan
 	}
 
 	tests := []struct {
 		name        string
 		args        args
 		wantName    string
-		wantAction  ActionFn
+		wantAction  actionFn
 		shouldPanic bool
 	}{
 		{
@@ -90,7 +90,7 @@ func Test_MustNew(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, Successed, got.GetStatus())
 				assert.Equal(t, Completed, got.GetState())
-				assert.IsType(t, NewIdentifier("string"), got.getIdentifier())
+				assert.IsType(t, NewIdentifier("string"), got.GetIdentifier())
 				assert.Equal(t, test.wantName, got.GetName())
 			})
 		})
@@ -102,7 +102,7 @@ func Test_step_Run(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action ActionFn
+		action actionFn
 	}
 
 	tests := []struct {
@@ -156,7 +156,7 @@ func Test_step_Run_WithRetry(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action ActionFn
+		action actionFn
 	}
 
 	tests := []struct {
@@ -212,7 +212,7 @@ func Test_step_GetObserver(t *testing.T) {
 	}{
 		{
 			name: "Should return the observer",
-			want: MustNewObserver(NewExecutionPlan()),
+			want: NewObserver(NewExecutionPlan()),
 		},
 	}
 
@@ -222,7 +222,7 @@ func Test_step_GetObserver(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
 				step := NewStep("test", makeActionNoError(context.Background()), nil)
-				step.setObserver(MustNewObserver(NewExecutionPlan()))
+				step.setObserver(NewObserver(NewExecutionPlan()))
 				got := step.getObserver()
 				assert.Equal(t, test.want, got)
 			})

@@ -11,3 +11,15 @@ const (
 	// Completed indicates that step state should treat this value as a state that has been executed.
 	Completed
 )
+
+func (s State) String() string {
+	switch s {
+	case Idle:
+		return "Idle"
+	case Running:
+		return "Running"
+	case Completed:
+		return "Completed"
+	}
+	return "invalid state"
+}

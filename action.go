@@ -4,20 +4,20 @@ import (
 	"context"
 )
 
-// ActionFn is a function that receives a context and returns an Output and an error. It is made in time of execution by an ActionFn.
+// actionFn is a function that receives a context and returns an Output and an error. It is made in time of execution by an actionFn.
 // It is used to execute a Step's, Compensation's or Reversion's process.
-type ActionFn func(context.Context) error
+type actionFn func(context.Context) error
 
 type Action struct {
-	actionFn ActionFn
-	result   error
+	actionFn actionFn
+	err      error
 }
 
 // NewAction returns a new Action.
-func NewAction(actionFn ActionFn) *Action {
+func NewAction(actionFn actionFn) *Action {
 	return &Action{
 		actionFn: actionFn,
-		result:   nil,
+		err:      nil,
 	}
 }
 
@@ -25,6 +25,6 @@ func (a *Action) run(ctx context.Context) error {
 	return a.actionFn(ctx)
 }
 
-func (a *Action) getResult() error {
-	return a.result
+func (a *Action) GetErr() error {
+	return a.err
 }

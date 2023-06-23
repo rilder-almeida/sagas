@@ -58,7 +58,7 @@ func Test_NewEvent(t *testing.T) {
 			name: "[Error] Should return a new event when notification is invalid - string",
 			args: args{
 				id:    "id",
-				event: "invalid",
+				event: mockEvent{},
 			},
 			want:          notification{},
 			expectedError: "invalid event",
@@ -92,4 +92,10 @@ func Test_NewEvent(t *testing.T) {
 			})
 		})
 	}
+}
+
+type mockEvent struct{}
+
+func (m mockEvent) String() string {
+	return "mock"
 }

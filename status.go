@@ -18,3 +18,20 @@ const (
 	// Retry indicates the Retriable should treat this value as a soft failure and retry.
 	Retry
 )
+
+func (s Status) String() string {
+	switch s {
+	case Undefined:
+		return "Undefined"
+	case Canceled:
+		return "Canceled"
+	case Failed:
+		return "Failed"
+	case Successed:
+		return "Successed"
+	case Retry:
+		return "Retry"
+	default:
+		return "invalid status"
+	}
+}

@@ -23,7 +23,7 @@ type planner struct {
 
 type Controller struct {
 	planner  *planner
-	expl     *ExecutionPlan
+	expl     *executionPlan
 	observer *observer
 	notifier *notifier
 	saga     *saga
@@ -54,7 +54,7 @@ func (c *Controller) AddSteps(starterStep *Step, steps ...*Step) {
 }
 
 func (c *Controller) When(s *Step) *Controller {
-	c.planner.identifier = s.getIdentifier()
+	c.planner.identifier = s.GetIdentifier()
 	return c
 }
 
@@ -78,7 +78,7 @@ func (c *Controller) Plan() *Controller {
 }
 
 func (c *Controller) Run(ctx context.Context, enderFn enderFn) {
-	observer := MustNewObserver(c.expl)
+	observer := NewObserver(c.expl)
 	c.setObserver(observer)
 	c.centralizeNorifiers()
 	c.saga.starter.Run(ctx)
@@ -99,7 +99,7 @@ func (c *Controller) centralizeNorifiers() {
 func (c *Controller) spreadAllEvents(step *Step) {
 	for _, event := range eventList {
 		c.When(step).Is(event).Then(NewAction(func(ctx context.Context) error {
-			n, _ := NewNotification(step.getIdentifier(), event)
+			n, _ := NewNotification(step.GetIdentifier(), event)
 			c.getNotifier().Notify(ctx, n)
 			return nil
 		})).Plan()
