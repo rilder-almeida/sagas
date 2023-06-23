@@ -23,7 +23,7 @@ type planner struct {
 
 type Controller struct {
 	planner  *planner
-	expl     *ExecutionPlan
+	expl     *executionPlan
 	observer *observer
 	notifier *notifier
 	saga     *saga
@@ -78,7 +78,7 @@ func (c *Controller) Plan() *Controller {
 }
 
 func (c *Controller) Run(ctx context.Context, enderFn enderFn) {
-	observer := MustNewObserver(c.expl)
+	observer := NewObserver(c.expl)
 	c.setObserver(observer)
 	c.centralizeNorifiers()
 	c.saga.starter.Run(ctx)

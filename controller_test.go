@@ -102,7 +102,7 @@ func Test_controller_Go(t *testing.T) {
 				c := NewController()
 				c.AddSteps(test.args.starter, test.args.middle)
 				c.When(test.args.starter).Is(Completed).Then(NewAction(func(ctx context.Context) error { return nil })).Plan()
-				observer := MustNewObserver(c.expl)
+				observer := NewObserver(c.expl)
 				c.setObserver(observer)
 				c.centralizeNorifiers()
 				c.Run(context.Background(), func() bool { return true })

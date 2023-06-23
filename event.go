@@ -5,7 +5,9 @@ import "errors"
 // event is an interface that represents a state or status event.
 // It is used to define the type of the event in the notification struct and
 // can be a State or Status.
-type event interface{}
+type event interface {
+	string() string
+}
 
 // notification is a struct that represents a notification.
 type notification struct {

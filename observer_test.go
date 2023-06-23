@@ -11,7 +11,7 @@ func Test_NewObserver(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		executionPlan *ExecutionPlan
+		expl *executionPlan
 	}
 
 	tests := []struct {
@@ -22,10 +22,10 @@ func Test_NewObserver(t *testing.T) {
 		{
 			name: "[SUCCESS] Should return a new observer",
 			args: args{
-				executionPlan: NewExecutionPlan(),
+				expl: NewExecutionPlan(),
 			},
 			want: &observer{
-				ExecutionPlan: NewExecutionPlan(),
+				executionPlan: NewExecutionPlan(),
 			},
 		},
 	}
@@ -35,8 +35,8 @@ func Test_NewObserver(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				got := MustNewObserver(test.args.executionPlan)
-				assert.Equal(t, test.want.ExecutionPlan, got.ExecutionPlan)
+				got := NewObserver(test.args.expl)
+				assert.Equal(t, test.want.executionPlan, got.executionPlan)
 			})
 		})
 	}
@@ -52,7 +52,7 @@ func Test_observer_GetNotification(t *testing.T) {
 
 	type args struct {
 		notification  notification
-		executionPlan *ExecutionPlan
+		executionPlan *executionPlan
 	}
 
 	tests := []struct {
@@ -86,14 +86,14 @@ func Test_observer_GetNotification(t *testing.T) {
 			t.Parallel()
 			if test.shouldPanic {
 				assert.Panics(t, func() {
-					o := MustNewObserver(test.args.executionPlan)
+					o := NewObserver(test.args.executionPlan)
 					o.Execute(context.Background(), test.args.notification)
 				})
 				return
 			}
 
 			assert.NotPanics(t, func() {
-				o := MustNewObserver(test.args.executionPlan)
+				o := NewObserver(test.args.executionPlan)
 				o.Execute(context.Background(), test.args.notification)
 			})
 		})

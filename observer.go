@@ -8,11 +8,11 @@ import (
 // It is the entry point that should be used by the application to execute the
 // execution plan.
 type observer struct {
-	ExecutionPlan *ExecutionPlan
+	executionPlan *executionPlan
 }
 
-// MustNewObserver returns a new observer.
-func MustNewObserver(executionPlan *ExecutionPlan) *observer {
+// NewObserver returns a new observer.
+func NewObserver(executionPlan *executionPlan) *observer {
 
 	if executionPlan == nil {
 		// FIXME: Should log.Fatal instead of panic
@@ -20,11 +20,11 @@ func MustNewObserver(executionPlan *ExecutionPlan) *observer {
 	}
 
 	return &observer{
-		ExecutionPlan: executionPlan,
+		executionPlan: executionPlan,
 	}
 }
 
 // Execute executes the given notification through the execution plan.
 func (o *observer) Execute(ctx context.Context, notification notification) {
-	o.ExecutionPlan.Run(ctx, notification)
+	o.executionPlan.Run(ctx, notification)
 }

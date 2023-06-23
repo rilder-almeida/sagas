@@ -47,7 +47,7 @@ func Test_notifier_Add(t *testing.T) {
 			want: &notifier{
 				observers: []*observer{
 					{
-						ExecutionPlan: NewExecutionPlan(),
+						executionPlan: NewExecutionPlan(),
 					},
 				},
 			},
@@ -62,7 +62,7 @@ func Test_notifier_Add(t *testing.T) {
 				n := NewNotifier()
 				n.Add(
 					&observer{
-						ExecutionPlan: NewExecutionPlan(),
+						executionPlan: NewExecutionPlan(),
 					},
 				)
 				assert.Equal(t, test.want, n)
@@ -91,7 +91,7 @@ func Test_notifier_Notify(t *testing.T) {
 			args: args{
 				notification: n,
 				observer: &observer{
-					ExecutionPlan: NewExecutionPlan(),
+					executionPlan: NewExecutionPlan(),
 				},
 			},
 			want: n,

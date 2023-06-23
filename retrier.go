@@ -9,7 +9,7 @@ import (
 
 // Retrier is the interface that wraps methods to retry an action.
 type Retrier interface {
-	Retry(context.Context, ActionFn) error
+	Retry(context.Context, actionFn) error
 }
 
 // retrier implements the "retriable" resiliency pattern, abstracting out the process of retrying a failed action
@@ -47,12 +47,12 @@ func NewRetrier(backoff []time.Duration, classifier classifier) Retrier {
 // returned to the caller. If the result is Retry, then Retry sleeps according to the its backoff policy
 // before retrying. If the total number of retries is exceeded then the return value of the work function
 // is returned to the caller regardless.
-func (r *retrier) Retry(ctx context.Context, action ActionFn) error {
+func (r *retrier) Retry(ctx context.Context, action actionFn) error {
 	return r.retryCtx(ctx, action)
 }
 
 // retryCtx executes the given work function with context
-func (r *retrier) retryCtx(ctx context.Context, action ActionFn) error {
+func (r *retrier) retryCtx(ctx context.Context, action actionFn) error {
 	retries := 0
 	for {
 		err := action(ctx)
