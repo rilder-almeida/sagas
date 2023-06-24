@@ -39,14 +39,14 @@ func (xp *executionPlan) Add(notification notification, actions ...*Action) {
 }
 
 // Run executes all actions of a given notification of a given identifier in the execution plan.
-func (xp *executionPlan) Run(ctx context.Context, notification notification) *result {
+func (xp *executionPlan) Run(ctx context.Context, notification notification) result {
 	result := make(result)
 
 	if actions, ok := xp.getActions(notification.identifier, notification.event); ok {
 		xp.runParallel(ctx, actions, notification, &result)
 	}
 
-	return &result
+	return result
 }
 
 // get returns the actions of a given event of a given identifier in the execution plan.

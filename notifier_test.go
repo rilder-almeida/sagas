@@ -18,7 +18,7 @@ func Test_NewNotifier(t *testing.T) {
 			name: "[SUCCESS] Should return a new Notifier",
 			want: &notifier{
 				observers: make([]*observer, 0),
-				results:   &[]result{},
+				results:   make([]result, 0),
 			},
 		},
 	}
@@ -50,7 +50,7 @@ func Test_notifier_Add(t *testing.T) {
 						executionPlan: NewExecutionPlan(),
 					},
 				},
-				results: &[]result{},
+				results: make([]result, 0),
 			},
 		},
 	}

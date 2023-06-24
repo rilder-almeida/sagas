@@ -9,14 +9,14 @@ import (
 // It is responsible for notifying all observers when an event occurs.
 type notifier struct {
 	observers []*observer
-	results   *[]result
+	results   []result
 }
 
 // NewNotifier returns a new Notifier.
 func NewNotifier() *notifier {
 	return &notifier{
 		observers: make([]*observer, 0),
-		results:   &[]result{},
+		results:   make([]result, 0),
 	}
 }
 
@@ -27,7 +27,7 @@ func (n *notifier) Add(observer *observer) {
 
 // Notify send to all observers in parallel that an notification occurred.
 func (n *notifier) Notify(ctx context.Context, notification notification) {
-	resultChan := make(chan *result, len(n.observers))
+	resultChan := make(chan result, len(n.observers))
 
 	wg := sync.WaitGroup{}
 	for _, obs := range n.observers {
@@ -41,6 +41,6 @@ func (n *notifier) Notify(ctx context.Context, notification notification) {
 	close(resultChan)
 
 	for result := range resultChan {
-		*n.results = append(*n.results, *result)
+		n.results = append(n.results, result)
 	}
 }

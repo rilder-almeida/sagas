@@ -24,6 +24,6 @@ func NewObserver(executionPlan *executionPlan) *observer {
 }
 
 // Execute executes the given notification through the execution plan.
-func (o *observer) Execute(ctx context.Context, notification notification) *result {
+func (o *observer) Execute(ctx context.Context, notification notification) result {
 	return o.executionPlan.Run(ctx, notification)
 }
