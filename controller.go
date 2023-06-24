@@ -89,6 +89,10 @@ func (c *Controller) Run(ctx context.Context, enderFn enderFn) {
 	}
 }
 
+func (c *Controller) GetResults() result {
+	return c.mapResults()
+}
+
 func (c *Controller) centralizeNorifiers() {
 	c.saga.starter.getNotifier().Add(c.getObserver())
 	for _, step := range c.saga.middles {
@@ -116,4 +120,29 @@ func (c *Controller) getObserver() *observer {
 
 func (c *Controller) setObserver(o *observer) {
 	c.observer = o
+}
+
+func (c *Controller) unifyResults() []result {
+	results := []result{}
+	results = append(results, c.saga.starter.notfier.results...)
+	for _, step := range c.saga.middles {
+		results = append(results, step.notfier.results...)
+	}
+	return results
+}
+
+func (c *Controller) mapResults() result {
+	results := c.unifyResults()
+	mappedResults := make(map[identifier]map[string][]string)
+	for _, r := range results {
+		for identifier, events := range r {
+			if _, ok := mappedResults[identifier]; !ok {
+				mappedResults[identifier] = make(map[string][]string)
+			}
+			for event, actions := range events {
+				mappedResults[identifier][event] = actions
+			}
+		}
+	}
+	return mappedResults
 }

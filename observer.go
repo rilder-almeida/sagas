@@ -15,8 +15,7 @@ type observer struct {
 func NewObserver(executionPlan *executionPlan) *observer {
 
 	if executionPlan == nil {
-		// FIXME: Should log.Fatal instead of panic
-		panic("executionPlan is nil")
+		panic("executionPlan can not be nil")
 	}
 
 	return &observer{
@@ -25,6 +24,6 @@ func NewObserver(executionPlan *executionPlan) *observer {
 }
 
 // Execute executes the given notification through the execution plan.
-func (o *observer) Execute(ctx context.Context, notification notification) {
-	o.executionPlan.Run(ctx, notification)
+func (o *observer) Execute(ctx context.Context, notification notification) result {
+	return o.executionPlan.Run(ctx, notification)
 }
