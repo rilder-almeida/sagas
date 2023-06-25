@@ -2,62 +2,63 @@ package sagas
 
 import "errors"
 
-// classifier is the interface implemented by anything that can classify Errors for a Retriable.
-type classifier interface {
+// Classifier is the interface to classify errors. It is used to determine
+// whether an action should be retried or not.
+type Classifier interface {
 	Classify(error) Status
 }
 
-type defaultClassifier struct{}
+type classifier struct{}
 
-// NewDefaultClassifier creates a new default classifier. It is the default
+// NewClassifier creates a new default classifier. It is the default
 // classifier used if no classifier is provided. If the error is nil, it
 // returns Successed, otherwise it returns Retry.
-func NewDefaultClassifier() classifier {
-	return defaultClassifier{}
+func NewClassifier() Classifier {
+	return classifier{}
 }
 
-// Classify implements the classifier interface.
-func (c defaultClassifier) Classify(err error) Status {
+// Classify implements the classifier interface for the default classifier.
+func (c classifier) Classify(err error) Status {
 	if err == nil {
 		return Successed
 	}
 
-	return Retry
+	return retry
 }
 
-type whitelistClassifier []error
+type classifierWhitelist []error
 
-// NewWhitelistClassifier creates a new whitelist classifier. If the error is nil, it
+// NewClassifierWhitelist creates a new whitelist classifier. If the error is nil, it
 // returns Successed; if the error is in the whitelist, it returns Retry; otherwise, it returns Failed.
-func NewWhitelistClassifier(errors ...error) classifier {
-	return whitelistClassifier(errors)
+func NewClassifierWhitelist(errors ...error) Classifier {
+	return classifierWhitelist(errors)
 }
 
-// Classify implements the classifier interface.
-func (list whitelistClassifier) Classify(err error) Status {
+// Classify implements the classifier interface for the whitelist classifier.
+func (list classifierWhitelist) Classify(err error) Status {
 	if err == nil {
 		return Successed
 	}
 
 	for _, pass := range list {
 		if errors.Is(err, pass) {
-			return Retry
+			return retry
 		}
 	}
 
 	return Failed
 }
 
-type blacklistClassifier []error
+type classifierBlacklist []error
 
-// NewBlacklistClassifier creates a new blacklist classifier. If the error is nil, it
+// NewClassifierBlacklist creates a new blacklist classifier. If the error is nil, it
 // returns Successed; if the error is in the blacklist, it returns Failed; otherwise, it returns Retry.
-func NewBlacklistClassifier(errors ...error) classifier {
-	return blacklistClassifier(errors)
+func NewClassifierBlacklist(errors ...error) Classifier {
+	return classifierBlacklist(errors)
 }
 
-// Classify implements the classifier interface.
-func (list blacklistClassifier) Classify(err error) Status {
+// Classify implements the classifier interface for the blacklist classifier.
+func (list classifierBlacklist) Classify(err error) Status {
 	if err == nil {
 		return Successed
 	}
@@ -68,5 +69,5 @@ func (list blacklistClassifier) Classify(err error) Status {
 		}
 	}
 
-	return Retry
+	return retry
 }

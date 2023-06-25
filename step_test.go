@@ -8,13 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeActionNoError(ctx context.Context) actionFn {
+func makeActionNoError(ctx context.Context) ActionFn {
 	return func(ctx context.Context) error {
 		return nil
 	}
 }
 
-func makeActionError(ctx context.Context) actionFn {
+func makeActionError(ctx context.Context) ActionFn {
 	return func(ctx context.Context) error {
 		return errors.New("action failed")
 	}
@@ -25,15 +25,15 @@ func Test_MustNew(t *testing.T) {
 
 	type args struct {
 		name          string
-		action        actionFn
-		executionPlan *executionPlan
+		action        ActionFn
+		executionPlan *ExecutionPlan
 	}
 
 	tests := []struct {
 		name        string
 		args        args
 		wantName    string
-		wantAction  actionFn
+		wantAction  ActionFn
 		shouldPanic bool
 	}{
 		{
@@ -102,7 +102,7 @@ func Test_step_Run(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action actionFn
+		action ActionFn
 	}
 
 	tests := []struct {
@@ -156,7 +156,7 @@ func Test_step_Run_WithRetry(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action actionFn
+		action ActionFn
 	}
 
 	tests := []struct {
@@ -190,7 +190,7 @@ func Test_step_Run_WithRetry(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				s := NewStep("test", test.args.action, NewRetrier(ConstantBackoff(1, 1), nil))
+				s := NewStep("test", test.args.action, NewRetrier(BackoffConstant(1, 1), nil))
 				err := s.Run(context.Background())
 
 				if test.expectedError == "" {

@@ -6,13 +6,19 @@ import (
 	"time"
 )
 
+// Identifier is an interface that represents an identifier of a step. It is used to
+// identify the step and it is unique.
+type Identifier interface {
+	String() string
+}
+
 // identifier is a string that represents the identifier of step. It is used to
 // identify the step and it is unique.
 type identifier string
 
 // NewIdentifier is a function that creates a new identifier. It receives a name
 // as parameter and returns an identifier.
-func NewIdentifier(name string) identifier {
+func NewIdentifier(name string) Identifier {
 	return identifier(name + ":" + makeUniqueIdentifier(name)[0:12])
 }
 

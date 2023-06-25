@@ -14,9 +14,9 @@ func Test_retrier_Retry(t *testing.T) {
 
 	type args struct {
 		backoff    []time.Duration
-		classifier classifier
+		classifier Classifier
 		ctx        func() (context.Context, context.CancelFunc)
-		actionFn   func(context.Context, interface{}) actionFn
+		actionFn   func(context.Context, interface{}) ActionFn
 		input      interface{}
 	}
 
@@ -29,10 +29,10 @@ func Test_retrier_Retry(t *testing.T) {
 		{
 			name: "[SUCCESS] Should return output and no error - ConstantBackoff, nil classifier",
 			args: args{
-				backoff:    ConstantBackoff(3, 1*time.Second),
+				backoff:    BackoffConstant(3, 1*time.Second),
 				classifier: nil,
 				ctx:        func() (context.Context, context.CancelFunc) { return context.Background(), nil },
-				actionFn: func(ctx context.Context, input interface{}) actionFn {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return nil
 					}
@@ -44,10 +44,10 @@ func Test_retrier_Retry(t *testing.T) {
 		{
 			name: "[SUCCESS] Should return output and no error - ConstantBackoff, DefaultClassifier",
 			args: args{
-				backoff:    ConstantBackoff(3, 1*time.Second),
-				classifier: NewDefaultClassifier(),
+				backoff:    BackoffConstant(3, 1*time.Second),
+				classifier: NewClassifier(),
 				ctx:        func() (context.Context, context.CancelFunc) { return context.Background(), nil },
-				actionFn: func(ctx context.Context, input interface{}) actionFn {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return nil
 					}
@@ -59,10 +59,10 @@ func Test_retrier_Retry(t *testing.T) {
 		{
 			name: "[ERROR] Should return output and error - ConstantBackoff, DefaultClassifier",
 			args: args{
-				backoff:    ConstantBackoff(1, 1*time.Second),
-				classifier: NewDefaultClassifier(),
+				backoff:    BackoffConstant(1, 1*time.Second),
+				classifier: NewClassifier(),
 				ctx:        func() (context.Context, context.CancelFunc) { return context.Background(), nil },
-				actionFn: func(ctx context.Context, input interface{}) actionFn {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						return errors.New("error")
 					}
@@ -75,12 +75,12 @@ func Test_retrier_Retry(t *testing.T) {
 		{
 			name: "[ERROR] Should return output and timeout error - ConstantBackoff, DefaultClassifier",
 			args: args{
-				backoff:    ConstantBackoff(1, 5*time.Second),
-				classifier: NewDefaultClassifier(),
+				backoff:    BackoffConstant(1, 5*time.Second),
+				classifier: NewClassifier(),
 				ctx: func() (context.Context, context.CancelFunc) {
 					return context.WithTimeout(context.Background(), 1*time.Second)
 				},
-				actionFn: func(ctx context.Context, input interface{}) actionFn {
+				actionFn: func(ctx context.Context, input interface{}) ActionFn {
 					return func(ctx context.Context) error {
 						time.Sleep(2 * time.Second)
 						return errors.New("error")

@@ -12,12 +12,12 @@ import (
 // rollbackward the Step before executing the next Step. If reversion fails, the Saga will be aborted.
 type Step struct {
 	// identifier is a unique identifier for the Step.
-	identifier identifier
+	identifier Identifier
 	// name is the name of the Step.
 	name string
 	// actionFn is the function that will be executed returning
 	// a action that will be executed.
-	action actionFn
+	action ActionFn
 	// retry is the function that can be executed to retry a failed
 	retry Retrier
 	// status is the current status of the Step.
@@ -32,7 +32,7 @@ type Step struct {
 
 // NewStep creates a new Step with the given name and actionFn. The name is used to identify the Step.
 // The actionFn is used to execute the Step.
-func NewStep(name string, action actionFn, retrier Retrier) *Step {
+func NewStep(name string, action ActionFn, retrier Retrier) *Step {
 	if action == nil {
 		panic(errors.New("action cannot be nil"))
 	}
@@ -68,7 +68,7 @@ func (s *Step) GetState() State {
 }
 
 // GetIdentifier returns the unique identifier for the Step.
-func (s *Step) GetIdentifier() identifier {
+func (s *Step) GetIdentifier() Identifier {
 	return s.identifier
 }
 

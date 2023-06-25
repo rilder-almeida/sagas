@@ -2,7 +2,6 @@ package sagas
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -83,24 +82,24 @@ func Test_controller_Go(t *testing.T) {
 	type args struct {
 		starter *Step
 		middle  *Step
-		event   event
+		event   Event
 	}
 
-	plusTenStepFn := func(ctx context.Context, value *int) actionFn {
+	plusTenStepFn := func(ctx context.Context, value *int) ActionFn {
 		return func(ctx context.Context) error {
 			*value += 10
 			return nil
 		}
 	}
 
-	minusTenStepFn := func(ctx context.Context, value *int) actionFn {
+	minusTenStepFn := func(ctx context.Context, value *int) ActionFn {
 		return func(ctx context.Context) error {
 			*value -= 10
 			return nil
 		}
 	}
 
-	failedStepFn := func(ctx context.Context, value *int) actionFn {
+	failedStepFn := func(ctx context.Context, value *int) ActionFn {
 		return func(ctx context.Context) error {
 			return fmt.Errorf("failed")
 		}
@@ -172,108 +171,6 @@ func Test_controller_Go(t *testing.T) {
 				c.When(test.args.starter).Is(test.args.event).Then(NewAction(test.args.middle.Run)).Plan()
 				c.Run(context.Background(), func() bool { return test.args.middle.GetState() == Completed })
 				assert.Equal(t, test.want, total)
-			})
-		})
-	}
-}
-
-func Test_controller_GetResults(t *testing.T) {
-	t.Parallel()
-
-	total := 0
-
-	type args struct {
-		starter *Step
-		middle  *Step
-		event   event
-	}
-
-	plusTenStepFn := func(ctx context.Context, value *int) actionFn {
-		return func(ctx context.Context) error {
-			*value += 10
-			return nil
-		}
-	}
-
-	minusTenStepFn := func(ctx context.Context, value *int) actionFn {
-		return func(ctx context.Context) error {
-			*value -= 10
-			return nil
-		}
-	}
-
-	failedStepFn := func(ctx context.Context, value *int) actionFn {
-		return func(ctx context.Context) error {
-			return errors.New("error")
-		}
-	}
-
-	tests := []struct {
-		name string
-		args args
-		want map[string][]string
-	}{
-		{
-			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
-			args: args{
-				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
-				event:   Completed,
-			},
-			want: nil,
-		},
-
-		{
-			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 20",
-			args: args{
-				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", plusTenStepFn(context.Background(), &total), nil),
-				event:   Completed,
-			},
-			want: nil,
-		},
-
-		{
-			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -20",
-			args: args{
-				starter: NewStep("starter", minusTenStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
-				event:   Completed,
-			},
-			want: nil,
-		},
-
-		{
-			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -10",
-			args: args{
-				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
-				event:   Failed,
-			},
-			want: nil,
-		},
-
-		{
-			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
-			args: args{
-				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", failedStepFn(context.Background(), &total), nil),
-				event:   Failed,
-			},
-			want: map[string][]string{"Failed": {"error"}},
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				total = 0
-				c := NewController()
-				c.AddSteps(test.args.starter, test.args.middle)
-				c.When(test.args.starter).Is(test.args.event).Then(NewAction(test.args.middle.Run)).Plan()
-				c.Run(context.Background(), func() bool { return test.args.middle.GetState() == Completed })
-				assert.Equal(t, test.want, c.GetResults()[test.args.starter.GetIdentifier()])
 			})
 		})
 	}

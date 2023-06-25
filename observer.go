@@ -8,11 +8,11 @@ import (
 // It is the entry point that should be used by the application to execute the
 // execution plan.
 type observer struct {
-	executionPlan *executionPlan
+	executionPlan *ExecutionPlan
 }
 
 // NewObserver returns a new observer.
-func NewObserver(executionPlan *executionPlan) *observer {
+func NewObserver(executionPlan *ExecutionPlan) *observer {
 
 	if executionPlan == nil {
 		panic("executionPlan can not be nil")
@@ -24,6 +24,6 @@ func NewObserver(executionPlan *executionPlan) *observer {
 }
 
 // Execute executes the given notification through the execution plan.
-func (o *observer) Execute(ctx context.Context, notification notification) result {
-	return o.executionPlan.Run(ctx, notification)
+func (o *observer) Execute(ctx context.Context, notification Notification) {
+	o.executionPlan.Run(ctx, notification)
 }

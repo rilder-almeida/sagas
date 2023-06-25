@@ -11,7 +11,7 @@ func Test_NewObserver(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		expl *executionPlan
+		expl *ExecutionPlan
 	}
 
 	tests := []struct {
@@ -51,14 +51,14 @@ func Test_observer_GetNotification(t *testing.T) {
 	)
 
 	type args struct {
-		notification  notification
-		executionPlan *executionPlan
+		notification  Notification
+		executionPlan *ExecutionPlan
 	}
 
 	tests := []struct {
 		name        string
 		args        args
-		want        notification
+		want        Notification
 		shouldPanic bool
 	}{
 		{

@@ -18,7 +18,6 @@ func Test_NewNotifier(t *testing.T) {
 			name: "[SUCCESS] Should return a new Notifier",
 			want: &notifier{
 				observers: make([]*observer, 0),
-				results:   make([]result, 0),
 			},
 		},
 	}
@@ -50,7 +49,6 @@ func Test_notifier_Add(t *testing.T) {
 						executionPlan: NewExecutionPlan(),
 					},
 				},
-				results: make([]result, 0),
 			},
 		},
 	}
@@ -74,14 +72,14 @@ func Test_notifier_Notify(t *testing.T) {
 	n, _ := NewNotification(NewIdentifier("test"), Running)
 
 	type args struct {
-		notification notification
+		notification Notification
 		observer     *observer
 	}
 
 	tests := []struct {
 		name string
 		args args
-		want notification
+		want Notification
 	}{
 		{
 			name: "[SUCCESS] Should notify all observers",
@@ -108,46 +106,3 @@ func Test_notifier_Notify(t *testing.T) {
 		})
 	}
 }
-
-// func Test_notifier_getResult(t *testing.T) {
-// 	t.Parallel()
-
-// 	n, _ := NewNotification(identifier("test"), Running)
-
-// 	type args struct {
-// 		notification notification
-// 		observer     *observer
-// 	}
-
-// 	tests := []struct {
-// 		name string
-// 		args args
-// 		want []error
-// 	}{
-// 		{
-// 			name: "[SUCCESS] Should get all results",
-// 			args: args{
-// 				notification: n,
-// 				observer: &observer{
-// 					executionPlan: NewExecutionPlan(),
-// 				},
-// 			},
-// 			want: []error(nil),
-// 		},
-// 	}
-
-// 	for _, test := range tests {
-// 		test := test
-// 		t.Run(test.name, func(t *testing.T) {
-// 			t.Parallel()
-// 			assert.NotPanics(t, func() {
-// 				n := NewNotifier()
-// 				n.Add(test.args.observer)
-// 				n.Notify(context.Background(), test.args.notification)
-// 				results := n.getResults()
-// 				result := *results[0]
-// 				assert.Equal(t, test.want, result[identifier("test")][Running])
-// 			})
-// 		})
-// 	}
-// }

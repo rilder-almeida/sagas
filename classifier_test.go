@@ -32,7 +32,7 @@ func Test_defaultClassifier_Classify(t *testing.T) {
 			args: args{
 				err: assert.AnError,
 			},
-			want: Retry,
+			want: retry,
 		},
 	}
 
@@ -41,7 +41,7 @@ func Test_defaultClassifier_Classify(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				c := NewDefaultClassifier()
+				c := NewClassifier()
 				got := c.Classify(test.args.err)
 				assert.Equal(t, test.want, got)
 			})
@@ -81,7 +81,7 @@ func Test_whitelistClassifier_Classify(t *testing.T) {
 				},
 				err: assert.AnError,
 			},
-			want: Retry,
+			want: retry,
 		},
 
 		{
@@ -101,7 +101,7 @@ func Test_whitelistClassifier_Classify(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				c := NewWhitelistClassifier(test.args.errList...)
+				c := NewClassifierWhitelist(test.args.errList...)
 				got := c.Classify(test.args.err)
 				assert.Equal(t, test.want, got)
 			})
@@ -152,7 +152,7 @@ func Test_blacklistClassifier_Classify(t *testing.T) {
 				},
 				err: errors.New("not in the blacklist"),
 			},
-			want: Retry,
+			want: retry,
 		},
 	}
 
@@ -161,7 +161,7 @@ func Test_blacklistClassifier_Classify(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				c := NewBlacklistClassifier(test.args.errList...)
+				c := NewClassifierBlacklist(test.args.errList...)
 				got := c.Classify(test.args.err)
 				assert.Equal(t, test.want, got)
 			})

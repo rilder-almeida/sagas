@@ -5,7 +5,7 @@ import (
 )
 
 var (
-	eventList = []event{Running, Completed, Canceled, Failed, Successed}
+	eventList = []Event{Running, Completed, Failed, Successed}
 )
 
 type enderFn func() bool
@@ -16,14 +16,14 @@ type saga struct {
 }
 
 type planner struct {
-	identifier identifier
-	event      event
-	actions    []*Action
+	identifier Identifier
+	event      Event
+	actions    []Action
 }
 
 type Controller struct {
 	planner  *planner
-	expl     *executionPlan
+	expl     *ExecutionPlan
 	observer *observer
 	notifier *notifier
 	saga     *saga
@@ -58,20 +58,20 @@ func (c *Controller) When(s *Step) *Controller {
 	return c
 }
 
-func (c *Controller) Is(event event) *Controller {
+func (c *Controller) Is(event Event) *Controller {
 	c.planner.event = event
 	return c
 }
 
-func (c *Controller) Then(actions ...*Action) *Controller {
+func (c *Controller) Then(actions ...Action) *Controller {
 	c.planner.actions = actions
 	return c
 }
 
 func (c *Controller) Plan() *Controller {
-	c.expl.Add(notification{
-		identifier: c.planner.identifier,
-		event:      c.planner.event,
+	c.expl.Add(Notification{
+		Identifier: c.planner.identifier,
+		Event:      c.planner.event,
 	}, c.planner.actions...)
 	c.planner = &planner{}
 	return c
@@ -87,10 +87,6 @@ func (c *Controller) Run(ctx context.Context, enderFn enderFn) {
 			break
 		}
 	}
-}
-
-func (c *Controller) GetResults() result {
-	return c.mapResults()
 }
 
 func (c *Controller) centralizeNorifiers() {
@@ -120,29 +116,4 @@ func (c *Controller) getObserver() *observer {
 
 func (c *Controller) setObserver(o *observer) {
 	c.observer = o
-}
-
-func (c *Controller) unifyResults() []result {
-	results := []result{}
-	results = append(results, c.saga.starter.notfier.results...)
-	for _, step := range c.saga.middles {
-		results = append(results, step.notfier.results...)
-	}
-	return results
-}
-
-func (c *Controller) mapResults() result {
-	results := c.unifyResults()
-	mappedResults := make(map[identifier]map[string][]string)
-	for _, r := range results {
-		for identifier, events := range r {
-			if _, ok := mappedResults[identifier]; !ok {
-				mappedResults[identifier] = make(map[string][]string)
-			}
-			for event, actions := range events {
-				mappedResults[identifier][event] = actions
-			}
-		}
-	}
-	return mappedResults
 }
