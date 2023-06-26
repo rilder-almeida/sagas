@@ -12,15 +12,15 @@ func Test_controller_AddStep(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		starter     *Step
-		middle      *Step
+		starter     Step
+		middle      Step
 		shouldPanic bool
 	}
 
 	tests := []struct {
 		name string
 		args args
-		want *Step
+		want Step
 	}{
 		{
 			name: "[SUCCESS] Should add a starter and middle steps to the controller",
@@ -80,8 +80,8 @@ func Test_controller_Go(t *testing.T) {
 	total := 0
 
 	type args struct {
-		starter *Step
-		middle  *Step
+		starter Step
+		middle  Step
 		event   Event
 	}
 

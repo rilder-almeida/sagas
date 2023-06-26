@@ -15,7 +15,7 @@ type Retrier interface {
 	// returned to the caller. If the result is Retry, then Retry sleeps according to the its backoff policy
 	// before retrying. If the total number of retries is exceeded then the return value of the work function
 	// is returned to the caller regardless.
-	Retry(context.Context, ActionFn) error
+	Retry(context.Context, Action) error
 }
 
 // retrier implements the Retrier resiliency pattern, abstracting out the process of retrying a failed action
@@ -60,15 +60,15 @@ func NewRetrier(backoff []time.Duration, classifier Classifier) Retrier {
 // returned to the caller. If the result is Retry, then Retry sleeps according to the its backoff policy
 // before retrying. If the total number of retries is exceeded then the return value of the work function
 // is returned to the caller regardless.
-func (r *retrier) Retry(ctx context.Context, action ActionFn) error {
+func (r *retrier) Retry(ctx context.Context, action Action) error {
 	return r.retryCtx(ctx, action)
 }
 
 // retryCtx executes the given work function with context
-func (r *retrier) retryCtx(ctx context.Context, action ActionFn) error {
+func (r *retrier) retryCtx(ctx context.Context, action Action) error {
 	retries := 0
 	for {
-		err := action(ctx)
+		err := action.run(ctx)
 
 		switch r.classifier.Classify(err) {
 		case Successed, Failed:

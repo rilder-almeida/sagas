@@ -17,7 +17,7 @@ func Test_NewNotifier(t *testing.T) {
 		{
 			name: "[SUCCESS] Should return a new Notifier",
 			want: &notifier{
-				observers: make([]*observer, 0),
+				observers: make([]Observer, 0),
 			},
 		},
 	}
@@ -44,8 +44,8 @@ func Test_notifier_Add(t *testing.T) {
 		{
 			name: "[SUCCESS] Should add an observer to the Notifier",
 			want: &notifier{
-				observers: []*observer{
-					{
+				observers: []Observer{
+					&observer{
 						executionPlan: NewExecutionPlan(),
 					},
 				},
@@ -59,7 +59,7 @@ func Test_notifier_Add(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
 				n := NewNotifier()
-				n.Add(NewObserver(NewExecutionPlan()))
+				n.Add(NewObserver(NewExecutionPlan()).(Observer))
 				assert.Equal(t, test.want, n)
 			})
 		})
@@ -73,7 +73,7 @@ func Test_notifier_Notify(t *testing.T) {
 
 	type args struct {
 		notification Notification
-		observer     *observer
+		observer     Observer
 	}
 
 	tests := []struct {

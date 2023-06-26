@@ -4,6 +4,7 @@ package sagas
 // It is used to define the type of the Event in the notification struct and
 // can be a State or Status.
 type Event interface {
+	// String returns the string representation of the event.
 	String() string
 }
 

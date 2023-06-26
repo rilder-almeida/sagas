@@ -11,8 +11,8 @@ var (
 type enderFn func() bool
 
 type saga struct {
-	starter *Step
-	middles []*Step
+	starter Step
+	middles []Step
 }
 
 type planner struct {
@@ -23,9 +23,9 @@ type planner struct {
 
 type Controller struct {
 	planner  *planner
-	expl     *ExecutionPlan
-	observer *observer
-	notifier *notifier
+	expl     ExecutionPlan
+	observer Observer
+	notifier Notifier
 	saga     *saga
 }
 
@@ -38,7 +38,7 @@ func NewController() *Controller {
 	}
 }
 
-func (c *Controller) AddSteps(starterStep *Step, steps ...*Step) {
+func (c *Controller) AddSteps(starterStep Step, steps ...Step) {
 	if starterStep == nil {
 		panic("starter step cannot be nil")
 	}
@@ -53,7 +53,7 @@ func (c *Controller) AddSteps(starterStep *Step, steps ...*Step) {
 	}
 }
 
-func (c *Controller) When(s *Step) *Controller {
+func (c *Controller) When(s Step) *Controller {
 	c.planner.identifier = s.GetIdentifier()
 	return c
 }
@@ -96,7 +96,7 @@ func (c *Controller) centralizeNorifiers() {
 	}
 }
 
-func (c *Controller) spreadAllEvents(step *Step) {
+func (c *Controller) spreadAllEvents(step Step) {
 	for _, event := range eventList {
 		c.When(step).Is(event).Then(NewAction(func(ctx context.Context) error {
 			n, _ := NewNotification(step.GetIdentifier(), event)
@@ -106,14 +106,14 @@ func (c *Controller) spreadAllEvents(step *Step) {
 	}
 }
 
-func (c *Controller) getNotifier() *notifier {
+func (c *Controller) getNotifier() Notifier {
 	return c.notifier
 }
 
-func (c *Controller) getObserver() *observer {
+func (c *Controller) getObserver() Observer {
 	return c.observer
 }
 
-func (c *Controller) setObserver(o *observer) {
+func (c *Controller) setObserver(o Observer) {
 	c.observer = o
 }

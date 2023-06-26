@@ -11,13 +11,13 @@ func Test_NewObserver(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		expl *ExecutionPlan
+		expl ExecutionPlan
 	}
 
 	tests := []struct {
 		name string
 		args args
-		want *observer
+		want Observer
 	}{
 		{
 			name: "[SUCCESS] Should return a new observer",
@@ -36,7 +36,7 @@ func Test_NewObserver(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
 				got := NewObserver(test.args.expl)
-				assert.Equal(t, test.want.executionPlan, got.executionPlan)
+				assert.Equal(t, test.want.getExecutionPlan(), got.getExecutionPlan())
 			})
 		})
 	}
@@ -52,7 +52,7 @@ func Test_observer_GetNotification(t *testing.T) {
 
 	type args struct {
 		notification  Notification
-		executionPlan *ExecutionPlan
+		executionPlan ExecutionPlan
 	}
 
 	tests := []struct {

@@ -26,12 +26,12 @@ type action struct {
 //
 //	actionExampleFn := func(ctx context.Context, input interface{}) func(context.Context) error {
 //		return func(ctx context.Context) error {
-//			// do something with input
+//			// do something with input interface{}
 //			return nil
 //		}
 //	}
 //
-//	actionExample := NewAction(actionExampleFn)
+//	actionExample := sagas.NewAction(actionExampleFn)
 //
 // The NewAction function is used to create a new Action that will be executed by a Step.
 func NewAction(actionFn ActionFn) Action {

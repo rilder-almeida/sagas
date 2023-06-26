@@ -100,7 +100,7 @@ func Test_retrier_Retry(t *testing.T) {
 			assert.NotPanics(t, func() {
 				r := NewRetrier(test.args.backoff, test.args.classifier)
 				ctx, _ := test.args.ctx()
-				err := r.Retry(ctx, test.args.actionFn(ctx, test.args.input))
+				err := r.Retry(ctx, NewAction(test.args.actionFn(ctx, test.args.input)))
 				if test.expectedError == "" {
 					assert.NoError(t, err)
 				} else {

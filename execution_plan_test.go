@@ -24,14 +24,14 @@ func Test_executionPlan_Add(t *testing.T) {
 	tests := []struct {
 		name string
 		args args
-		want *ExecutionPlan
+		want ExecutionPlan
 	}{
 		{
 			name: "[SUCCESS] Add a new notification to a new identifier",
 			args: args{
 				notification: notificationA,
 			},
-			want: &ExecutionPlan{
+			want: &executionPlan{
 				Plan: plan{
 					notificationA.Identifier: {
 						notificationA.Event: []Action{actionA},
@@ -127,7 +127,7 @@ func Test_executionPlan_Run(t *testing.T) {
 			assert.NotPanics(t, func() {
 				np := NewExecutionPlan()
 				np.Add(test.args.notificationAdded, test.args.Action)
-				np.Run(context.Background(), test.args.notificationSended)
+				np.run(context.Background(), test.args.notificationSended)
 				if test.expectedError != "" {
 					assert.Equal(t, test.expectedError, err(np, test.args.notificationSended.Identifier, test.args.notificationSended.Event).Error())
 					return
@@ -138,9 +138,9 @@ func Test_executionPlan_Run(t *testing.T) {
 	}
 }
 
-func err(xp *ExecutionPlan, id Identifier, event Event) error {
+func err(xp ExecutionPlan, id Identifier, event Event) error {
 	var errs []error
-	actions, _ := xp.Plan.get(id, event)
+	actions, _ := xp.(*executionPlan).Plan.get(id, event)
 	for _, Action := range actions {
 		err := Action.run(context.Background())
 		if err != nil {

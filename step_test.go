@@ -26,7 +26,7 @@ func Test_MustNew(t *testing.T) {
 	type args struct {
 		name          string
 		action        ActionFn
-		executionPlan *ExecutionPlan
+		executionPlan ExecutionPlan
 	}
 
 	tests := []struct {
@@ -208,7 +208,7 @@ func Test_step_GetObserver(t *testing.T) {
 
 	tests := []struct {
 		name string
-		want *observer
+		want Observer
 	}{
 		{
 			name: "Should return the observer",
@@ -235,7 +235,7 @@ func Test_step_GetONotifier(t *testing.T) {
 
 	tests := []struct {
 		name string
-		want *notifier
+		want Notifier
 	}{
 		{
 			name: "Should return the notifier",
