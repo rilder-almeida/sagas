@@ -74,7 +74,7 @@ func Test_saga_AddStep(t *testing.T) {
 	}
 }
 
-func Testsaga_Run(t *testing.T) {
+func Test_saga_Run(t *testing.T) {
 	t.Parallel()
 
 	total := 0
