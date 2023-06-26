@@ -59,7 +59,7 @@ func Test_notifier_Add(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
 				n := NewNotifier()
-				n.Add(NewObserver(NewExecutionPlan()).(Observer))
+				n.Add(NewObserver(NewExecutionPlan()))
 				assert.Equal(t, test.want, n)
 			})
 		})

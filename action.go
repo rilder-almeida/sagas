@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"context"
+	"fmt"
 )
 
 // Action is an interface that contains a method that receives a context and returns an error.
@@ -42,5 +43,12 @@ func NewAction(actionFn ActionFn) Action {
 
 // run is the method that executes the actionFn. Is is private and is used by the Step struct.
 func (a action) run(ctx context.Context) error {
+
+	defer func() {
+		if recoverErr := recover(); recoverErr != nil {
+			fmt.Println("Recovered error:", recoverErr)
+		}
+	}()
+
 	return a.actionFn(ctx)
 }

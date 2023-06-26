@@ -17,7 +17,7 @@ type ExecutionPlan interface {
 
 // ExecutionPlan is a concrete implementation of the ExecutionPlan interface.
 type executionPlan struct {
-	Plan  Plan
+	plan  plan
 	mutex sync.Mutex
 }
 
@@ -29,7 +29,7 @@ type executionPlan struct {
 // The above example will create a new executionPlan struct.
 func NewExecutionPlan() ExecutionPlan {
 	return &executionPlan{
-		Plan:  newPlan(),
+		plan:  newPlan(),
 		mutex: sync.Mutex{},
 	}
 }
@@ -51,14 +51,14 @@ func NewExecutionPlan() ExecutionPlan {
 func (xp *executionPlan) Add(notification Notification, actions ...Action) {
 	xp.mutex.Lock()
 	defer xp.mutex.Unlock()
-	xp.Plan.add(notification.Identifier, notification.Event, actions...)
+	xp.plan.add(notification.Identifier, notification.Event, actions...)
 }
 
 // run is a method that executes all actions of a given notification in the execution plan. It runs in parallel.
 // If the notification does not exist in the execution plan, it does nothing.
 func (xp *executionPlan) run(ctx context.Context, notification Notification) {
 
-	if actions, ok := xp.Plan.get(notification.Identifier, notification.Event); ok {
+	if actions, ok := xp.plan.get(notification.Identifier, notification.Event); ok {
 		runParallel(ctx, actions, notification)
 	}
 }
@@ -75,6 +75,7 @@ func runParallel(ctx context.Context, actions []Action, notification Notificatio
 	wg := sync.WaitGroup{}
 	for _, a := range actions {
 		wg.Add(1)
+
 		go func(a Action) {
 			defer wg.Done()
 			a.run(ctx)
