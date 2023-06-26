@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_controller_AddStep(t *testing.T) {
+func Test_saga_AddStep(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
@@ -23,7 +23,7 @@ func Test_controller_AddStep(t *testing.T) {
 		want Step
 	}{
 		{
-			name: "[SUCCESS] Should add a starter and middle steps to the controller",
+			name: "[SUCCESS] Should add a starter and middle steps to the saga",
 			args: args{
 				starter:     NewStep("test", func(context.Context) error { return nil }, nil),
 				middle:      NewStep("test", func(context.Context) error { return nil }, nil),
@@ -33,7 +33,7 @@ func Test_controller_AddStep(t *testing.T) {
 		},
 
 		{
-			name: "[SUCCESS] Should add a starter step to the controller",
+			name: "[SUCCESS] Should add a starter step to the saga",
 			args: args{
 				starter:     NewStep("test", func(context.Context) error { return nil }, nil),
 				shouldPanic: false,
@@ -42,7 +42,7 @@ func Test_controller_AddStep(t *testing.T) {
 		},
 
 		{
-			name: "[PANIC] Should panic when adding a nil starter step to the controller",
+			name: "[PANIC] Should panic when adding a nil starter step to the saga",
 			args: args{
 				starter:     nil,
 				shouldPanic: true,
@@ -57,24 +57,24 @@ func Test_controller_AddStep(t *testing.T) {
 			t.Parallel()
 			if test.args.shouldPanic {
 				assert.Panics(t, func() {
-					c := NewController()
+					c := NewSaga()
 					c.AddSteps(test.args.starter, test.args.middle)
 				})
 				return
 			}
 			assert.NotPanics(t, func() {
-				c := NewController()
+				c := NewSaga()
 				c.AddSteps(test.args.starter, test.args.middle)
-				assert.Equal(t, test.want.Run(context.Background()), c.saga.starter.Run(context.Background()))
+				assert.Equal(t, test.want.Run(context.Background()), c.(*saga).Steps.starter.Run(context.Background()))
 				if test.args.middle != nil {
-					assert.Equal(t, test.want.Run(context.Background()), c.saga.middles[0].Run(context.Background()))
+					assert.Equal(t, test.want.Run(context.Background()), c.(*saga).Steps.middles[0].Run(context.Background()))
 				}
 			})
 		})
 	}
 }
 
-func Test_controller_Go(t *testing.T) {
+func Testsaga_Run(t *testing.T) {
 	t.Parallel()
 
 	total := 0
@@ -166,7 +166,7 @@ func Test_controller_Go(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assert.NotPanics(t, func() {
 				total = 0
-				c := NewController()
+				c := NewSaga()
 				c.AddSteps(test.args.starter, test.args.middle)
 				c.When(test.args.starter).Is(test.args.event).Then(NewAction(test.args.middle.Run)).Plan()
 				c.Run(context.Background(), func() bool { return test.args.middle.GetState() == Completed })

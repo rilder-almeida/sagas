@@ -8,8 +8,6 @@ import (
 // Step is an interface that represents a abstract implementation of a step. Step is a unit of work that can be executed and retried.
 // It is the basic building block of a Saga and can be composed together to form a Saga.
 type Step interface {
-	// GetName returns the name of the Step.
-	GetName() string
 	// GetIdentifier returns the unique identifier for the Step.
 	GetIdentifier() Identifier
 	// GetStatus returns the current status of the Step.
@@ -18,10 +16,6 @@ type Step interface {
 	GetState() State
 	// Run executes the Step's actionFn and returns the result. If the Step has a retrier,
 	Run(context.Context) error
-	// setObserver sets the observer that will be notified of events that occur in the Step.
-	setObserver(Observer)
-	// getObserver returns the observer that will be notified of events that occur in the Step.
-	getObserver() Observer
 	// getNotifier returns the notifier that will be used to notify events that occur in the Step.
 	getNotifier() Notifier
 }
@@ -41,8 +35,6 @@ type step struct {
 	status Status
 	// state is the current state of the Step.
 	state State
-	// observer is the observer that will be notified of events
-	observer Observer
 	// notifier is the notifier that will be used to notify events
 	notfier Notifier
 }
@@ -60,7 +52,6 @@ func NewStep(name string, action ActionFn, retrier Retrier) Step {
 
 	return &step{
 		identifier: NewIdentifier(name),
-		name:       name,
 		action:     NewAction(action),
 		status:     Undefined,
 		retry:      retrier,
@@ -125,27 +116,19 @@ func (s *step) runWithRetry(ctx context.Context) error {
 	return nil
 }
 
-// setObserver sets the observer that will be notified of
-func (s *step) setObserver(observer Observer) {
-	s.observer = observer
-}
-
-// getObserver returns the observer that will be notified of
-func (s *step) getObserver() Observer {
-	return s.observer
-}
-
 // getNotifier returns the notifier that will be used to notify
 func (s *step) getNotifier() Notifier {
 	return s.notfier
 }
 
+// setStatus sets the status of the Step and notifies the observers that a notification occurred.
 func (s *step) setStatus(ctx context.Context, status Status) {
 	s.status = status
 	notification, _ := NewNotification(s.identifier, status)
 	s.notfier.Notify(ctx, notification)
 }
 
+// setState sets the state of the Step and notifies the observers that a notification occurred.
 func (s *step) setState(ctx context.Context, state State) {
 	s.state = state
 	notification, _ := NewNotification(s.identifier, state)

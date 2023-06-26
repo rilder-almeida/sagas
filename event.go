@@ -1,5 +1,7 @@
 package sagas
 
+var callableEventList = []Event{Running, Completed, Failed, Successed}
+
 // Event is an interface that represents a state or status Event.
 // It is used to define the type of the Event in the notification struct and
 // can be a State or Status.

@@ -91,7 +91,6 @@ func Test_MustNew(t *testing.T) {
 				assert.Equal(t, Successed, got.GetStatus())
 				assert.Equal(t, Completed, got.GetState())
 				assert.IsType(t, NewIdentifier("string"), got.GetIdentifier())
-				assert.Equal(t, test.wantName, got.GetName())
 			})
 		})
 	}
@@ -198,33 +197,6 @@ func Test_step_Run_WithRetry(t *testing.T) {
 				} else {
 					assert.Equal(t, test.expectedError, err.Error())
 				}
-			})
-		})
-	}
-}
-
-func Test_step_GetObserver(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		want Observer
-	}{
-		{
-			name: "Should return the observer",
-			want: NewObserver(NewExecutionPlan()),
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			assert.NotPanics(t, func() {
-				step := NewStep("test", makeActionNoError(context.Background()), nil)
-				step.setObserver(NewObserver(NewExecutionPlan()))
-				got := step.getObserver()
-				assert.Equal(t, test.want, got)
 			})
 		})
 	}
