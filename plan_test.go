@@ -20,7 +20,7 @@ func Test_plan_add(t *testing.T) {
 	tests := []struct {
 		name string
 		args args
-		want plan
+		want planMap
 	}{
 		{
 			name: "[SUCCESS] Should add an action to the plan",
@@ -28,7 +28,7 @@ func Test_plan_add(t *testing.T) {
 				identifier: identifier("identifier"),
 				event:      Completed,
 			},
-			want: plan{
+			want: planMap{
 				identifier("identifier"): {
 					Completed: []Action{action},
 				},

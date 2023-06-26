@@ -32,7 +32,7 @@ func Test_executionPlan_Add(t *testing.T) {
 				notification: notificationA,
 			},
 			want: &executionPlan{
-				Plan: plan{
+				plan: planMap{
 					notificationA.Identifier: {
 						notificationA.Event: []Action{actionA},
 					},
@@ -140,7 +140,7 @@ func Test_executionPlan_Run(t *testing.T) {
 
 func err(xp ExecutionPlan, id Identifier, event Event) error {
 	var errs []error
-	actions, _ := xp.(*executionPlan).Plan.get(id, event)
+	actions, _ := xp.(*executionPlan).plan.get(id, event)
 	for _, Action := range actions {
 		err := Action.run(context.Background())
 		if err != nil {
