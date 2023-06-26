@@ -6,13 +6,25 @@ import (
 	"time"
 )
 
-// identifier is a string that represents the identifier of step. It is used to
+// Identifier is an interface that represents an identifier of a step. It is used to
 // identify the step and it is unique.
+type Identifier interface {
+	// String is a method that returns the string representation of the identifier.
+	String() string
+}
+
+// identifier is a string that represents the identifier of step. It is used to
+// identify the step and it is unique. This is a concrete implementation of the
+// Identifier interface.
 type identifier string
 
 // NewIdentifier is a function that creates a new identifier. It receives a name
-// as parameter and returns an identifier.
-func NewIdentifier(name string) identifier {
+// as parameter and returns an identifier. Example:
+//
+//	identifier := sagas.NewIdentifier("step")
+//
+// The identifier will be a string in the format "step:unique_identifier".
+func NewIdentifier(name string) Identifier {
 	return identifier(name + ":" + makeUniqueIdentifier(name)[0:12])
 }
 

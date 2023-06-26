@@ -6,72 +6,56 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_NewEvent(t *testing.T) {
+func Test_status_string(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		id    identifier
-		event event
+		s Status
 	}
 
 	tests := []struct {
-		name          string
-		args          args
-		want          notification
-		expectedError string
+		name string
+		args args
+		want string
 	}{
 		{
-			name: "[SUCCESS] Should return a new notification when all parameters are valid - State",
+			name: "[SUCCESS] Status Undefined",
 			args: args{
-				id:    "id",
-				event: Idle,
+				s: Undefined,
 			},
-			want: notification{
-				identifier: "id",
-				event:      Idle,
-			},
+			want: "Undefined",
 		},
 
 		{
-			name: "[SUCCESS] Should return a new event when all parameters are valid - Status",
+			name: "[SUCCESS] Status Successed",
 			args: args{
-				id:    "id",
-				event: Undefined,
+				s: Successed,
 			},
-			want: notification{
-				identifier: "id",
-				event:      Undefined,
-			},
+			want: "Successed",
 		},
 
 		{
-			name: "[Error] Should return a new event when notification is invalid - nil",
+			name: "[SUCCESS] Status Retry",
 			args: args{
-				id:    "id",
-				event: nil,
+				s: retry,
 			},
-			want:          notification{},
-			expectedError: "invalid event",
+			want: "Retry",
 		},
 
 		{
-			name: "[Error] Should return a new event when notification is invalid - string",
+			name: "[SUCCESS] Status Failed",
 			args: args{
-				id:    "id",
-				event: mockEvent{},
+				s: Failed,
 			},
-			want:          notification{},
-			expectedError: "invalid event",
+			want: "Failed",
 		},
 
 		{
-			name: "[Error] Should return a new event when id is invalid - empty",
+			name: "[SUCCESS] Status Failed",
 			args: args{
-				id:    "",
-				event: Idle,
+				s: Status(99),
 			},
-			want:          notification{},
-			expectedError: "invalid identifier",
+			want: "invalid status",
 		},
 	}
 
@@ -80,22 +64,66 @@ func Test_NewEvent(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-
-				got, err := NewNotification(test.args.id, test.args.event)
-
-				if test.expectedError == "" {
-					assert.NoError(t, err)
-					assert.Equal(t, test.want, got)
-				} else {
-					assert.Equal(t, test.expectedError, err.Error())
-				}
+				got := test.args.s.String()
+				assert.Equal(t, test.want, got)
 			})
 		})
 	}
 }
 
-type mockEvent struct{}
+func Test_state_string(t *testing.T) {
+	t.Parallel()
 
-func (m mockEvent) String() string {
-	return "mock"
+	type args struct {
+		s State
+	}
+
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "[SUCCESS] State Idle",
+			args: args{
+				s: Idle,
+			},
+			want: "Idle",
+		},
+
+		{
+			name: "[SUCCESS] State Running",
+			args: args{
+				s: Running,
+			},
+			want: "Running",
+		},
+
+		{
+			name: "[SUCCESS] State Completed",
+			args: args{
+				s: Completed,
+			},
+			want: "Completed",
+		},
+
+		{
+			name: "[SUCCESS] State Failed",
+			args: args{
+				s: State(99),
+			},
+			want: "invalid state",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assert.NotPanics(t, func() {
+				got := test.args.s.String()
+				assert.Equal(t, test.want, got)
+			})
+		})
+	}
 }

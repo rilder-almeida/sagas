@@ -8,13 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeActionNoError(ctx context.Context) actionFn {
+func makeActionNoError(ctx context.Context) ActionFn {
 	return func(ctx context.Context) error {
 		return nil
 	}
 }
 
-func makeActionError(ctx context.Context) actionFn {
+func makeActionError(ctx context.Context) ActionFn {
 	return func(ctx context.Context) error {
 		return errors.New("action failed")
 	}
@@ -25,15 +25,15 @@ func Test_MustNew(t *testing.T) {
 
 	type args struct {
 		name          string
-		action        actionFn
-		executionPlan *executionPlan
+		action        ActionFn
+		executionPlan ExecutionPlan
 	}
 
 	tests := []struct {
 		name        string
 		args        args
 		wantName    string
-		wantAction  actionFn
+		wantAction  ActionFn
 		shouldPanic bool
 	}{
 		{
@@ -91,7 +91,6 @@ func Test_MustNew(t *testing.T) {
 				assert.Equal(t, Successed, got.GetStatus())
 				assert.Equal(t, Completed, got.GetState())
 				assert.IsType(t, NewIdentifier("string"), got.GetIdentifier())
-				assert.Equal(t, test.wantName, got.GetName())
 			})
 		})
 	}
@@ -102,7 +101,7 @@ func Test_step_Run(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action actionFn
+		action ActionFn
 	}
 
 	tests := []struct {
@@ -156,7 +155,7 @@ func Test_step_Run_WithRetry(t *testing.T) {
 
 	type args struct {
 		input  interface{}
-		action actionFn
+		action ActionFn
 	}
 
 	tests := []struct {
@@ -190,7 +189,7 @@ func Test_step_Run_WithRetry(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				s := NewStep("test", test.args.action, NewRetrier(ConstantBackoff(1, 1), nil))
+				s := NewStep("test", test.args.action, NewRetrier(BackoffConstant(1, 1), nil))
 				err := s.Run(context.Background())
 
 				if test.expectedError == "" {
@@ -203,39 +202,12 @@ func Test_step_Run_WithRetry(t *testing.T) {
 	}
 }
 
-func Test_step_GetObserver(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		want *observer
-	}{
-		{
-			name: "Should return the observer",
-			want: NewObserver(NewExecutionPlan()),
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			assert.NotPanics(t, func() {
-				step := NewStep("test", makeActionNoError(context.Background()), nil)
-				step.setObserver(NewObserver(NewExecutionPlan()))
-				got := step.getObserver()
-				assert.Equal(t, test.want, got)
-			})
-		})
-	}
-}
-
 func Test_step_GetONotifier(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		want *notifier
+		want Notifier
 	}{
 		{
 			name: "Should return the notifier",

@@ -1,56 +1,75 @@
 package sagas
 
-import "errors"
+var callableEventList = []Event{Running, Completed, Failed, Successed}
 
-// event is an interface that represents a state or status event.
-// It is used to define the type of the event in the notification struct and
+// Event is an interface that represents a state or status Event.
+// It is used to define the type of the Event in the notification struct and
 // can be a State or Status.
-type event interface {
+type Event interface {
+	// String returns the string representation of the event.
 	String() string
 }
 
-// notification is a struct that represents a notification.
-type notification struct {
-	// identifier is a string that represents the identifier of step that emitted
-	// the notification.
-	identifier identifier
-	// event is an interface that represents a state or status event emitted by
-	// the step.
-	event event
-}
+// Status is the status of a Step. It can be one of the following:
+// Undefined, Canceled, Failed, Successed, Retry.
+type Status int
 
-// NewNotification is a function that creates a new notification struct.
-// It receives an identifier and an event as parameters and returns a notification
-// struct and an error. If the identifier is empty or the event is invalid, it
-// returns an error. And if the event is a State or Status, it returns an error.
-func NewNotification(id identifier, event event) (notification, error) {
-	if id == "" {
-		return notification{}, errors.New("invalid identifier")
+const (
+	// Undefined indicates that Step status should treat this value as an undefined result. This is the default value
+	// and indicates that the Step action has not yet initiated.
+	Undefined Status = iota
+	// Failed indicates that Step status should treat this value as a failure. This is the value that will be
+	// returned if the Step action fails even after all retries.
+	Failed
+	// Successed indicates the Step status should treat this value as a success. This is the value that will be
+	// returned if the Step action succeeds before the maximum number of retries is reached.
+	Successed
+	// retry indicates the retrier should treat this value as a soft failure and retry. This is a internal value
+	// and should not be used by the user.
+	retry
+)
+
+// String returns the string representation of the status.
+func (s Status) String() string {
+	switch s {
+	case Undefined:
+		return "Undefined"
+	case Failed:
+		return "Failed"
+	case Successed:
+		return "Successed"
+	case retry:
+		return "Retry"
+	default:
+		return "invalid status"
 	}
+}
 
-	if err := validateEvent(event); err != nil {
-		return notification{}, err
+// State is the state of a step. It can be one of the following:
+// Idle, Running, Completed.
+type State int
+
+const (
+	// Idle indicates that step state should treat this value as a static state. This is the default value
+	// and indicates that the Step action has not yet initiated.
+	Idle State = iota
+	// Running indicates that step state should treat this value as a state that is being executed. This is the value
+	// that will be returned if the Step action is running or retrying at the moment.
+	Running
+	// Completed indicates that step state should treat this value as a state that has been executed. This is the value
+	// that will be returned if the Step action has been executed.
+	Completed
+)
+
+// String returns the string representation of the state.
+func (s State) String() string {
+	switch s {
+	case Idle:
+		return "Idle"
+	case Running:
+		return "Running"
+	case Completed:
+		return "Completed"
 	}
-
-	return notification{
-		identifier: id,
-		event:      event,
-	}, nil
-}
-
-func validateEvent(event event) error {
-	if !isState(event) && !isStatus(event) || event == nil {
-		return errors.New("invalid event")
-	}
-	return nil
-}
-
-func isState(event event) bool {
-	_, ok := event.(State)
-	return ok
-}
-
-func isStatus(event event) bool {
-	_, ok := event.(Status)
-	return ok
+	return "invalid state"
 }

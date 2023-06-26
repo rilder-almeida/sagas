@@ -14,17 +14,17 @@ func Test_executionPlan_Add(t *testing.T) {
 	t.Parallel()
 
 	notificationA, _ := NewNotification(identifier("test"), Undefined)
-	actionAFn := func() actionFn { return func(context.Context) error { return nil } }
+	actionAFn := func() ActionFn { return func(context.Context) error { return nil } }
 	actionA := NewAction(actionAFn())
 
 	type args struct {
-		notification notification
+		notification Notification
 	}
 
 	tests := []struct {
 		name string
 		args args
-		want *executionPlan
+		want ExecutionPlan
 	}{
 		{
 			name: "[SUCCESS] Add a new notification to a new identifier",
@@ -32,9 +32,9 @@ func Test_executionPlan_Add(t *testing.T) {
 				notification: notificationA,
 			},
 			want: &executionPlan{
-				plan: plan{
-					notificationA.identifier: {
-						notificationA.event: []*Action{actionA},
+				Plan: plan{
+					notificationA.Identifier: {
+						notificationA.Event: []Action{actionA},
 					},
 				},
 				mutex: sync.Mutex{},
@@ -61,17 +61,17 @@ func Test_executionPlan_Run(t *testing.T) {
 
 	notificationA, _ := NewNotification(identifier("test"), Undefined)
 	notificationB, _ := NewNotification(identifier("test1"), Completed)
-	notificationC, _ := NewNotification(identifier("test2"), Canceled)
-	notificationD, _ := NewNotification(identifier("test"), Canceled)
-	actionNilFn := func() actionFn { return func(context.Context) error { return nil } }
-	actionErrFn := func() actionFn { return func(context.Context) error { return errors.New("error") } }
+	notificationC, _ := NewNotification(identifier("test2"), Failed)
+	notificationD, _ := NewNotification(identifier("test"), Failed)
+	actionNilFn := func() ActionFn { return func(context.Context) error { return nil } }
+	actionErrFn := func() ActionFn { return func(context.Context) error { return errors.New("error") } }
 	actionNil := NewAction(actionNilFn())
 	actionErr := NewAction(actionErrFn())
 
 	type args struct {
-		notificationAdded  notification
-		action             *Action
-		notificationSended notification
+		notificationAdded  Notification
+		Action             Action
+		notificationSended Notification
 	}
 
 	tests := []struct {
@@ -83,7 +83,7 @@ func Test_executionPlan_Run(t *testing.T) {
 			name: "[SUCCESS] Run a execution plan",
 			args: args{
 				notificationAdded:  notificationA,
-				action:             actionNil,
+				Action:             actionNil,
 				notificationSended: notificationA,
 			},
 			expectedError: "",
@@ -93,7 +93,7 @@ func Test_executionPlan_Run(t *testing.T) {
 			name: "[SUCCESS] Run a execution plan with an notification that does not exist.",
 			args: args{
 				notificationAdded:  notificationA,
-				action:             actionNil,
+				Action:             actionNil,
 				notificationSended: notificationC,
 			},
 			expectedError: "",
@@ -103,7 +103,7 @@ func Test_executionPlan_Run(t *testing.T) {
 			name: "[SUCCESS] Run a execution plan with an event that does not exist",
 			args: args{
 				notificationAdded:  notificationA,
-				action:             actionNil,
+				Action:             actionNil,
 				notificationSended: notificationD,
 			},
 			expectedError: "",
@@ -113,7 +113,7 @@ func Test_executionPlan_Run(t *testing.T) {
 			name: "[ERROR] Run a execution plan",
 			args: args{
 				notificationAdded:  notificationB,
-				action:             actionErr,
+				Action:             actionErr,
 				notificationSended: notificationB,
 			},
 			expectedError: "error",
@@ -126,28 +126,25 @@ func Test_executionPlan_Run(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
 				np := NewExecutionPlan()
-				np.Add(test.args.notificationAdded, test.args.action)
-				np.Run(context.Background(), test.args.notificationSended)
+				np.Add(test.args.notificationAdded, test.args.Action)
+				np.run(context.Background(), test.args.notificationSended)
 				if test.expectedError != "" {
-					assert.Equal(t, test.expectedError, err(np).Error())
+					assert.Equal(t, test.expectedError, err(np, test.args.notificationSended.Identifier, test.args.notificationSended.Event).Error())
 					return
 				}
-				assert.NoError(t, err(np))
+				assert.NoError(t, err(np, test.args.notificationSended.Identifier, test.args.notificationSended.Event))
 			})
 		})
 	}
 }
 
-func err(xp *executionPlan) error {
+func err(xp ExecutionPlan, id Identifier, event Event) error {
 	var errs []error
-	for _, events := range xp.plan {
-		for _, actions := range events {
-			for _, action := range actions {
-				err := action.run(context.Background())
-				if err != nil {
-					errs = append(errs, err)
-				}
-			}
+	actions, _ := xp.(*executionPlan).Plan.get(id, event)
+	for _, Action := range actions {
+		err := Action.run(context.Background())
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
 
