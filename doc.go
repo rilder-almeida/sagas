@@ -11,17 +11,14 @@ This package provides a framework composed by the following objects: Saga, Step 
 
 The following diagram shows the relationship between the objects:
 
-+----------------+   +----------------+   +----------------+   +----------------+   +----------------+   +----------------+   +----------------+   +----------------+
-|                |   |                |   |                |   |                |   |                |   |                |   |                |   |                |
-|  saga starts   |->-|    sun step    |->-| execute action |->-| publish event  |->-|   notify saga  |->-|  saga observes |->-| execution plan |->-|  next step...  |
-|                |   |                |   |                |   |                |   |                |   |                |   |                |   |                |
-+----------------+   +----------------+   +----------------+   +----------------+   +----------------+   +----------------+   +----------------+   +----------------+
+	saga starts ->- sun step ->- execute action ->- publish event ->- notify saga ->- saga observes ->- execution plan ->- next step...
 
 The implementation of the package in the application is not complex. The following code shows how to create a saga and execute it:
 
 	func main() {
 		// Given a number to divide
-		dividend := 10
+		dividend := flag.Int("number", 0, "an int to divide")
+		flag.Parse()
 
 		// Create a Retrier to retry the action if it fails
 		retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
