@@ -2,7 +2,7 @@ package sagas
 
 import (
 	"context"
-	"fmt"
+	"log"
 )
 
 // Action is an interface that contains a method that receives a context and returns an error.
@@ -21,7 +21,7 @@ type action struct {
 	actionFn ActionFn
 }
 
-// NewAction is the constructor of defaultAction. It receives an ActionFn and returns a defaultAction struct
+// NewAction is the constructor of action. It receives an ActionFn and returns a action struct
 // that is a concrete implementation of the Action interface.
 // Example:
 //
@@ -46,7 +46,7 @@ func (a action) run(ctx context.Context) error {
 
 	defer func() {
 		if recoverErr := recover(); recoverErr != nil {
-			fmt.Println("Recovered error:", recoverErr)
+			log.Println("recovering from panic: ", recoverErr)
 		}
 	}()
 

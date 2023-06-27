@@ -24,8 +24,6 @@ type Step interface {
 type step struct {
 	// identifier is a unique identifier for the Step.
 	identifier Identifier
-	// name is the name of the Step.
-	name string
 	// actionFn is the function that will be executed returning
 	// a action that will be executed.
 	action Action
@@ -58,11 +56,6 @@ func NewStep(name string, action ActionFn, retrier Retrier) Step {
 		state:      Idle,
 		notfier:    NewNotifier(),
 	}
-}
-
-// GetName returns the name of the Step.
-func (s *step) GetName() string {
-	return s.name
 }
 
 // GetIdentifier returns the unique identifier for the Step.
