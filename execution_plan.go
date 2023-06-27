@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"context"
+	"log"
 	"sync"
 )
 
@@ -78,7 +79,10 @@ func runParallel(ctx context.Context, actions []Action, notification Notificatio
 
 		go func(a Action) {
 			defer wg.Done()
-			a.run(ctx)
+			err := a.run(ctx)
+			if err != nil {
+				log.Println("error: ", err)
+			}
 		}(a)
 	}
 }
