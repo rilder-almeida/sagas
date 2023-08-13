@@ -79,13 +79,16 @@ func Test_MustNew(t *testing.T) {
 			t.Parallel()
 			if test.shouldPanic {
 				assert.Panics(t, func() {
-					NewStep(test.args.name, test.args.action, nil)
+					NewStep(
+						test.args.name,
+						test.args.action,
+					)
 				})
 				return
 			}
 
 			assert.NotPanics(t, func() {
-				got := NewStep(test.args.name, test.args.action, nil)
+				got := NewStep(test.args.name, test.args.action)
 				err := got.Run(context.Background())
 				assert.NoError(t, err)
 				assert.Equal(t, Successed, got.GetStatus())
@@ -135,7 +138,11 @@ func Test_step_Run(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				s := NewStep("test", test.args.action, nil)
+				s := NewStep(
+					"test",
+					test.args.action,
+				)
+
 				err := s.Run(context.Background())
 
 				if test.expectedError == "" {
@@ -189,7 +196,11 @@ func Test_step_Run_WithRetry(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				s := NewStep("test", test.args.action, NewRetrier(BackoffConstant(1, 1), nil))
+				s := NewStep(
+					"test",
+					test.args.action,
+					WithStepRetrier(NewRetrier(BackoffConstant(1, 1))),
+				)
 				err := s.Run(context.Background())
 
 				if test.expectedError == "" {
@@ -220,7 +231,10 @@ func Test_step_GetONotifier(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.NotPanics(t, func() {
-				step := NewStep("test", makeActionNoError(context.Background()), nil)
+				step := NewStep(
+					"test",
+					makeActionNoError(context.Background()),
+				)
 				got := step.getNotifier()
 				assert.Equal(t, test.want, got)
 			})

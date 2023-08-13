@@ -163,7 +163,7 @@ func makeSagaCompra(compra Compra) (sagas.Saga, func() bool) {
 }
 
 func makeStepSepararProduto(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	actionFn := func(ctx context.Context) error {
 
@@ -177,7 +177,11 @@ func makeStepSepararProduto(nomeStep string, compra *Compra) sagas.Step {
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, actionFn, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		actionFn,
+		sagas.WithStepRetrier(retrier),
+	)
 }
 
 func makeStepRetornarProduto(nomeStep string, compra *Compra) sagas.Step {
@@ -189,11 +193,15 @@ func makeStepRetornarProduto(nomeStep string, compra *Compra) sagas.Step {
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, action, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		action,
+		sagas.WithStepRetrier(retrier),
+	)
 }
 
 func makeStepVerificarSaldo(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	action := func(ctx context.Context) error {
 
@@ -205,11 +213,15 @@ func makeStepVerificarSaldo(nomeStep string, compra *Compra) sagas.Step {
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, action, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		action,
+		sagas.WithStepRetrier(retrier),
+	)
 }
 
 func makeStepRealizarCompra(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	action := func(ctx context.Context) error {
 		log.Println("realizando compra: ", compra.Cliente.Nome, compra.Estoque.Produto.Nome, compra.Quantidade)
@@ -217,11 +229,15 @@ func makeStepRealizarCompra(nomeStep string, compra *Compra) sagas.Step {
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, action, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		action,
+		sagas.WithStepRetrier(retrier),
+	)
 }
 
 func makeStepReverterCompra(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	action := func(ctx context.Context) error {
 		log.Println("revertendo compra: ", compra.Cliente.Nome, compra.Estoque.Produto.Nome, compra.Quantidade)
@@ -229,11 +245,15 @@ func makeStepReverterCompra(nomeStep string, compra *Compra) sagas.Step {
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, action, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		action,
+		sagas.WithStepRetrier(retrier),
+	)
 }
 
 func makeStepValidarCompra(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	action := func(ctx context.Context) error {
 
@@ -251,16 +271,24 @@ func makeStepValidarCompra(nomeStep string, compra *Compra) sagas.Step {
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, action, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		action,
+		sagas.WithStepRetrier(retrier),
+	)
 }
 
 func makeStepFinalizarCompra(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	action := func(ctx context.Context) error {
 		log.Println("finalizando compra: ", compra.Cliente.Nome, compra.Estoque.Produto.Nome, compra.Quantidade)
 		return nil
 	}
 
-	return sagas.NewStep(nomeStep, action, retrier)
+	return sagas.NewStep(
+		nomeStep,
+		action,
+		sagas.WithStepRetrier(retrier),
+	)
 }
