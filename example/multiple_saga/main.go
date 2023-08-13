@@ -185,7 +185,7 @@ func makeStepSepararProduto(nomeStep string, compra *Compra) sagas.Step {
 }
 
 func makeStepRetornarProduto(nomeStep string, compra *Compra) sagas.Step {
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	action := func(ctx context.Context) error {
 		log.Println("retornando produto: ", compra.Estoque.Produto.Nome, compra.Quantidade)
