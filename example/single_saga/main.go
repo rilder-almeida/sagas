@@ -58,7 +58,7 @@ func main() {
 	}
 
 	// Create a step to finish the saga
-	stepFinish := sagas.NewStep("finish", actionFnFinish(), nil)
+	stepFinish := sagas.NewStep("finish", actionFnFinish())
 
 	// Create a step to divide the number by 2
 	stepDivide := sagas.NewStep(
