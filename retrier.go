@@ -43,14 +43,13 @@ type retrier struct {
 //
 // The above example creates a Retrier that will retry an action 3 times, waiting 1 second between each retry.
 // The DefaultClassifier is used to determine which errors should be retried.
-func NewRetrier(backoff []time.Duration, classifier Classifier) Retrier {
-	if classifier == nil {
-		classifier = NewClassifier()
-	}
+func NewRetrier(backoff []time.Duration, options ...RetrierOption) Retrier {
+
+	retrierOptions := newRetrierOptions(options...)
 
 	return &retrier{
 		backoff:    backoff,
-		classifier: classifier,
+		classifier: retrierOptions.Classifier,
 		random:     rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }

@@ -19,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	// Create a Retrier to retry the action if it fails
-	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second), nil)
+	retrier := sagas.NewRetrier(sagas.BackoffConstant(3, 1*time.Second))
 
 	// Create a action function to verify if the number is divisible by 2
 	actionFnVerify := func(number int) func(context.Context) error {
@@ -34,7 +34,11 @@ func main() {
 	}
 
 	// Create a step to verify if the number is divisible by 2
-	stepVerify := sagas.NewStep("verify", actionFnVerify(*dividend), retrier)
+	stepVerify := sagas.NewStep(
+		"verify",
+		actionFnVerify(*dividend),
+		sagas.WithStepRetrier(retrier),
+	)
 
 	// Create a action function to divide the number by 2
 	actionFnDivide := func(number int) func(context.Context) error {
@@ -57,7 +61,11 @@ func main() {
 	stepFinish := sagas.NewStep("finish", actionFnFinish(), nil)
 
 	// Create a step to divide the number by 2
-	stepDivide := sagas.NewStep("divide", actionFnDivide(*dividend), retrier)
+	stepDivide := sagas.NewStep(
+		"divide",
+		actionFnDivide(*dividend),
+		sagas.WithStepRetrier(retrier),
+	)
 
 	// Create a saga
 	saga := sagas.NewSaga()

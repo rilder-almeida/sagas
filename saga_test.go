@@ -25,20 +25,20 @@ func Test_saga_AddStep(t *testing.T) {
 		{
 			name: "[SUCCESS] Should add a starter and middle steps to the saga",
 			args: args{
-				starter:     NewStep("test", func(context.Context) error { return nil }, nil),
-				middle:      NewStep("test", func(context.Context) error { return nil }, nil),
+				starter:     NewStep("test", func(context.Context) error { return nil }),
+				middle:      NewStep("test", func(context.Context) error { return nil }),
 				shouldPanic: false,
 			},
-			want: NewStep("test", func(context.Context) error { return nil }, nil),
+			want: NewStep("test", func(context.Context) error { return nil }),
 		},
 
 		{
 			name: "[SUCCESS] Should add a starter step to the saga",
 			args: args{
-				starter:     NewStep("test", func(context.Context) error { return nil }, nil),
+				starter:     NewStep("test", func(context.Context) error { return nil }),
 				shouldPanic: false,
 			},
-			want: NewStep("test", func(context.Context) error { return nil }, nil),
+			want: NewStep("test", func(context.Context) error { return nil }),
 		},
 
 		{
@@ -113,8 +113,8 @@ func Test_saga_Run(t *testing.T) {
 		{
 			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
 			args: args{
-				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				starter: NewStep("starter", plusTenStepFn(context.Background(), &total)),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total)),
 				event:   Completed,
 			},
 			want: 0,
@@ -123,8 +123,8 @@ func Test_saga_Run(t *testing.T) {
 		{
 			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 20",
 			args: args{
-				starter: NewStep("starter", plusTenStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", plusTenStepFn(context.Background(), &total), nil),
+				starter: NewStep("starter", plusTenStepFn(context.Background(), &total)),
+				middle:  NewStep("middle", plusTenStepFn(context.Background(), &total)),
 				event:   Completed,
 			},
 			want: 20,
@@ -133,8 +133,8 @@ func Test_saga_Run(t *testing.T) {
 		{
 			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -20",
 			args: args{
-				starter: NewStep("starter", minusTenStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				starter: NewStep("starter", minusTenStepFn(context.Background(), &total)),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total)),
 				event:   Completed,
 			},
 			want: -20,
@@ -143,8 +143,8 @@ func Test_saga_Run(t *testing.T) {
 		{
 			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = -10",
 			args: args{
-				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total), nil),
+				starter: NewStep("starter", failedStepFn(context.Background(), &total)),
+				middle:  NewStep("middle", minusTenStepFn(context.Background(), &total)),
 				event:   Failed,
 			},
 			want: -10,
@@ -153,8 +153,8 @@ func Test_saga_Run(t *testing.T) {
 		{
 			name: "[SUCCESS] Should run a saga with a starter and middle steps and return the final value = 0",
 			args: args{
-				starter: NewStep("starter", failedStepFn(context.Background(), &total), nil),
-				middle:  NewStep("middle", failedStepFn(context.Background(), &total), nil),
+				starter: NewStep("starter", failedStepFn(context.Background(), &total)),
+				middle:  NewStep("middle", failedStepFn(context.Background(), &total)),
 				event:   Failed,
 			},
 			want: 0,

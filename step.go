@@ -27,8 +27,8 @@ type step struct {
 	// actionFn is the function that will be executed returning
 	// a action that will be executed.
 	action Action
-	// retry is the function that can be executed to retry a failed
-	retry Retrier
+	// retrier is the function that can be executed to retry a failed
+	retrier Retrier
 	// status is the current status of the Step.
 	status Status
 	// state is the current state of the Step.
@@ -39,7 +39,7 @@ type step struct {
 
 // NewStep creates a new Step with the given name and actionFn. The name is used to identify the Step.
 // The actionFn is used to execute the Step.
-func NewStep(name string, action ActionFn, retrier Retrier) Step {
+func NewStep(name string, action ActionFn, options ...StepOption) Step {
 	if action == nil {
 		panic(errors.New("action cannot be nil"))
 	}
@@ -48,13 +48,15 @@ func NewStep(name string, action ActionFn, retrier Retrier) Step {
 		panic(errors.New("name cannot be empty"))
 	}
 
+	stepOptions := newStepOptions(options...)
+
 	return &step{
 		identifier: NewIdentifier(name),
 		action:     NewAction(action),
-		status:     Undefined,
-		retry:      retrier,
-		state:      Idle,
-		notfier:    NewNotifier(),
+		retrier:    stepOptions.Retrier,
+		status:     stepOptions.Status,
+		state:      stepOptions.State,
+		notfier:    stepOptions.Notifier,
 	}
 }
 
@@ -81,7 +83,7 @@ func (s *step) GetState() State {
 func (s *step) Run(ctx context.Context) error {
 	defer s.setState(ctx, Completed)
 	s.setState(ctx, Running)
-	if s.retry != nil {
+	if s.retrier != nil {
 		return s.runWithRetry(ctx)
 	}
 	return s.run(ctx)
@@ -99,7 +101,7 @@ func (s *step) run(ctx context.Context) error {
 }
 
 func (s *step) runWithRetry(ctx context.Context) error {
-	err := s.retry.Retry(ctx, s.action)
+	err := s.retrier.Retry(ctx, s.action)
 	if err != nil {
 		s.setStatus(ctx, Failed)
 		return err

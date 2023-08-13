@@ -41,32 +41,48 @@ type steps struct {
 	middles []Step
 }
 
+// newSteps returns a new steps. It is responsible for initializing the steps
+// struct.
+func newSteps() *steps {
+	return &steps{}
+}
+
 // planner is a struct that represents the planner of the saga. It is composed
 // by an identifier, an event and a list of actions. It is used by the Saga's
-// methods When, Is, Then and Plan.
+// methods When, Is, Then and Plan. It is used to hold the information to be
+// used by ExecutionPlan.
 type planner struct {
 	identifier Identifier
 	event      Event
 	actions    []Action
 }
 
+// newPlanner returns a new planner. It is responsible for initializing the
+// planner struct.
+func newPlanner() *planner {
+	return &planner{}
+}
+
 // saga is the concrete implementation of the Saga interface. It is composed
 // by an execution plan, an observer, a notifier and a planner.
 type saga struct {
 	Expl     ExecutionPlan
-	Observer Observer
 	Notifier Notifier
+	Observer Observer
 	Planner  *planner
 	Steps    *steps
 }
 
 // NewSaga returns a new concrete implementation of the Saga interface.
-func NewSaga() Saga {
+func NewSaga(options ...SagaOption) Saga {
+
+	sagaOption := newSagasOptions(options...)
+
 	return &saga{
-		Expl:     NewExecutionPlan(),
-		Planner:  &planner{},
-		Notifier: NewNotifier(),
-		Steps:    &steps{},
+		Expl:     sagaOption.ExecutionPlan,
+		Notifier: sagaOption.Notifier,
+		Planner:  newPlanner(),
+		Steps:    newSteps(),
 	}
 }
 
@@ -135,7 +151,7 @@ func (c *saga) Plan() {
 		Identifier: c.Planner.identifier,
 		Event:      c.Planner.event,
 	}, c.Planner.actions...)
-	c.Planner = &planner{}
+	c.Planner = newPlanner()
 }
 
 // Run runs the Saga. It receives a context and an enderFn as parameters.
