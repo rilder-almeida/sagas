@@ -1,5 +1,11 @@
 # sagas
 
+This package provides a framework composed by the following objects: Saga, Step and Action. Action abstracts a function that will be executed by a Step. The Step executes the Action and publishes a event for the Saga, using the Notifier. The Saga cares about the execution of the steps, it receives the events from the Notifier through the Observer. The Saga's observer holds the Execution Plan that will determine the next Step to be executed.
+
+The following diagram shows the relationship between the objects:
+
+	saga starts ->- run step ->- execute action ->- publish event ->- notify saga ->- saga observes ->- execution plan ->- next step...
+
 ## Overview
 
 The sagas package is a framework to implement the saga pattern in Go. It was inspired on the article "SAGAS" by Hector Garcia-Molina, Kenneth Salem, and Harold F. Korth, published by the ACM in 1987, and the article "Implementing Sagas" by Caitie McCaffrey, published by Microsoft in 2016.
@@ -15,13 +21,7 @@ For more information about the saga pattern, please read the articles:
  - [Distributed Sagas: A Protocol for Coordinating Microservices](https://www.youtube.com/watch?v=0UTOLRTwOX0) by Caitie McCaffrey (2017)
  - [Fault-Tolerance and Data Consistency Using Distributed Sagas](https://sookocheff.com/post/architecture/fault-tolerance-and-data-consistency-using-distributed-sagas/) by Kevin Sookocheff (2018)
 
-This package provides a framework composed by the following objects: Saga, Step and Action. Action abstracts a function that will be executed by a Step. The Step executes the Action and publishes a event for the Saga, using the Notifier. The Saga cares about the execution of the steps, it receives the events from the Notifier through the Observer. The Saga's observer holds the Execution Plan that will determine the next Step to be executed.
-
-The following diagram shows the relationship between the objects:
-
-	saga starts ->- sun step ->- execute action ->- publish event ->- notify saga ->- saga observes ->- execution plan ->- next step...
-
-The implementation of the package in the application is not complex. The following code shows how to create a saga and execute it:
+## Implementation
 
 ```go
 func main() {
