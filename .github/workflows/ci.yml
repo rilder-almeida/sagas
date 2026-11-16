@@ -15,7 +15,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
+          cache: false
       - uses: arduino/setup-task@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: 3.54.0
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0

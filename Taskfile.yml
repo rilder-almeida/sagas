@@ -24,7 +24,7 @@ tasks:
     desc: Run the test suite with coverage and print the per-function report
     cmds:
       - go test -race -coverprofile=coverage.out {{if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
-      - go tool cover -func=coverage.out
+      - go tool cover -func=coverage.out {{.CLI_ARGS}}
 
   bench:
     desc: Run the benchmarks only, reporting time and allocations

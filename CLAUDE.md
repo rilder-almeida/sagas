@@ -4,7 +4,7 @@
 
 - The core module imports only the standard library.
 - Positional arguments are a name and an action. Everything else is a functional option.
-- `docs/glossary.md` (created in S7) is the vocabulary.
+- `docs/glossary.md` is the vocabulary.
 
 ## API style
 
