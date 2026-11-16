@@ -1,2 +1,5 @@
 vendor
 go.work
+go.work.sum
+.worktrees/
+.superpowers/
