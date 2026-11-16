@@ -3,3 +3,4 @@ go.work
 go.work.sum
 .worktrees/
 .superpowers/
+coverage.out

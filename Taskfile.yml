@@ -1,0 +1,42 @@
+version: '3'
+
+vars:
+  V: '{{.V | default "1"}}'
+
+tasks:
+  lint:
+    desc: Run go vet and golangci-lint without changing files
+    cmds:
+      - go vet {{if eq .V "2"}}-x{{end}} ./... {{.CLI_ARGS}}
+      - golangci-lint run {{if eq .V "0"}}--output.text.print-issued-lines=false{{else if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
+
+  fmt:
+    desc: Rewrite code to match the formatter rules
+    cmds:
+      - golangci-lint fmt {{if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
+
+  test:
+    desc: Run the test suite with the race detector and shuffled order
+    cmds:
+      - go test -race -shuffle=on {{if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
+
+  cover:
+    desc: Run the test suite with coverage and print the per-function report
+    cmds:
+      - go test -race -coverprofile=coverage.out {{if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
+      - go tool cover -func=coverage.out
+
+  bench:
+    desc: Run the benchmarks only, reporting time and allocations
+    cmds:
+      - go test -run='^$' -bench=. -benchmem {{if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
+
+  ci:
+    desc: Run everything CI runs, stopping at the first failure
+    cmds:
+      - task: lint
+      - task: test
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 {{if eq .V "2"}}-show verbose{{end}} ./... {{.CLI_ARGS}}
+      - |
+        out=$(go list -u -m {{if eq .V "2"}}-x{{end}} -f '{{`{{if and (not .Indirect) (not .Main) .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}`}}' all {{.CLI_ARGS}})
+        if [ -n "$out" ]; then echo "$out"; exit 1; fi
