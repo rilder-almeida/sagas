@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1064,5 +1065,537 @@ func Test_decodeTarget(t *testing.T) {
 				assert.False(t, got.IsValid())
 			}
 		})
+	}
+}
+
+type chargeState struct {
+	Total float64
+}
+
+type linkState struct {
+	Next *linkState
+}
+
+type testState struct {
+	Seats  int
+	Charge chargeState
+	Tags   map[string]int
+	Items  []string
+	At     int64
+	Link   *linkState
+}
+
+const (
+	reserveStep = "reserve"
+	chargeStep  = "charge"
+)
+
+func baseState() testState {
+	return testState{
+		Seats:  2,
+		Charge: chargeState{Total: 1.5},
+		Tags:   map[string]int{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6},
+		At:     1_700_000_000_000_000_000,
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return err.Error()
+}
+
+func Test_newStore(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+
+	nan := baseState()
+	nan.Charge.Total = math.NaN()
+
+	loop := &linkState{}
+	loop.Next = loop
+	cycle := baseState()
+	cycle.Link = loop
+
+	tests := []struct {
+		name      string
+		initial   testState
+		wantErr   error
+		wantInMsg []string
+	}{
+		{
+			name:    "[Success] When: a valid state ; Should: hold every field at version 0",
+			initial: baseState(),
+		},
+		{
+			name:      "[Fail] When: a NaN at depth 2 ; Should: return ErrInvalidState that names the path",
+			initial:   nan,
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"field Charge", "Total"},
+		},
+		{
+			name:      "[Fail] When: a pointer cycle ; Should: return ErrInvalidState that names the field",
+			initial:   cycle,
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"field Link"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st, err := newStore(tt.initial)
+			require.ErrorIs(t, err, tt.wantErr)
+			assertInOrder(t, errText(err), tt.wantInMsg)
+
+			if err != nil {
+				assert.Nil(t, st)
+
+				return
+			}
+
+			var got testState
+			require.NoError(t, st.writeBack(&got))
+			assert.Equal(t, tt.initial, got)
+			assert.Equal(t, make([]uint64, reflect.TypeFor[testState]().NumField()), st.snapshot().versions)
+		})
+	}
+}
+
+type copyInner struct {
+	N int
+}
+
+type copyFixture struct {
+	Scalar     int
+	NilSlice   []int
+	EmptySlice []int
+	NilMap     map[string]int
+	EmptyMap   map[string]int
+	Ptr        *int
+	Nested     copyInner
+	At         int64
+	SharedA    *copyInner
+	SharedB    *copyInner
+}
+
+func newCopyFixture() copyFixture {
+	seats := 3
+	shared := &copyInner{N: 1}
+
+	return copyFixture{
+		Scalar:     1,
+		EmptySlice: []int{},
+		EmptyMap:   map[string]int{},
+		Ptr:        &seats,
+		Nested:     copyInner{N: 2},
+		At:         1_700_000_000_000_000_000,
+		SharedA:    shared,
+		SharedB:    shared,
+	}
+}
+
+func Test_copyState(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[copyFixture]()))
+
+	st, err := newStore(newCopyFixture())
+	require.NoError(t, err)
+
+	base, err := copyState(st.snapshot())
+	require.NoError(t, err)
+	assert.Equal(t, newCopyFixture(), *base)
+	assert.Nil(t, base.NilSlice)
+	assert.Nil(t, base.NilMap)
+	assert.NotNil(t, base.EmptySlice)
+	assert.Empty(t, base.EmptySlice)
+	assert.NotNil(t, base.EmptyMap)
+	assert.Empty(t, base.EmptyMap)
+	assert.Equal(t, newCopyFixture().At, base.At)
+	assert.NotSame(t, base.SharedA, base.SharedB)
+
+	tests := []struct {
+		name      string
+		overrides map[string]string
+		mutate    func(*copyFixture)
+		want      *copyFixture
+		wantErr   error
+	}{
+		{
+			name:   "[Success] When: the copy changes a scalar ; Should: leave the next copy unchanged",
+			mutate: func(c *copyFixture) { c.Scalar = 9 },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy appends to a nil slice ; Should: leave the next copy nil",
+			mutate: func(c *copyFixture) { c.NilSlice = append(c.NilSlice, 9) },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy appends to an empty slice ; Should: leave the next copy empty",
+			mutate: func(c *copyFixture) { c.EmptySlice = append(c.EmptySlice, 9) },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy sets a nil map ; Should: leave the next copy nil",
+			mutate: func(c *copyFixture) { c.NilMap = map[string]int{"x": 9} },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy writes an empty map ; Should: leave the next copy empty",
+			mutate: func(c *copyFixture) { c.EmptyMap["x"] = 9 },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy writes through a pointer ; Should: leave the next target unchanged",
+			mutate: func(c *copyFixture) { *c.Ptr = 9 },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy changes a nested struct ; Should: leave the next copy unchanged",
+			mutate: func(c *copyFixture) { c.Nested.N = 9 },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy changes a Unix nanosecond time ; Should: leave the next copy unchanged",
+			mutate: func(c *copyFixture) { c.At++ },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:   "[Success] When: the copy writes through a shared pointer ; Should: leave the next copy unchanged",
+			mutate: func(c *copyFixture) { c.SharedA.N = 9 },
+			want:   new(newCopyFixture()),
+		},
+		{
+			name:      "[Fail] When: the snapshot holds malformed bytes for one field ; Should: return ErrInvalidState",
+			overrides: map[string]string{"Nested": `{`},
+			mutate:    func(*copyFixture) {},
+			wantErr:   ErrInvalidState,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			snap := st.snapshot()
+
+			for name, data := range tt.overrides {
+				field, found := reflect.TypeFor[copyFixture]().FieldByName(name)
+				require.True(t, found)
+
+				snap.fields[field.Index[0]] = []byte(data)
+			}
+
+			first, firstErr := copyState(snap)
+			require.ErrorIs(t, firstErr, tt.wantErr)
+
+			tt.mutate(first)
+
+			second, secondErr := copyState(snap)
+			require.ErrorIs(t, secondErr, tt.wantErr)
+			assert.Equal(t, tt.want, second)
+		})
+	}
+}
+
+func Test_store_commit(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+
+	committed := baseState()
+	committed.Seats = 5
+
+	tests := []struct {
+		name                     string
+		firstStep                string
+		firstMutate              func(*testState)
+		secondStep               string
+		secondMutate             func(*testState)
+		secondSnapshotAfterFirst bool
+		wantChanged              []string
+		wantErr                  error
+		wantInMsg                []string
+		wantVersions             []uint64
+		wantState                testState
+	}{
+		{
+			name:         "[Success] When: parallel snapshots change disjoint fields ; Should: commit both",
+			firstStep:    reserveStep,
+			firstMutate:  func(s *testState) { s.Seats = 5 },
+			secondStep:   chargeStep,
+			secondMutate: func(s *testState) { s.Charge.Total = 10 },
+			wantChanged:  []string{"Charge"},
+			wantVersions: []uint64{1, 1, 0, 0, 0, 0},
+			wantState: func() testState {
+				s := baseState()
+				s.Seats = 5
+				s.Charge.Total = 10
+
+				return s
+			}(),
+		},
+		{
+			name:         "[Fail] When: parallel snapshots change one field ; Should: return ErrConflict, both steps",
+			firstStep:    reserveStep,
+			firstMutate:  func(s *testState) { s.Seats = 5 },
+			secondStep:   chargeStep,
+			secondMutate: func(s *testState) { s.Seats = 6 },
+			wantErr:      ErrConflict,
+			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
+			wantVersions: []uint64{1, 0, 0, 0, 0, 0},
+			wantState:    committed,
+		},
+		{
+			name:                     "[Success] When: the same field changes in sequence ; Should: commit both",
+			firstStep:                reserveStep,
+			firstMutate:              func(s *testState) { s.Seats = 5 },
+			secondStep:               chargeStep,
+			secondMutate:             func(s *testState) { s.Seats = 6 },
+			secondSnapshotAfterFirst: true,
+			wantChanged:              []string{"Seats"},
+			wantVersions:             []uint64{2, 0, 0, 0, 0, 0},
+			wantState: func() testState {
+				s := baseState()
+				s.Seats = 6
+
+				return s
+			}(),
+		},
+		{
+			name:        "[Fail] When: a conflict and a free change in one commit ; Should: write neither",
+			firstStep:   reserveStep,
+			firstMutate: func(s *testState) { s.Seats = 5 },
+			secondStep:  chargeStep,
+			secondMutate: func(s *testState) {
+				s.Items = append(s.Items, "x")
+				s.Seats = 6
+			},
+			wantErr:      ErrConflict,
+			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
+			wantVersions: []uint64{1, 0, 0, 0, 0, 0},
+			wantState:    committed,
+		},
+		{
+			name:         "[Success] When: the attempt changes nothing ; Should: return an empty list, keep versions",
+			firstStep:    reserveStep,
+			firstMutate:  func(s *testState) { s.Seats = 5 },
+			secondStep:   chargeStep,
+			secondMutate: func(*testState) {},
+			wantChanged:  []string{},
+			wantVersions: []uint64{1, 0, 0, 0, 0, 0},
+			wantState:    committed,
+		},
+		{
+			name:         "[Success] When: float, map, nil slice and time stay untouched ; Should: never conflict",
+			firstStep:    reserveStep,
+			firstMutate:  func(s *testState) { s.Seats = 5 },
+			secondStep:   chargeStep,
+			secondMutate: func(s *testState) { s.Link = &linkState{} },
+			wantChanged:  []string{"Link"},
+			wantVersions: []uint64{1, 0, 0, 0, 0, 1},
+			wantState: func() testState {
+				s := baseState()
+				s.Seats = 5
+				s.Link = &linkState{}
+
+				return s
+			}(),
+		},
+		{
+			name:        "[Fail] When: the second step writes NaN ; Should: return ErrInvalidState, name the path",
+			firstStep:   reserveStep,
+			firstMutate: func(s *testState) { s.Seats = 5 },
+			secondStep:  chargeStep,
+			secondMutate: func(s *testState) {
+				s.Seats = 6
+				s.Charge.Total = math.NaN()
+			},
+			secondSnapshotAfterFirst: true,
+			wantErr:                  ErrInvalidState,
+			wantInMsg:                []string{"field Charge", "Total"},
+			wantVersions:             []uint64{1, 0, 0, 0, 0, 0},
+			wantState:                committed,
+		},
+		{
+			name:         "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
+			firstStep:    reserveStep,
+			firstMutate:  func(s *testState) { s.Seats = 5 },
+			secondStep:   chargeStep,
+			secondMutate: func(s *testState) { s.Items = []string{} },
+			wantChanged:  []string{"Items"},
+			wantVersions: []uint64{1, 0, 0, 1, 0, 0},
+			wantState: func() testState {
+				s := baseState()
+				s.Seats = 5
+				s.Items = []string{}
+
+				return s
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st, err := newStore(baseState())
+			require.NoError(t, err)
+
+			early := st.snapshot()
+			first, err := copyState(early)
+			require.NoError(t, err)
+
+			tt.firstMutate(first)
+
+			_, err = st.commit(tt.firstStep, early, *first)
+			require.NoError(t, err)
+
+			second := early
+			if tt.secondSnapshotAfterFirst {
+				second = st.snapshot()
+			}
+
+			attempt, err := copyState(second)
+			require.NoError(t, err)
+
+			tt.secondMutate(attempt)
+
+			changed, err := st.commit(tt.secondStep, second, *attempt)
+			require.ErrorIs(t, err, tt.wantErr)
+			assertInOrder(t, errText(err), tt.wantInMsg)
+			assert.Equal(t, tt.wantChanged, changed)
+			assert.Equal(t, tt.wantVersions, st.snapshot().versions)
+
+			var got testState
+			require.NoError(t, st.writeBack(&got))
+			assert.Equal(t, tt.wantState, got)
+		})
+	}
+}
+
+func Test_store_writeBack(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+
+	tests := []struct {
+		name    string
+		dst     *testState
+		want    *testState
+		wantErr error
+	}{
+		{
+			name: "[Success] When: the destination holds other values ; Should: keep the committed state",
+			dst:  &testState{Seats: 99, Items: []string{"stale"}},
+			want: func() *testState {
+				s := baseState()
+				s.Seats = 5
+
+				return &s
+			}(),
+		},
+		{
+			name:    "[Fail] When: the destination is nil ; Should: return ErrInvalidState",
+			wantErr: ErrInvalidState,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st, err := newStore(baseState())
+			require.NoError(t, err)
+
+			snap := st.snapshot()
+			attempt, err := copyState(snap)
+			require.NoError(t, err)
+
+			attempt.Seats = 5
+			_, err = st.commit(reserveStep, snap, *attempt)
+			require.NoError(t, err)
+
+			require.ErrorIs(t, st.writeBack(tt.dst), tt.wantErr)
+
+			later := st.snapshot()
+			next, err := copyState(later)
+			require.NoError(t, err)
+
+			next.Seats = 7
+			next.Tags["a"] = 100
+			_, err = st.commit(chargeStep, later, *next)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, tt.dst)
+		})
+	}
+}
+
+type benchSmall struct {
+	A int
+	B float64
+	C string
+	D bool
+}
+
+type benchRow struct {
+	ID   int
+	Name string
+}
+
+type benchLarge struct {
+	Index map[string]int
+	Rows  []benchRow
+	Count int
+}
+
+func newBenchLarge() benchLarge {
+	large := benchLarge{Index: make(map[string]int, 1000), Rows: make([]benchRow, 0, 1000)}
+
+	for i := range 1000 {
+		name := "row-" + strconv.Itoa(i)
+		large.Index[name] = i
+		large.Rows = append(large.Rows, benchRow{ID: i, Name: name})
+	}
+
+	return large
+}
+
+func BenchmarkStore_commit(b *testing.B) {
+	b.Run("small", func(b *testing.B) {
+		benchCommit(b, benchSmall{A: 1, B: 2.5, C: "seat", D: true}, func(s *benchSmall) { s.A++ })
+	})
+	b.Run("large", func(b *testing.B) {
+		benchCommit(b, newBenchLarge(), func(s *benchLarge) { s.Count++ })
+	})
+}
+
+func benchCommit[S any](b *testing.B, initial S, change func(*S)) {
+	b.Helper()
+
+	require.NoError(b, checkState(reflect.TypeFor[S]()))
+
+	st, err := newStore(initial)
+	require.NoError(b, err)
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		snap := st.snapshot()
+
+		attempt, copyErr := copyState(snap)
+		require.NoError(b, copyErr)
+
+		change(attempt)
+
+		_, commitErr := st.commit("bench", snap, *attempt)
+		require.NoError(b, commitErr)
 	}
 }

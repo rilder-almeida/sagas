@@ -1,11 +1,13 @@
 package sagas
 
 import (
+	"bytes"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"reflect"
 	"runtime/debug"
+	"slices"
 	"strings"
 )
 
@@ -252,4 +254,126 @@ func isMapKeyKind(kind reflect.Kind) bool {
 	}
 
 	return false
+}
+
+type snapshot[S any] struct {
+	fields   [][]byte
+	versions []uint64
+}
+
+type store[S any] struct {
+	fields   [][]byte
+	versions []uint64
+	steps    []string
+}
+
+func newStore[S any](initial S) (*store[S], error) {
+	fields, err := encodeFields(reflect.ValueOf(initial))
+	if err != nil {
+		return nil, err
+	}
+
+	return &store[S]{
+		fields:   fields,
+		versions: make([]uint64, len(fields)),
+		steps:    make([]string, len(fields)),
+	}, nil
+}
+
+func (s *store[S]) snapshot() snapshot[S] {
+	return snapshot[S]{fields: slices.Clone(s.fields), versions: slices.Clone(s.versions)}
+}
+
+func (s *store[S]) commit(step string, snap snapshot[S], attempt S) ([]string, error) {
+	v := reflect.ValueOf(attempt)
+
+	fields, err := encodeFields(v)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		changed   []int
+		conflicts []error
+	)
+
+	for i, data := range fields {
+		switch {
+		case bytes.Equal(data, snap.fields[i]):
+		case s.versions[i] != snap.versions[i]:
+			conflicts = append(conflicts, fmt.Errorf("%w: field %s changed by step %q after step %q committed it",
+				ErrConflict, v.Type().Field(i).Name, step, s.steps[i]))
+		default:
+			changed = append(changed, i)
+		}
+	}
+
+	if len(conflicts) > 0 {
+		return nil, errors.Join(conflicts...)
+	}
+
+	names := make([]string, 0, len(changed))
+	for _, i := range changed {
+		s.fields[i] = fields[i]
+		s.versions[i]++
+		s.steps[i] = step
+		names = append(names, v.Type().Field(i).Name)
+	}
+
+	return names, nil
+}
+
+func (s *store[S]) writeBack(dst *S) error {
+	if dst == nil {
+		return fmt.Errorf("%w: write-back destination is nil", ErrInvalidState)
+	}
+
+	out, err := copyState(s.snapshot())
+	if err != nil {
+		return err
+	}
+
+	*dst = *out
+
+	return nil
+}
+
+func copyState[S any](snap snapshot[S]) (*S, error) {
+	out := new(S)
+
+	var errs []error
+
+	v := reflect.ValueOf(out).Elem()
+	for i, data := range snap.fields {
+		if err := decodeField(data, v.Field(i).Addr().Interface()); err != nil {
+			errs = append(errs, fmt.Errorf("field %s: %w", v.Type().Field(i).Name, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	return out, nil
+}
+
+func encodeFields(v reflect.Value) ([][]byte, error) {
+	fields := make([][]byte, v.NumField())
+
+	var errs []error
+
+	for i := range fields {
+		data, err := encodeField(v.Field(i).Interface())
+		if err != nil {
+			errs = append(errs, fmt.Errorf("field %s: %w", v.Type().Field(i).Name, err))
+		}
+
+		fields[i] = data
+	}
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	return fields, nil
 }
