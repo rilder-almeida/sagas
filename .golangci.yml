@@ -58,40 +58,64 @@ linters:
     - usestdlibvars
     - exhaustive
     - nolintlint
+    - asasalint
+    - canonicalheader
+    - cyclop
+    - depguard
+    - embeddedstructfieldcheck
+    - err113
+    - funcorder
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - gocognit
+    - godoclint
+    - godox
+    - gomoddirectives
+    - goprintffuncname
+    - iface
+    - inamedparam
+    - interfacebloat
+    - iotamixing
+    - ireturn
+    - maintidx
+    - makezero
+    - mirror
+    - mnd
+    - nakedret
+    - nilnesserr
+    - nilnil
+    - nonamedreturns
+    - nosprintfhostport
+    - prealloc
+    - recvcheck
+    - testableexamples
+    - tparallel
+    - unparam
+    - wastedassign
 
   disable:
     - lll
-    - prealloc
     - wrapcheck
-    - err113
-    - mnd
-    - iface
-    - nakedret
     - noinlineerr
-    - gocognit
-    - cyclop
-    - depguard
     - goheader
     - importas
-    - funcorder
-    - godoclint
     - varnamelen
     - exhaustruct
-    - gochecknoglobals
-    - gochecknoinits
-    - unparam
-    - makezero
     - testpackage
-    - embeddedstructfieldcheck
-    - iotamixing
+    - nlreturn
+    - contextcheck
     - unqueryvet
-    - recvcheck
-    - mirror
     - protogetter
     - spancheck
     - zerologlint
 
   exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - mnd
     paths:
       - vendor$
       - third_party$
@@ -99,21 +123,89 @@ linters:
       - examples$
 
   settings:
+    cyclop:
+      max-complexity: 11
+      package-average: 6.0
+    depguard:
+      rules:
+        stdlib-only:
+          files:
+            - "!$test"
+          allow:
+            - $gostd
     dupl:
       threshold: 100
+    embeddedstructfieldcheck:
+      forbid-mutex: true
     errcheck:
       check-type-assertions: true
+      check-blank: true
+    exhaustive:
+      check:
+        - switch
+        - mapliteral
     funlen:
-      lines: 120
-      statements: 80
+      lines: 60
+      statements: 40
     goconst:
       min-len: 3
       min-occurrences: 4
+    gocognit:
+      min-complexity: 15
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - experimental
+        - opinionated
     gocyclo:
-      min-complexity: 13
+      min-complexity: 11
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+      settings:
+        shadow:
+          strict: true
+    inamedparam:
+      skip-single-param: true
+    interfacebloat:
+      max: 3
+    nakedret:
+      max-func-lines: 0
+    nestif:
+      min-complexity: 4
     nolintlint:
       require-explanation: true
       require-specific: true
+    reassign:
+      patterns:
+        - ".*"
+    revive:
+      enable-all-rules: true
+      rules:
+        - name: add-constant
+          disabled: true
+        - name: function-length
+          disabled: true
+        - name: cognitive-complexity
+          disabled: true
+        - name: cyclomatic
+          disabled: true
+        - name: banned-characters
+          disabled: true
+        - name: file-header
+          disabled: true
+        - name: line-length-limit
+          arguments: [120]
+    staticcheck:
+      checks:
+        - all
+    testifylint:
+      enable-all: true
+    usetesting:
+      os-temp-dir: true
     wsl_v5:
       allow-first-in-block: true
       allow-whole-block: false
@@ -123,7 +215,10 @@ formatters:
   enable:
     - gofumpt
     - goimports
+    - golines
   settings:
+    golines:
+      max-len: 120
     gofumpt:
       extra:
         group-params: true
