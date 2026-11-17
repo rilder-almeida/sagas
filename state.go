@@ -18,7 +18,12 @@ var (
 
 type typeWalk struct {
 	onPath  map[reflect.Type]bool
-	modules []string
+	modules buildModules
+}
+
+type buildModules struct {
+	known bool
+	paths []string
 }
 
 func checkState(t reflect.Type) error {
@@ -52,14 +57,14 @@ func encodeField(v any) ([]byte, error) {
 }
 
 func decodeField(data []byte, v any) error {
-	dst := reflect.ValueOf(v)
-	if dst.Kind() != reflect.Pointer || dst.IsNil() {
-		return fmt.Errorf("%w: decode destination %T is not a non-nil pointer", ErrInvalidState, v)
+	dst, err := decodeTarget(v)
+	if err != nil {
+		return err
 	}
 
 	fresh := reflect.New(dst.Type().Elem())
 
-	err := json.Unmarshal(
+	err = json.Unmarshal(
 		data,
 		fresh.Interface(),
 		json.Deterministic(true),
@@ -73,6 +78,15 @@ func decodeField(data []byte, v any) error {
 	dst.Elem().Set(fresh.Elem())
 
 	return nil
+}
+
+func decodeTarget(v any) (reflect.Value, error) {
+	dst := reflect.ValueOf(v)
+	if dst.Kind() != reflect.Pointer || dst.IsNil() {
+		return reflect.Value{}, fmt.Errorf("%w: decode destination %T is not a non-nil pointer", ErrInvalidState, v)
+	}
+
+	return dst, nil
 }
 
 func (w *typeWalk) walk(t reflect.Type, path string) []error {
@@ -162,9 +176,9 @@ func definesEncoding(t reflect.Type) string {
 	return ""
 }
 
-func modulePaths(info *debug.BuildInfo) []string {
+func modulePaths(info *debug.BuildInfo) buildModules {
 	if info == nil {
-		return nil
+		return buildModules{}
 	}
 
 	paths := make([]string, 0, len(info.Deps)+1)
@@ -178,7 +192,7 @@ func modulePaths(info *debug.BuildInfo) []string {
 		}
 	}
 
-	return paths
+	return buildModules{known: true, paths: paths}
 }
 
 type stdAnswer int
@@ -189,7 +203,7 @@ const (
 	maybeStandard
 )
 
-func standardRule(t reflect.Type, modules []string) string {
+func standardRule(t reflect.Type, modules buildModules) string {
 	switch isStandardPath(t.PkgPath(), modules) {
 	case notStandard:
 		return ""
@@ -203,12 +217,12 @@ func standardRule(t reflect.Type, modules []string) string {
 	return ""
 }
 
-func isStandardPath(pkgPath string, modules []string) stdAnswer {
+func isStandardPath(pkgPath string, modules buildModules) stdAnswer {
 	if pkgPath == "" || pkgPath == "main" {
 		return notStandard
 	}
 
-	if len(modules) == 0 {
+	if !modules.known {
 		first, _, _ := strings.Cut(pkgPath, "/")
 		if strings.Contains(first, ".") {
 			return notStandard
@@ -217,7 +231,7 @@ func isStandardPath(pkgPath string, modules []string) stdAnswer {
 		return maybeStandard
 	}
 
-	for _, module := range modules {
+	for _, module := range modules.paths {
 		if pkgPath == module || strings.HasPrefix(pkgPath, module+"/") {
 			return notStandard
 		}
