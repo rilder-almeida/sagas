@@ -3,3 +3,6 @@ go.work.sum
 .worktrees/
 .superpowers/
 coverage.out
+docs/adr/
+docs/superpowers/
+docs/handoff/
