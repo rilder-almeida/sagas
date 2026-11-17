@@ -1,8 +1,10 @@
 package sagas
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"math"
+	"math/big"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -26,35 +28,41 @@ type scalarState struct {
 	U16 uint16
 	U32 uint32
 	U64 uint64
-	P   uintptr
 	F32 float32
 	F64 float64
 	S   string
+}
+
+type userInt int
+
+type namedState struct {
+	N userInt
 }
 
 type innerState struct {
 	N int
 }
 
-type EmbeddedState struct {
-	E string
-}
-
 type compositeState struct {
-	EmbeddedState
-
-	Arr    [2]int
-	Sl     []string
-	MS     map[string]int
-	MI     map[int]string
-	MF     map[float64]bool
-	MT     map[netip.Addr]int
-	Ptr    *int
-	Nested innerState
+	Arr       [2][3]int
+	Sl        [][]string
+	MS        map[string]int
+	MI        map[int64]string
+	MU        map[uint8]bool
+	Ptr       *int
+	PP        **int
+	Bytes     []byte
+	Nested    innerState
+	NestedPtr *innerState
 }
 
-type timeState struct {
-	At time.Time
+type emptiesState struct {
+	NilBytes   []byte
+	EmptyBytes []byte
+	NilSlice   []int
+	EmptySlice []int
+	NilMap     map[string]int
+	EmptyMap   map[string]int
 }
 
 type node struct {
@@ -80,14 +88,6 @@ type dashTagState struct {
 	Inner dashTagInner
 }
 
-type nameTagInner struct {
-	X int `json:"x"`
-}
-
-type nameTagState struct {
-	Inner nameTagInner
-}
-
 type omitzeroTagInner struct {
 	X int `json:",omitzero"`
 }
@@ -96,12 +96,20 @@ type omitzeroTagState struct {
 	Inner omitzeroTagInner
 }
 
-type funcState struct {
-	F func()
+type yamlTagInner struct {
+	X int `yaml:"x"`
 }
 
-type chanState struct {
-	C chan int
+type yamlTagState struct {
+	Inner yamlTagInner
+}
+
+type embeddedValueState struct {
+	innerState
+}
+
+type embeddedPtrState struct {
+	*innerState
 }
 
 type anyState struct {
@@ -112,6 +120,14 @@ type marshalerState struct {
 	M json.Marshaler
 }
 
+type funcState struct {
+	F func()
+}
+
+type chanState struct {
+	C chan int
+}
+
 type unsafeState struct {
 	U unsafe.Pointer
 }
@@ -120,25 +136,126 @@ type complexState struct {
 	C complex128
 }
 
-type structKeyState struct {
-	M map[innerState]int
+type uintptrState struct {
+	P uintptr
+}
+
+type floatKeyState struct {
+	M map[float64]int
 }
 
 type boolKeyState struct {
 	M map[bool]int
 }
 
-type badValueState struct {
-	M map[string]func()
+type structKeyState struct {
+	M map[innerState]int
 }
 
-type badElemState struct {
-	S []chan int
+type timeState struct {
+	At time.Time
 }
+
+type durationState struct {
+	D time.Duration
+}
+
+type durationPtrState struct {
+	D *time.Duration
+}
+
+type durationSliceState struct {
+	D []time.Duration
+}
+
+type addrState struct {
+	A netip.Addr
+}
+
+type bigState struct {
+	B *big.Int
+}
+
+type onlyMarshalJSON int
+
+func (onlyMarshalJSON) MarshalJSON() ([]byte, error) { return []byte("0"), nil }
+
+type onlyUnmarshalJSON int
+
+func (*onlyUnmarshalJSON) UnmarshalJSON([]byte) error { return nil }
+
+type onlyMarshalJSONTo int
+
+func (onlyMarshalJSONTo) MarshalJSONTo(*jsontext.Encoder) error { return nil }
+
+type onlyUnmarshalJSONFrom int
+
+func (*onlyUnmarshalJSONFrom) UnmarshalJSONFrom(*jsontext.Decoder) error { return nil }
+
+type onlyMarshalText int
+
+func (onlyMarshalText) MarshalText() ([]byte, error) { return []byte("0"), nil }
+
+type onlyUnmarshalText int
+
+func (*onlyUnmarshalText) UnmarshalText([]byte) error { return nil }
+
+type onlyAppendText int
+
+func (onlyAppendText) AppendText(b []byte) ([]byte, error) { return b, nil }
+
+type bothJSON int
+
+func (bothJSON) MarshalJSON() ([]byte, error) { return []byte("0"), nil }
+
+func (*bothJSON) UnmarshalJSON([]byte) error { return nil }
+
+type bothText int
+
+func (bothText) MarshalText() ([]byte, error) { return []byte("0"), nil }
+
+func (*bothText) UnmarshalText([]byte) error { return nil }
+
+type ownEncodingState struct {
+	MJ  onlyMarshalJSON
+	UJ  onlyUnmarshalJSON
+	MT  onlyMarshalText
+	UT  onlyUnmarshalText
+	AT  onlyAppendText
+	BJ  bothJSON
+	BT  bothText
+	MJT onlyMarshalJSONTo
+	UJF onlyUnmarshalJSONFrom
+}
+
+type encodingRoot struct {
+	N int
+}
+
+func (encodingRoot) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+
+func (*encodingRoot) UnmarshalJSON([]byte) error { return nil }
 
 type twoBadState struct {
 	A func()
 	B chan int
+}
+
+type badInner struct {
+	C chan int
+}
+
+type sameBadState struct {
+	A badInner
+	B badInner
+}
+
+type ptrBadState struct {
+	P *badInner
+}
+
+type badElemState struct {
+	S []chan int
 }
 
 func Test_checkState(t *testing.T) {
@@ -151,16 +268,16 @@ func Test_checkState(t *testing.T) {
 		wantInMsg []string
 	}{
 		{
-			name: "[Success] When: bool, every integer and float kind, uintptr and string ; Should: accept them",
+			name: "[Success] When: bool, every integer kind, float32, float64 and string ; Should: accept them",
 			typ:  reflect.TypeFor[scalarState](),
 		},
 		{
-			name: "[Success] When: array, slice, maps, pointer, nested and embedded struct ; Should: accept them",
-			typ:  reflect.TypeFor[compositeState](),
+			name: "[Success] When: a named user type over int ; Should: accept it",
+			typ:  reflect.TypeFor[namedState](),
 		},
 		{
-			name: "[Success] When: a time.Time field ; Should: accept it without walking into it",
-			typ:  reflect.TypeFor[timeState](),
+			name: "[Success] When: nested arrays, slices, plain maps, pointers and []byte ; Should: accept them",
+			typ:  reflect.TypeFor[compositeState](),
 		},
 		{
 			name: "[Success] When: a recursive type ; Should: end the walk and accept it",
@@ -174,97 +291,191 @@ func Test_checkState(t *testing.T) {
 			name:      "[Fail] When: the type is int ; Should: report not a struct",
 			typ:       reflect.TypeFor[int](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"int", "not a struct"},
+			wantInMsg: []string{"int: not a struct"},
 		},
 		{
 			name:      "[Fail] When: an unexported field at depth 2 ; Should: report its path as unexported",
 			typ:       reflect.TypeOf(outer{Inner: secretInner{secret: 1}}),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"outer.Inner.secret", "unexported"},
+			wantInMsg: []string{"outer.Inner.secret: unexported field"},
 		},
 		{
-			name:      `[Fail] When: a nested field carries json:"-" ; Should: report its path and the json tag`,
+			name:      `[Fail] When: a nested field carries json:"-" ; Should: report its path and the struct tag`,
 			typ:       reflect.TypeFor[dashTagState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"dashTagState.Inner.X", "json tag"},
+			wantInMsg: []string{"dashTagState.Inner.X: struct tag"},
 		},
 		{
-			name:      `[Fail] When: a nested field carries json:"x" ; Should: report its path and the json tag`,
-			typ:       reflect.TypeFor[nameTagState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"nameTagState.Inner.X", "json tag"},
-		},
-		{
-			name:      `[Fail] When: a nested field carries json:",omitzero" ; Should: report its path and json tag`,
+			name:      `[Fail] When: a nested field carries json:",omitzero" ; Should: report its path and the tag`,
 			typ:       reflect.TypeFor[omitzeroTagState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"omitzeroTagState.Inner.X", "json tag"},
+			wantInMsg: []string{"omitzeroTagState.Inner.X: struct tag"},
 		},
 		{
-			name:      "[Fail] When: a func field ; Should: report its path and the func kind",
-			typ:       reflect.TypeFor[funcState](),
+			name:      "[Fail] When: a nested field carries a yaml tag ; Should: report its path and the struct tag",
+			typ:       reflect.TypeFor[yamlTagState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"funcState.F", "func"},
+			wantInMsg: []string{"yamlTagState.Inner.X: struct tag"},
 		},
 		{
-			name:      "[Fail] When: a chan field ; Should: report its path and the chan kind",
-			typ:       reflect.TypeFor[chanState](),
+			name:      "[Fail] When: an embedded struct value ; Should: report the embedded field",
+			typ:       reflect.TypeOf(embeddedValueState{innerState{N: 1}}),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"chanState.C", "chan"},
+			wantInMsg: []string{"embeddedValueState.innerState: embedded field"},
+		},
+		{
+			name:      "[Fail] When: an embedded struct pointer ; Should: report the embedded field",
+			typ:       reflect.TypeOf(embeddedPtrState{innerState: &innerState{N: 1}}),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"embeddedPtrState.innerState: embedded field"},
 		},
 		{
 			name:      "[Fail] When: an any field ; Should: report its path and the interface kind",
 			typ:       reflect.TypeFor[anyState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"anyState.A", "interface"},
+			wantInMsg: []string{"anyState.A: rejected kind interface"},
 		},
 		{
-			name:      "[Fail] When: a field typed as the json.Marshaler interface ; Should: report the interface kind",
+			name:      "[Fail] When: a json.Marshaler interface field ; Should: report a standard library type",
 			typ:       reflect.TypeFor[marshalerState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"marshalerState.M", "interface"},
+			wantInMsg: []string{"marshalerState.M: standard library type json.Marshaler"},
 		},
 		{
-			name:      "[Fail] When: an unsafe.Pointer field ; Should: report its path and the unsafe.Pointer kind",
+			name:      "[Fail] When: a func field ; Should: report its path and the func kind",
+			typ:       reflect.TypeFor[funcState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"funcState.F: rejected kind func"},
+		},
+		{
+			name:      "[Fail] When: a chan field ; Should: report its path and the chan kind",
+			typ:       reflect.TypeFor[chanState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"chanState.C: rejected kind chan"},
+		},
+		{
+			name:      "[Fail] When: an unsafe.Pointer field ; Should: report a standard library type",
 			typ:       reflect.TypeFor[unsafeState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"unsafeState.U", "unsafe.Pointer"},
+			wantInMsg: []string{"unsafeState.U: standard library type unsafe.Pointer"},
 		},
 		{
 			name:      "[Fail] When: a complex128 field ; Should: report its path and the complex128 kind",
 			typ:       reflect.TypeFor[complexState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"complexState.C", "complex128"},
+			wantInMsg: []string{"complexState.C: rejected kind complex128"},
 		},
 		{
-			name:      "[Fail] When: a map with a struct key ; Should: report the key path",
-			typ:       reflect.TypeFor[structKeyState](),
+			name:      "[Fail] When: a uintptr field ; Should: report its path and the uintptr kind",
+			typ:       reflect.TypeFor[uintptrState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"structKeyState.M[key]"},
+			wantInMsg: []string{"uintptrState.P: rejected kind uintptr"},
+		},
+		{
+			name:      "[Fail] When: a map with a float64 key ; Should: report the key path",
+			typ:       reflect.TypeFor[floatKeyState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"floatKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
 			name:      "[Fail] When: a map with a bool key ; Should: report the key path",
 			typ:       reflect.TypeFor[boolKeyState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"boolKeyState.M[key]"},
+			wantInMsg: []string{"boolKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
-			name:      "[Fail] When: a map with a func value ; Should: report the value path",
-			typ:       reflect.TypeFor[badValueState](),
+			name:      "[Fail] When: a map with a struct key ; Should: report the key path",
+			typ:       reflect.TypeFor[structKeyState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"badValueState.M[value]", "func"},
+			wantInMsg: []string{"structKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
-			name:      "[Fail] When: a slice of chan ; Should: report the element path",
-			typ:       reflect.TypeFor[badElemState](),
+			name:      "[Fail] When: a time.Time field ; Should: report a standard library type",
+			typ:       reflect.TypeFor[timeState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"badElemState.S[]", "chan"},
+			wantInMsg: []string{"timeState.At: standard library type time.Time"},
+		},
+		{
+			name:      "[Fail] When: a time.Duration field ; Should: report a standard library type",
+			typ:       reflect.TypeFor[durationState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"durationState.D: standard library type time.Duration"},
+		},
+		{
+			name:      "[Fail] When: a *time.Duration field ; Should: report a standard library type",
+			typ:       reflect.TypeFor[durationPtrState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"durationPtrState.D: standard library type time.Duration"},
+		},
+		{
+			name:      "[Fail] When: a []time.Duration field ; Should: report the element as a standard library type",
+			typ:       reflect.TypeFor[durationSliceState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"durationSliceState.D[]: standard library type time.Duration"},
+		},
+		{
+			name:      "[Fail] When: a netip.Addr field ; Should: report a standard library type",
+			typ:       reflect.TypeFor[addrState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"addrState.A: standard library type netip.Addr"},
+		},
+		{
+			name:      "[Fail] When: a *big.Int field ; Should: report a standard library type",
+			typ:       reflect.TypeFor[bigState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"bigState.B: standard library type big.Int"},
+		},
+		{
+			name:    "[Fail] When: user types define one or more encoding methods ; Should: report each method",
+			typ:     reflect.TypeFor[ownEncodingState](),
+			wantErr: ErrInvalidState,
+			wantInMsg: []string{
+				"ownEncodingState.MJ: defines its own encoding with MarshalJSON",
+				"ownEncodingState.UJ: defines its own encoding with UnmarshalJSON",
+				"ownEncodingState.MT: defines its own encoding with MarshalText",
+				"ownEncodingState.UT: defines its own encoding with UnmarshalText",
+				"ownEncodingState.AT: defines its own encoding with AppendText",
+				"ownEncodingState.BJ: defines its own encoding with MarshalJSON",
+				"ownEncodingState.BT: defines its own encoding with MarshalText",
+				"ownEncodingState.MJT: defines its own encoding with MarshalJSONTo",
+				"ownEncodingState.UJF: defines its own encoding with UnmarshalJSONFrom",
+			},
+		},
+		{
+			name:      "[Fail] When: the root type defines its own encoding ; Should: report the root",
+			typ:       reflect.TypeOf(encodingRoot{N: 1}),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"encodingRoot: defines its own encoding with MarshalJSON"},
+		},
+		{
+			name:      "[Fail] When: the root type is time.Time ; Should: report a standard library type",
+			typ:       reflect.TypeFor[time.Time](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"Time: standard library type time.Time"},
 		},
 		{
 			name:      "[Fail] When: two bad fields ; Should: report both paths in field order",
 			typ:       reflect.TypeFor[twoBadState](),
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"twoBadState.A", "twoBadState.B"},
+			wantInMsg: []string{"twoBadState.A: rejected kind func", "twoBadState.B: rejected kind chan"},
+		},
+		{
+			name:      "[Fail] When: the same bad type in two fields ; Should: report it under both paths",
+			typ:       reflect.TypeFor[sameBadState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"sameBadState.A.C: rejected kind chan", "sameBadState.B.C: rejected kind chan"},
+		},
+		{
+			name:      "[Fail] When: a pointer to a bad type ; Should: report the path through the pointer",
+			typ:       reflect.TypeFor[ptrBadState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"ptrBadState.P.C: rejected kind chan"},
+		},
+		{
+			name:      "[Fail] When: a slice of chan ; Should: report the element path",
+			typ:       reflect.TypeFor[badElemState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"badElemState.S[]: rejected kind chan"},
 		},
 	}
 
@@ -275,9 +486,12 @@ func Test_checkState(t *testing.T) {
 			err := checkState(tt.typ)
 			require.ErrorIs(t, err, tt.wantErr)
 
+			msg := ""
 			if err != nil {
-				assertInOrder(t, err.Error(), tt.wantInMsg)
+				msg = err.Error()
 			}
+
+			assertInOrder(t, msg, tt.wantInMsg)
 		})
 	}
 }
@@ -296,39 +510,213 @@ func assertInOrder(t *testing.T, msg string, parts []string) {
 	}
 }
 
+func Test_definesEncoding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{
+			name: "[Success] When: a plain int ; Should: report no method",
+			typ:  reflect.TypeFor[int](),
+		},
+		{
+			name: "[Success] When: a plain struct ; Should: report no method",
+			typ:  reflect.TypeFor[innerState](),
+		},
+		{
+			name: "[Success] When: the json.Marshaler interface itself ; Should: report no method",
+			typ:  reflect.TypeFor[json.Marshaler](),
+		},
+		{
+			name: "[Fail] When: only MarshalJSON on the value ; Should: report MarshalJSON",
+			typ:  reflect.TypeFor[onlyMarshalJSON](),
+			want: "MarshalJSON",
+		},
+		{
+			name: "[Fail] When: only UnmarshalJSON on the pointer ; Should: report UnmarshalJSON",
+			typ:  reflect.TypeFor[onlyUnmarshalJSON](),
+			want: "UnmarshalJSON",
+		},
+		{
+			name: "[Fail] When: only MarshalJSONTo ; Should: report MarshalJSONTo",
+			typ:  reflect.TypeFor[onlyMarshalJSONTo](),
+			want: "MarshalJSONTo",
+		},
+		{
+			name: "[Fail] When: only UnmarshalJSONFrom on the pointer ; Should: report UnmarshalJSONFrom",
+			typ:  reflect.TypeFor[onlyUnmarshalJSONFrom](),
+			want: "UnmarshalJSONFrom",
+		},
+		{
+			name: "[Fail] When: only MarshalText ; Should: report MarshalText",
+			typ:  reflect.TypeFor[onlyMarshalText](),
+			want: "MarshalText",
+		},
+		{
+			name: "[Fail] When: only UnmarshalText on the pointer ; Should: report UnmarshalText",
+			typ:  reflect.TypeFor[onlyUnmarshalText](),
+			want: "UnmarshalText",
+		},
+		{
+			name: "[Fail] When: only AppendText ; Should: report AppendText",
+			typ:  reflect.TypeFor[onlyAppendText](),
+			want: "AppendText",
+		},
+		{
+			name: "[Fail] When: both text methods ; Should: report MarshalText first",
+			typ:  reflect.TypeFor[bothText](),
+			want: "MarshalText",
+		},
+		{
+			name: "[Fail] When: time.Time ; Should: report MarshalJSON first",
+			typ:  reflect.TypeFor[time.Time](),
+			want: "MarshalJSON",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, definesEncoding(tt.typ))
+		})
+	}
+}
+
+func Test_isStandardPath(t *testing.T) {
+	t.Parallel()
+
+	modules := []string{"myapp", "example.com/lib"}
+	tests := []struct {
+		name    string
+		path    string
+		modules []string
+		want    bool
+	}{
+		{
+			name:    "[Success] When: time ; Should: be standard",
+			path:    "time",
+			modules: modules,
+			want:    true,
+		},
+		{
+			name:    "[Success] When: net/netip ; Should: be standard",
+			path:    "net/netip",
+			modules: modules,
+			want:    true,
+		},
+		{
+			name:    "[Success] When: a path under no module ; Should: be standard",
+			path:    "example.com/other",
+			modules: modules,
+			want:    true,
+		},
+		{
+			name:    "[Success] When: a module path prefix without a slash ; Should: be standard",
+			path:    "myappx",
+			modules: modules,
+			want:    true,
+		},
+		{
+			name:    "[Fail] When: the empty path ; Should: not be standard",
+			path:    "",
+			modules: modules,
+		},
+		{
+			name:    "[Fail] When: main ; Should: not be standard",
+			path:    "main",
+			modules: modules,
+		},
+		{
+			name:    "[Fail] When: the dotless main module ; Should: not be standard",
+			path:    "myapp",
+			modules: modules,
+		},
+		{
+			name:    "[Fail] When: a package of the dotless module ; Should: not be standard",
+			path:    "myapp/state",
+			modules: modules,
+		},
+		{
+			name:    "[Fail] When: a package of a dependency ; Should: not be standard",
+			path:    "example.com/lib/x",
+			modules: modules,
+		},
+		{
+			name: "[Success] When: no build info and time ; Should: be standard",
+			path: "time",
+			want: true,
+		},
+		{
+			name: "[Success] When: no build info and a dotless path ; Should: be standard",
+			path: "myapp",
+			want: true,
+		},
+		{
+			name: "[Fail] When: no build info and a dotted path ; Should: not be standard",
+			path: "example.com/lib",
+		},
+		{
+			name: "[Fail] When: no build info and main ; Should: not be standard",
+			path: "main",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, isStandardPath(tt.path, tt.modules))
+		})
+	}
+}
+
 func Test_checkState_roundTrip(t *testing.T) {
 	t.Parallel()
 
 	seats := 3
+	seatsPtr := &seats
 	tests := []struct {
 		name  string
 		value any
 	}{
 		{
-			name: "[Success] When: a populated scalar struct ; Should: round-trip unchanged",
+			name: "[Success] When: scalars at their extremes ; Should: round-trip unchanged",
 			value: scalarState{
-				B: true, I: -1, I8: -8, I16: -16, I32: -32, I64: -64,
-				U: 1, U8: 8, U16: 16, U32: 32, U64: 64, P: 7,
-				F32: 1.5, F64: 2.25, S: "s",
+				B: true, I: -1, I8: math.MinInt8, I16: math.MinInt16, I32: math.MinInt32, I64: math.MinInt64,
+				U: 1, U8: math.MaxUint8, U16: math.MaxUint16, U32: math.MaxUint32, U64: math.MaxUint64,
+				F32: math.MaxFloat32, F64: math.Copysign(0, -1), S: "sé\n",
 			},
+		},
+		{
+			name:  "[Success] When: a named user type over int ; Should: round-trip unchanged",
+			value: namedState{N: 42},
 		},
 		{
 			name: "[Success] When: a populated composite struct ; Should: round-trip unchanged",
 			value: compositeState{
-				EmbeddedState: EmbeddedState{E: "e"},
-				Arr:           [2]int{1, 2},
-				Sl:            []string{"a"},
-				MS:            map[string]int{"a": 1},
-				MI:            map[int]string{1: "a"},
-				MF:            map[float64]bool{1.5: true},
-				MT:            map[netip.Addr]int{netip.MustParseAddr("10.0.0.1"): 1},
-				Ptr:           &seats,
-				Nested:        innerState{N: 4},
+				Arr:       [2][3]int{{1, 2, 3}, {4, 5, 6}},
+				Sl:        [][]string{{"a"}, nil, {}},
+				MS:        map[string]int{"a": 1, "b": 2},
+				MI:        map[int64]string{math.MinInt64: "min", 1: "one"},
+				MU:        map[uint8]bool{255: true},
+				Ptr:       &seats,
+				PP:        &seatsPtr,
+				Bytes:     []byte{0, 1, 255},
+				Nested:    innerState{N: 4},
+				NestedPtr: &innerState{N: 5},
 			},
 		},
 		{
-			name:  "[Success] When: a time.Time field ; Should: round-trip unchanged",
-			value: timeState{At: time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)},
+			name: "[Success] When: nil and empty bytes, slices and maps ; Should: keep nil and empty apart",
+			value: emptiesState{
+				EmptyBytes: []byte{},
+				EmptySlice: []int{},
+				EmptyMap:   map[string]int{},
+			},
 		},
 		{
 			name:  "[Success] When: a recursive value ; Should: round-trip unchanged",
@@ -353,6 +741,10 @@ func Test_checkState_roundTrip(t *testing.T) {
 			got := reflect.New(typ)
 			require.NoError(t, decodeField(data, got.Interface()))
 			assert.Equal(t, tt.value, got.Elem().Interface())
+
+			again, err := encodeField(got.Elem().Interface())
+			require.NoError(t, err)
+			assert.Equal(t, string(data), string(again))
 		})
 	}
 }
@@ -426,13 +818,13 @@ func Test_decodeField(t *testing.T) {
 			want: encodeFixture{EmptySlice: []int{}, Ordered: map[string]int{"a": 1}},
 		},
 		{
-			name:    "[Fail] When: the bytes are malformed ; Should: return ErrInvalidState",
-			data:    `{"NilSlice":[1,`,
+			name:    "[Fail] When: the bytes end before any member ; Should: return ErrInvalidState, write nothing",
+			data:    `{`,
 			wantErr: ErrInvalidState,
 		},
 		{
-			name:    "[Fail] When: a value has the wrong JSON type ; Should: return ErrInvalidState",
-			data:    `{"Ordered":{"a":"x"}}`,
+			name:    "[Fail] When: the first member has a wrong type ; Should: return ErrInvalidState, write nothing",
+			data:    `{"Ordered":"x"}`,
 			wantErr: ErrInvalidState,
 		},
 	}
@@ -444,13 +836,7 @@ func Test_decodeField(t *testing.T) {
 			var got encodeFixture
 
 			err := decodeField([]byte(tt.data), &got)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
+			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.want, got)
 		})
 	}

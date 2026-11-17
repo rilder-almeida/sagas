@@ -1,11 +1,12 @@
 package sagas
 
 import (
-	"encoding"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime/debug"
+	"strings"
 )
 
 var (
@@ -14,6 +15,11 @@ var (
 	// ErrConflict is returned when a step changes a field that another step committed after the step's snapshot.
 	ErrConflict = errors.New("sagas: state conflict")
 )
+
+type typeWalk struct {
+	onPath  map[reflect.Type]bool
+	modules []string
+}
 
 func checkState(t reflect.Type) error {
 	name := t.Name()
@@ -25,7 +31,9 @@ func checkState(t reflect.Type) error {
 		return fmt.Errorf("%w: %s: not a struct", ErrInvalidState, name)
 	}
 
-	return errors.Join(walkType(t, name, map[reflect.Type]bool{})...)
+	w := typeWalk{onPath: map[reflect.Type]bool{}, modules: modulePaths()}
+
+	return errors.Join(w.walk(t, name)...)
 }
 
 func encodeField(v any) ([]byte, error) {
@@ -57,63 +65,70 @@ func decodeField(data []byte, v any) error {
 	return nil
 }
 
-func walkType(t reflect.Type, path string, onPath map[reflect.Type]bool) []error {
-	if onPath[t] || hasJSONMethods(t) {
+func (w *typeWalk) walk(t reflect.Type, path string) []error {
+	if w.onPath[t] {
 		return nil
 	}
 
-	onPath[t] = true
-	defer delete(onPath, t)
+	if t.PkgPath() != "" && isStandardPath(t.PkgPath(), w.modules) {
+		return []error{invalidAt(path, "standard library type "+t.String())}
+	}
+
+	if method := definesEncoding(t); method != "" {
+		return []error{invalidAt(path, "defines its own encoding with "+method)}
+	}
+
+	w.onPath[t] = true
+	defer delete(w.onPath, t)
 
 	switch t.Kind() {
 	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64, reflect.String:
 		return nil
-	case reflect.Invalid, reflect.Complex64, reflect.Complex128, reflect.Chan, reflect.Func,
+	case reflect.Invalid, reflect.Uintptr, reflect.Complex64, reflect.Complex128, reflect.Chan, reflect.Func,
 		reflect.Interface, reflect.UnsafePointer:
 		return []error{invalidAt(path, "rejected kind "+t.Kind().String())}
 	case reflect.Array, reflect.Slice:
-		return walkType(t.Elem(), path+"[]", onPath)
+		return w.walk(t.Elem(), path+"[]")
 	case reflect.Pointer:
-		return walkType(t.Elem(), path, onPath)
+		return w.walk(t.Elem(), path)
 	case reflect.Map:
-		return walkMap(t, path, onPath)
+		return w.walkMap(t, path)
 	case reflect.Struct:
-		return walkStruct(t, path, onPath)
+		return w.walkStruct(t, path)
 	}
 
 	return nil
 }
 
-func walkMap(t reflect.Type, path string, onPath map[reflect.Type]bool) []error {
+func (w *typeWalk) walkMap(t reflect.Type, path string) []error {
 	var errs []error
-	if !isMapKey(t.Key()) {
-		errs = append(errs, invalidAt(path+"[key]", "map key cannot be a JSON object name"))
+	if isMapKeyKind(t.Key().Kind()) {
+		errs = w.walk(t.Key(), path+"[key]")
+	} else {
+		errs = []error{invalidAt(path+"[key]", "map key must be a string or an integer")}
 	}
 
-	return append(errs, walkType(t.Elem(), path+"[value]", onPath)...)
+	return append(errs, w.walk(t.Elem(), path+"[value]")...)
 }
 
-func walkStruct(t reflect.Type, path string, onPath map[reflect.Type]bool) []error {
+func (w *typeWalk) walkStruct(t reflect.Type, path string) []error {
 	var errs []error
 
 	for field := range t.Fields() {
 		fieldPath := path + "." + field.Name
 
-		if !field.IsExported() {
+		switch {
+		case field.Anonymous:
+			errs = append(errs, invalidAt(fieldPath, "embedded field"))
+		case !field.IsExported():
 			errs = append(errs, invalidAt(fieldPath, "unexported field"))
-
-			continue
+		case field.Tag != "":
+			errs = append(errs, invalidAt(fieldPath, "struct tag"))
+		default:
+			errs = append(errs, w.walk(field.Type, fieldPath)...)
 		}
-
-		if _, tagged := field.Tag.Lookup("json"); tagged {
-			errs = append(errs, invalidAt(fieldPath, "json tag"))
-
-			continue
-		}
-
-		errs = append(errs, walkType(field.Type, fieldPath, onPath)...)
 	}
 
 	return errs
@@ -123,30 +138,64 @@ func invalidAt(path, rule string) error {
 	return fmt.Errorf("%w: %s: %s", ErrInvalidState, path, rule)
 }
 
-func hasJSONMethods(t reflect.Type) bool {
+func definesEncoding(t reflect.Type) string {
 	ptr := reflect.PointerTo(t)
-	marshals := ptr.Implements(reflect.TypeFor[json.Marshaler]()) ||
-		ptr.Implements(reflect.TypeFor[json.MarshalerTo]())
-	unmarshals := ptr.Implements(reflect.TypeFor[json.Unmarshaler]()) ||
-		ptr.Implements(reflect.TypeFor[json.UnmarshalerFrom]())
-
-	return marshals && unmarshals
-}
-
-func isMapKey(t reflect.Type) bool {
-	if t.Implements(reflect.TypeFor[encoding.TextMarshaler]()) &&
-		reflect.PointerTo(t).Implements(reflect.TypeFor[encoding.TextUnmarshaler]()) {
-		return true
+	for _, method := range [...]string{
+		"MarshalJSON", "UnmarshalJSON", "MarshalJSONTo", "UnmarshalJSONFrom",
+		"MarshalText", "UnmarshalText", "AppendText",
+	} {
+		if _, found := ptr.MethodByName(method); found {
+			return method
+		}
 	}
 
-	switch t.Kind() {
+	return ""
+}
+
+func modulePaths() []string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil
+	}
+
+	paths := make([]string, 0, len(info.Deps)+1)
+	paths = append(paths, info.Main.Path)
+
+	for _, dep := range info.Deps {
+		paths = append(paths, dep.Path)
+	}
+
+	return paths
+}
+
+func isStandardPath(pkgPath string, modules []string) bool {
+	if pkgPath == "" || pkgPath == "main" {
+		return false
+	}
+
+	if len(modules) == 0 {
+		first, _, _ := strings.Cut(pkgPath, "/")
+
+		return !strings.Contains(first, ".")
+	}
+
+	for _, module := range modules {
+		if pkgPath == module || strings.HasPrefix(pkgPath, module+"/") {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isMapKeyKind(kind reflect.Kind) bool {
+	switch kind {
 	case reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-		reflect.Float32, reflect.Float64:
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return true
-	case reflect.Invalid, reflect.Bool, reflect.Complex64, reflect.Complex128, reflect.Array, reflect.Chan,
-		reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.Struct,
-		reflect.UnsafePointer:
+	case reflect.Invalid, reflect.Bool, reflect.Uintptr, reflect.Float32, reflect.Float64, reflect.Complex64,
+		reflect.Complex128, reflect.Array, reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice, reflect.Struct, reflect.UnsafePointer:
 		return false
 	}
 
