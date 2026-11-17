@@ -4,11 +4,12 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"image"
 	"math"
 	"math/big"
 	"net/netip"
+	"net/url"
 	"reflect"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,7 +54,6 @@ type compositeState struct {
 	MI        map[int64]string
 	MU        map[uint8]bool
 	Ptr       *int
-	PP        **int
 	Bytes     []byte
 	Nested    innerState
 	NestedPtr *innerState
@@ -187,6 +187,68 @@ type bigState struct {
 	B *big.Int
 }
 
+type ptrPtrState struct {
+	P **int
+}
+
+type ptrSliceState struct {
+	P *[]int
+}
+
+type ptrMapState struct {
+	P *map[string]int
+}
+
+type slicePtrSliceState struct {
+	S []*[]int
+}
+
+type rawValueState struct {
+	V jsontext.Value
+}
+
+type urlState struct {
+	U url.URL
+}
+
+type monthState struct {
+	M time.Month
+}
+
+type pointState struct {
+	P image.Point
+}
+
+type diamond1 struct {
+	A chan int
+	B chan int
+}
+
+type diamond2 struct {
+	A diamond1
+	B diamond1
+}
+
+type diamond3 struct {
+	A diamond2
+	B diamond2
+}
+
+type mutualA struct {
+	B *mutualB
+	X chan int
+}
+
+type mutualB struct {
+	A *mutualA
+	Y chan int
+}
+
+type mutualState struct {
+	B mutualB
+	A mutualA
+}
+
 type onlyMarshalJSON int
 
 func (onlyMarshalJSON) MarshalJSON() ([]byte, error) { return []byte("0"), nil }
@@ -275,7 +337,6 @@ func Test_checkState(t *testing.T) {
 	tests := []struct {
 		name      string
 		typ       reflect.Type
-		wantErr   error
 		wantInMsg []string
 	}{
 		{
@@ -291,6 +352,14 @@ func Test_checkState(t *testing.T) {
 			typ:  reflect.TypeFor[compositeState](),
 		},
 		{
+			name: "[Success] When: a time.Month field ; Should: accept it",
+			typ:  reflect.TypeFor[monthState](),
+		},
+		{
+			name: "[Success] When: an image.Point field ; Should: accept it",
+			typ:  reflect.TypeFor[pointState](),
+		},
+		{
 			name: "[Success] When: a recursive type ; Should: end the walk and accept it",
 			typ:  reflect.TypeFor[node](),
 		},
@@ -301,157 +370,179 @@ func Test_checkState(t *testing.T) {
 		{
 			name:      "[Fail] When: the type is int ; Should: report not a struct",
 			typ:       reflect.TypeFor[int](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"int: not a struct"},
 		},
 		{
 			name:      "[Fail] When: an unexported field at depth 2 ; Should: report its path as unexported",
 			typ:       reflect.TypeOf(outer{Inner: secretInner{secret: 1}}),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"outer.Inner.secret: unexported field"},
 		},
 		{
 			name:      `[Fail] When: a nested field carries json:"-" ; Should: report its path and the struct tag`,
 			typ:       reflect.TypeFor[dashTagState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"dashTagState.Inner.X: struct tag"},
 		},
 		{
 			name:      `[Fail] When: a nested field carries json:",omitzero" ; Should: report its path and the tag`,
 			typ:       reflect.TypeFor[omitzeroTagState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"omitzeroTagState.Inner.X: struct tag"},
 		},
 		{
 			name:      "[Fail] When: a nested field carries a yaml tag ; Should: report its path and the struct tag",
 			typ:       reflect.TypeFor[yamlTagState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"yamlTagState.Inner.X: struct tag"},
 		},
 		{
 			name:      "[Fail] When: an embedded struct value ; Should: report the embedded field",
 			typ:       reflect.TypeOf(embeddedValueState{innerState{N: 1}}),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"embeddedValueState.innerState: embedded field"},
 		},
 		{
 			name:      "[Fail] When: an embedded struct pointer ; Should: report the embedded field",
 			typ:       reflect.TypeOf(embeddedPtrState{innerState: &innerState{N: 1}}),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"embeddedPtrState.innerState: embedded field"},
 		},
 		{
 			name:      "[Fail] When: an any field ; Should: report its path and the interface kind",
 			typ:       reflect.TypeFor[anyState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"anyState.A: rejected kind interface"},
 		},
 		{
-			name:      "[Fail] When: a json.Marshaler interface field ; Should: report a standard library type",
+			name:      "[Fail] When: a json.Marshaler interface field ; Should: report the interface kind",
 			typ:       reflect.TypeFor[marshalerState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"marshalerState.M: standard library type json.Marshaler"},
+			wantInMsg: []string{"marshalerState.M: rejected kind interface"},
 		},
 		{
 			name:      "[Fail] When: a func field ; Should: report its path and the func kind",
 			typ:       reflect.TypeFor[funcState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"funcState.F: rejected kind func"},
 		},
 		{
 			name:      "[Fail] When: a chan field ; Should: report its path and the chan kind",
 			typ:       reflect.TypeFor[chanState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"chanState.C: rejected kind chan"},
 		},
 		{
-			name:      "[Fail] When: an unsafe.Pointer field ; Should: report a standard library type",
+			name:      "[Fail] When: an unsafe.Pointer field ; Should: report the unsafe.Pointer kind",
 			typ:       reflect.TypeFor[unsafeState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"unsafeState.U: standard library type unsafe.Pointer"},
+			wantInMsg: []string{"unsafeState.U: rejected kind unsafe.Pointer"},
 		},
 		{
 			name:      "[Fail] When: a complex128 field ; Should: report its path and the complex128 kind",
 			typ:       reflect.TypeFor[complexState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"complexState.C: rejected kind complex128"},
 		},
 		{
 			name:      "[Fail] When: a uintptr field ; Should: report its path and the uintptr kind",
 			typ:       reflect.TypeFor[uintptrState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"uintptrState.P: rejected kind uintptr"},
 		},
 		{
 			name:      "[Fail] When: a map with a float64 key ; Should: report the key path",
 			typ:       reflect.TypeFor[floatKeyState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"floatKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
 			name:      "[Fail] When: a map with a bool key ; Should: report the key path",
 			typ:       reflect.TypeFor[boolKeyState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"boolKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
 			name:      "[Fail] When: a map with a struct key ; Should: report the key path",
 			typ:       reflect.TypeFor[structKeyState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"structKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
-			name:      "[Fail] When: a map with a time.Duration key ; Should: report the key as standard library",
+			name:      "[Fail] When: a map with a time.Duration key ; Should: report the key as a rejected type",
 			typ:       reflect.TypeFor[stdKeyState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"stdKeyState.M[key]: standard library type time.Duration"},
+			wantInMsg: []string{"stdKeyState.M[key]: rejected type time.Duration"},
 		},
 		{
 			name:      "[Fail] When: a map key type with only MarshalText ; Should: report the key and the method",
 			typ:       reflect.TypeFor[ownEncodingKeyState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"ownEncodingKeyState.M[key]: defines its own encoding with MarshalText"},
 		},
 		{
-			name:      "[Fail] When: a time.Time field ; Should: report a standard library type",
+			name:      "[Fail] When: a time.Time field ; Should: report its MarshalJSON method",
 			typ:       reflect.TypeFor[timeState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"timeState.At: standard library type time.Time"},
+			wantInMsg: []string{"timeState.At: defines its own encoding with MarshalJSON"},
 		},
 		{
-			name:      "[Fail] When: a time.Duration field ; Should: report a standard library type",
+			name:      "[Fail] When: a time.Duration field ; Should: report a rejected type",
 			typ:       reflect.TypeFor[durationState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"durationState.D: standard library type time.Duration"},
+			wantInMsg: []string{"durationState.D: rejected type time.Duration"},
 		},
 		{
-			name:      "[Fail] When: a *time.Duration field ; Should: report a standard library type",
+			name:      "[Fail] When: a *time.Duration field ; Should: report a rejected type",
 			typ:       reflect.TypeFor[durationPtrState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"durationPtrState.D: standard library type time.Duration"},
+			wantInMsg: []string{"durationPtrState.D: rejected type time.Duration"},
 		},
 		{
-			name:      "[Fail] When: a []time.Duration field ; Should: report the element as a standard library type",
+			name:      "[Fail] When: a []time.Duration field ; Should: report the element as a rejected type",
 			typ:       reflect.TypeFor[durationSliceState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"durationSliceState.D[]: standard library type time.Duration"},
+			wantInMsg: []string{"durationSliceState.D[]: rejected type time.Duration"},
 		},
 		{
-			name:      "[Fail] When: a netip.Addr field ; Should: report a standard library type",
+			name:      "[Fail] When: a jsontext.Value field ; Should: report a rejected type",
+			typ:       reflect.TypeFor[rawValueState](),
+			wantInMsg: []string{"rawValueState.V: rejected type jsontext.Value"},
+		},
+		{
+			name: "[Fail] When: a url.URL field with unexported fields inside ; Should: report each of them",
+			typ:  reflect.TypeFor[urlState](),
+			wantInMsg: []string{
+				"urlState.U.User.username: unexported field",
+				"urlState.U.User.password: unexported field",
+				"urlState.U.User.passwordSet: unexported field",
+			},
+		},
+		{
+			name:      "[Fail] When: a netip.Addr field ; Should: report its MarshalText method",
 			typ:       reflect.TypeFor[addrState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"addrState.A: standard library type netip.Addr"},
+			wantInMsg: []string{"addrState.A: defines its own encoding with MarshalText"},
 		},
 		{
-			name:      "[Fail] When: a *big.Int field ; Should: report a standard library type",
+			name:      "[Fail] When: a *big.Int field ; Should: report its MarshalJSON method",
 			typ:       reflect.TypeFor[bigState](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"bigState.B: standard library type big.Int"},
+			wantInMsg: []string{"bigState.B: defines its own encoding with MarshalJSON"},
 		},
 		{
-			name:    "[Fail] When: user types define one or more encoding methods ; Should: report each method",
-			typ:     reflect.TypeFor[ownEncodingState](),
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: a **int field ; Should: report the pointer rule",
+			typ:       reflect.TypeFor[ptrPtrState](),
+			wantInMsg: []string{"ptrPtrState.P: pointer to a pointer, slice or map"},
+		},
+		{
+			name:      "[Fail] When: a *[]int field ; Should: report the pointer rule",
+			typ:       reflect.TypeFor[ptrSliceState](),
+			wantInMsg: []string{"ptrSliceState.P: pointer to a pointer, slice or map"},
+		},
+		{
+			name:      "[Fail] When: a *map[string]int field ; Should: report the pointer rule",
+			typ:       reflect.TypeFor[ptrMapState](),
+			wantInMsg: []string{"ptrMapState.P: pointer to a pointer, slice or map"},
+		},
+		{
+			name:      "[Fail] When: a []*[]int field ; Should: report the element under the pointer rule",
+			typ:       reflect.TypeFor[slicePtrSliceState](),
+			wantInMsg: []string{"slicePtrSliceState.S[]: pointer to a pointer, slice or map"},
+		},
+		{
+			name: "[Fail] When: a three-level diamond with a bad leaf ; Should: report each of the 8 paths once",
+			typ:  reflect.TypeFor[diamond3](),
+			wantInMsg: []string{
+				"diamond3.A.A.A: rejected kind chan",
+				"diamond3.A.A.B: rejected kind chan",
+				"diamond3.A.B.A: rejected kind chan",
+				"diamond3.A.B.B: rejected kind chan",
+				"diamond3.B.A.A: rejected kind chan",
+				"diamond3.B.A.B: rejected kind chan",
+				"diamond3.B.B.A: rejected kind chan",
+				"diamond3.B.B.B: rejected kind chan",
+			},
+		},
+		{
+			name: "[Fail] When: user types define one or more encoding methods ; Should: report each method",
+			typ:  reflect.TypeFor[ownEncodingState](),
 			wantInMsg: []string{
 				"ownEncodingState.MJ: defines its own encoding with MarshalJSON",
 				"ownEncodingState.UJ: defines its own encoding with UnmarshalJSON",
@@ -467,37 +558,31 @@ func Test_checkState(t *testing.T) {
 		{
 			name:      "[Fail] When: the root type defines its own encoding ; Should: report the root",
 			typ:       reflect.TypeOf(encodingRoot{N: 1}),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"encodingRoot: defines its own encoding with MarshalJSON"},
 		},
 		{
-			name:      "[Fail] When: the root type is time.Time ; Should: report a standard library type",
+			name:      "[Fail] When: the root type is time.Time ; Should: report its MarshalJSON method",
 			typ:       reflect.TypeFor[time.Time](),
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"Time: standard library type time.Time"},
+			wantInMsg: []string{"Time: defines its own encoding with MarshalJSON"},
 		},
 		{
 			name:      "[Fail] When: two bad fields ; Should: report both paths in field order",
 			typ:       reflect.TypeFor[twoBadState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"twoBadState.A: rejected kind func", "twoBadState.B: rejected kind chan"},
 		},
 		{
 			name:      "[Fail] When: the same bad type in two fields ; Should: report it under both paths",
 			typ:       reflect.TypeFor[sameBadState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"sameBadState.A.C: rejected kind chan", "sameBadState.B.C: rejected kind chan"},
 		},
 		{
 			name:      "[Fail] When: a pointer to a bad type ; Should: report the path through the pointer",
 			typ:       reflect.TypeFor[ptrBadState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"ptrBadState.P.C: rejected kind chan"},
 		},
 		{
 			name:      "[Fail] When: a slice of chan ; Should: report the element path",
 			typ:       reflect.TypeFor[badElemState](),
-			wantErr:   ErrInvalidState,
 			wantInMsg: []string{"badElemState.S[]: rejected kind chan"},
 		},
 	}
@@ -507,14 +592,52 @@ func Test_checkState(t *testing.T) {
 			t.Parallel()
 
 			err := checkState(tt.typ)
-			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, len(tt.wantInMsg) > 0, errors.Is(err, ErrInvalidState), err)
 
-			msg := ""
-			if err != nil {
-				msg = err.Error()
-			}
-
+			msg := errText(err)
 			assertInOrder(t, msg, tt.wantInMsg)
+			assert.Equal(t, len(tt.wantInMsg), strings.Count(msg, ErrInvalidState.Error()), msg)
+		})
+	}
+}
+
+func Test_typeWalk_walk(t *testing.T) {
+	t.Parallel()
+
+	const chanRule = "rejected kind chan"
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want []offense
+	}{
+		{
+			name: "[Success] When: a recursive type ; Should: return no offense",
+			typ:  reflect.TypeFor[node](),
+		},
+		{
+			name: "[Fail] When: one bad type in two fields ; Should: return it under both relative paths",
+			typ:  reflect.TypeFor[sameBadState](),
+			want: []offense{{path: ".A.C", rule: chanRule}, {path: ".B.C", rule: chanRule}},
+		},
+		{
+			name: "[Fail] When: two mutually recursive bad types from two fields ; Should: return every path",
+			typ:  reflect.TypeFor[mutualState](),
+			want: []offense{
+				{path: ".B.A.X", rule: chanRule},
+				{path: ".B.Y", rule: chanRule},
+				{path: ".A.B.Y", rule: chanRule},
+				{path: ".A.X", rule: chanRule},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := typeWalk{onPath: map[reflect.Type]bool{}, done: map[reflect.Type][]offense{}}
+			assert.Equal(t, tt.want, w.walk(tt.typ))
 		})
 	}
 }
@@ -609,246 +732,10 @@ func Test_definesEncoding(t *testing.T) {
 	}
 }
 
-func Test_isStandardPath(t *testing.T) {
-	t.Parallel()
-
-	const app = "myapp"
-
-	modules := buildModules{known: true, paths: []string{app, "example.com/lib"}}
-	emptyMain := buildModules{known: true, paths: []string{}}
-	tests := []struct {
-		name    string
-		path    string
-		modules buildModules
-		want    stdAnswer
-	}{
-		{
-			name:    "[Success] When: time ; Should: be standard",
-			path:    "time",
-			modules: modules,
-			want:    standard,
-		},
-		{
-			name:    "[Success] When: net/netip ; Should: be standard",
-			path:    "net/netip",
-			modules: modules,
-			want:    standard,
-		},
-		{
-			name:    "[Success] When: a path under no module ; Should: be standard",
-			path:    "example.com/other",
-			modules: modules,
-			want:    standard,
-		},
-		{
-			name:    "[Success] When: a module path prefix without a slash ; Should: be standard",
-			path:    "myappx",
-			modules: modules,
-			want:    standard,
-		},
-		{
-			name:    "[Fail] When: the empty path ; Should: not be standard",
-			path:    "",
-			modules: modules,
-			want:    notStandard,
-		},
-		{
-			name:    "[Fail] When: main ; Should: not be standard",
-			path:    "main",
-			modules: modules,
-			want:    notStandard,
-		},
-		{
-			name:    "[Fail] When: the dotless main module ; Should: not be standard",
-			path:    app,
-			modules: modules,
-			want:    notStandard,
-		},
-		{
-			name:    "[Fail] When: a package of the dotless module ; Should: not be standard",
-			path:    app + "/state",
-			modules: modules,
-			want:    notStandard,
-		},
-		{
-			name:    "[Fail] When: a package of a dependency ; Should: not be standard",
-			path:    "example.com/lib/x",
-			modules: modules,
-			want:    notStandard,
-		},
-		{
-			name: "[Success] When: no build info and time ; Should: be unsure",
-			path: "time",
-			want: maybeStandard,
-		},
-		{
-			name: "[Success] When: no build info and a dotless path ; Should: be unsure",
-			path: app,
-			want: maybeStandard,
-		},
-		{
-			name: "[Fail] When: no build info and a dotted path ; Should: not be standard",
-			path: "example.com/lib",
-			want: notStandard,
-		},
-		{
-			name: "[Fail] When: no build info and main ; Should: not be standard",
-			path: "main",
-			want: notStandard,
-		},
-		{
-			name:    "[Success] When: build info with an empty main path and time ; Should: be standard",
-			path:    "time",
-			modules: emptyMain,
-			want:    standard,
-		},
-		{
-			name:    "[Success] When: build info with an empty main path and a dotless path ; Should: be standard",
-			path:    app,
-			modules: emptyMain,
-			want:    standard,
-		},
-		{
-			name:    "[Fail] When: build info with an empty main path and main ; Should: not be standard",
-			path:    "main",
-			modules: emptyMain,
-			want:    notStandard,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, isStandardPath(tt.path, tt.modules))
-		})
-	}
-}
-
-func Test_standardRule(t *testing.T) {
-	t.Parallel()
-
-	modules := buildModules{known: true, paths: []string{"github.com/rilder-almeida/sagas"}}
-	tests := []struct {
-		name    string
-		typ     reflect.Type
-		modules buildModules
-		want    string
-	}{
-		{
-			name:    "[Success] When: a predeclared type ; Should: return no rule",
-			typ:     reflect.TypeFor[int](),
-			modules: modules,
-		},
-		{
-			name:    "[Success] When: a type of the main module ; Should: return no rule",
-			typ:     reflect.TypeFor[userInt](),
-			modules: modules,
-		},
-		{
-			name: "[Success] When: no build info and a dotted package path ; Should: return no rule",
-			typ:  reflect.TypeFor[userInt](),
-		},
-		{
-			name:    "[Fail] When: a standard library type ; Should: name it as a standard library type",
-			typ:     reflect.TypeFor[time.Duration](),
-			modules: modules,
-			want:    "standard library type time.Duration",
-		},
-		{
-			name:    "[Fail] When: build info with an empty main path ; Should: name a standard library type",
-			typ:     reflect.TypeFor[time.Duration](),
-			modules: buildModules{known: true, paths: []string{}},
-			want:    "standard library type time.Duration",
-		},
-		{
-			name: "[Fail] When: no build info and a dotless package path ; Should: say it cannot tell",
-			typ:  reflect.TypeFor[time.Duration](),
-			want: "cannot tell whether time.Duration is a standard library type without build info: " +
-				"give the module a dotted path such as example.com/myapp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, standardRule(tt.typ, tt.modules))
-		})
-	}
-}
-
-func Test_modulePaths(t *testing.T) {
-	t.Parallel()
-
-	const (
-		app  = "myapp"
-		depA = "example.com/a"
-	)
-
-	tests := []struct {
-		name string
-		info *debug.BuildInfo
-		want buildModules
-	}{
-		{
-			name: "[Success] When: no build info ; Should: return no paths",
-		},
-		{
-			name: "[Success] When: only the main module ; Should: return its path",
-			info: &debug.BuildInfo{Main: debug.Module{Path: app}},
-			want: buildModules{known: true, paths: []string{app}},
-		},
-		{
-			name: "[Success] When: the main module and dependencies ; Should: return every path in order",
-			info: &debug.BuildInfo{
-				Main: debug.Module{Path: app},
-				Deps: []*debug.Module{{Path: depA}, {Path: "example.com/b"}},
-			},
-			want: buildModules{known: true, paths: []string{app, depA, "example.com/b"}},
-		},
-		{
-			name: "[Success] When: a replaced dependency ; Should: return its original path",
-			info: &debug.BuildInfo{
-				Main: debug.Module{Path: app},
-				Deps: []*debug.Module{{Path: depA, Replace: &debug.Module{Path: "../fork"}}},
-			},
-			want: buildModules{known: true, paths: []string{app, depA}},
-		},
-		{
-			name: "[Success] When: build info with an empty main path ; Should: know it and return no paths",
-			info: &debug.BuildInfo{},
-			want: buildModules{known: true, paths: []string{}},
-		},
-		{
-			name: "[Success] When: an empty main path and a dependency ; Should: return the dependency only",
-			info: &debug.BuildInfo{Deps: []*debug.Module{{Path: depA}}},
-			want: buildModules{known: true, paths: []string{depA}},
-		},
-		{
-			name: "[Success] When: a dependency with an empty path ; Should: ignore it",
-			info: &debug.BuildInfo{
-				Main: debug.Module{Path: app},
-				Deps: []*debug.Module{{Path: ""}, {Path: depA}},
-			},
-			want: buildModules{known: true, paths: []string{app, depA}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, modulePaths(tt.info))
-		})
-	}
-}
-
 func Test_checkState_roundTrip(t *testing.T) {
 	t.Parallel()
 
 	seats := 3
-	seatsPtr := &seats
 	tests := []struct {
 		name  string
 		value any
@@ -874,7 +761,6 @@ func Test_checkState_roundTrip(t *testing.T) {
 				MI:        map[int64]string{math.MinInt64: "min", 1: "one"},
 				MU:        map[uint8]bool{255: true},
 				Ptr:       &seats,
-				PP:        &seatsPtr,
 				Bytes:     []byte{0, 1, 255},
 				Nested:    innerState{N: 4},
 				NestedPtr: &innerState{N: 5},
@@ -887,6 +773,14 @@ func Test_checkState_roundTrip(t *testing.T) {
 				EmptySlice: []int{},
 				EmptyMap:   map[string]int{},
 			},
+		},
+		{
+			name:  "[Success] When: a time.Month ; Should: round-trip unchanged",
+			value: monthState{M: time.December},
+		},
+		{
+			name:  "[Success] When: an image.Point ; Should: round-trip unchanged",
+			value: pointState{P: image.Point{X: -3, Y: math.MaxInt}},
 		},
 		{
 			name:  "[Success] When: a recursive value ; Should: round-trip unchanged",
@@ -1058,28 +952,32 @@ func Test_decodeTarget(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		dst     any
-		wantErr error
+		name      string
+		dst       any
+		wantErr   error
+		wantInMsg []string
 	}{
 		{
 			name: "[Success] When: the destination is a non-nil pointer ; Should: return it",
 			dst:  &encodeFixture{},
 		},
 		{
-			name:    "[Fail] When: the destination is nil ; Should: return ErrInvalidState",
-			dst:     nil,
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: the destination is nil ; Should: return ErrInvalidState, name the field",
+			dst:       nil,
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid + "decode destination <nil>"},
 		},
 		{
-			name:    "[Fail] When: the destination is not a pointer ; Should: return ErrInvalidState",
-			dst:     encodeFixture{},
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: the destination is not a pointer ; Should: return ErrInvalidState, name the field",
+			dst:       encodeFixture{},
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid + "decode destination sagas.encodeFixture"},
 		},
 		{
-			name:    "[Fail] When: the destination is a nil pointer ; Should: return ErrInvalidState",
-			dst:     (*encodeFixture)(nil),
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: the destination is a nil pointer ; Should: return ErrInvalidState, name the field",
+			dst:       (*encodeFixture)(nil),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid + "decode destination *sagas.encodeFixture"},
 		},
 	}
 
@@ -1087,8 +985,9 @@ func Test_decodeTarget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := decodeTarget(tt.dst)
+			got, err := decodeTarget("Value", tt.dst)
 			require.ErrorIs(t, err, tt.wantErr)
+			assertInOrder(t, errText(err), tt.wantInMsg)
 
 			if err == nil {
 				assert.Same(t, tt.dst, got.Interface())
@@ -1119,6 +1018,9 @@ type testState struct {
 const (
 	valueInvalid = "sagas: invalid state: Value: "
 	seatsField   = "Seats"
+	chargeField  = "Charge"
+	itemsField   = "Items"
+	linkField    = "Link"
 	firstStep    = "reserve"
 	secondStep   = "charge"
 	probeStep    = "probe"
@@ -1228,6 +1130,51 @@ func Test_newStore(t *testing.T) {
 			require.NoError(t, st.writeBack(&got))
 			assert.Equal(t, tt.initial, got)
 			assertMoved(t, st, st.snapshot(), nil)
+		})
+	}
+}
+
+func storeErr[S any](initial S) func() (any, error) {
+	return func() (any, error) {
+		st, err := newStore(initial)
+
+		return st, err
+	}
+}
+
+func Test_newStore_invalidType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		create    func() (any, error)
+		wantInMsg string
+	}{
+		{
+			name:      "[Fail] When: the state has a chan field ; Should: return ErrInvalidState and no store",
+			create:    storeErr(chanState{C: make(chan int)}),
+			wantInMsg: "sagas: invalid state: chanState.C: rejected kind chan",
+		},
+		{
+			name:      "[Fail] When: the state has an unexported field ; Should: return ErrInvalidState and no store",
+			create:    storeErr(outer{Inner: secretInner{secret: 1}}),
+			wantInMsg: "sagas: invalid state: outer.Inner.secret: unexported field",
+		},
+		{
+			name:      "[Fail] When: the state has a **int field ; Should: return ErrInvalidState and no store",
+			create:    storeErr(ptrPtrState{}),
+			wantInMsg: "sagas: invalid state: ptrPtrState.P: pointer to a pointer, slice or map",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st, err := tt.create()
+			require.ErrorIs(t, err, ErrInvalidState)
+			assert.Equal(t, tt.wantInMsg, err.Error())
+			assert.Nil(t, st)
 		})
 	}
 }
@@ -1408,7 +1355,7 @@ func Test_store_commit(t *testing.T) {
 
 	tests := []struct {
 		name                     string
-		firstMutate              func(*testState)
+		earlier                  []func(*testState)
 		secondMutate             func(*testState)
 		secondSnapshotAfterFirst bool
 		wantChanged              []string
@@ -1419,10 +1366,10 @@ func Test_store_commit(t *testing.T) {
 	}{
 		{
 			name:         "[Success] When: parallel snapshots change disjoint fields ; Should: commit both",
-			firstMutate:  reserved,
+			earlier:      []func(*testState){reserved},
 			secondMutate: func(s *testState) { s.Charge.Total = 10 },
-			wantChanged:  []string{"Charge"},
-			wantMoved:    []string{seatsField, "Charge"},
+			wantChanged:  []string{chargeField},
+			wantMoved:    []string{seatsField, chargeField},
 			wantState: func() testState {
 				s := committed
 				s.Charge.Total = 10
@@ -1432,7 +1379,7 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:         "[Fail] When: parallel snapshots change one field ; Should: return ErrConflict, both steps",
-			firstMutate:  reserved,
+			earlier:      []func(*testState){reserved},
 			secondMutate: func(s *testState) { s.Seats = 6 },
 			wantErr:      ErrConflict,
 			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
@@ -1441,7 +1388,7 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:                     "[Success] When: the same field changes in sequence ; Should: commit both",
-			firstMutate:              reserved,
+			earlier:                  []func(*testState){reserved},
 			secondMutate:             func(s *testState) { s.Seats = 6 },
 			secondSnapshotAfterFirst: true,
 			wantChanged:              []string{seatsField},
@@ -1454,8 +1401,8 @@ func Test_store_commit(t *testing.T) {
 			}(),
 		},
 		{
-			name:        "[Fail] When: a conflict and a free change in one commit ; Should: write neither",
-			firstMutate: reserved,
+			name:    "[Fail] When: a conflict and a free change in one commit ; Should: write neither",
+			earlier: []func(*testState){reserved},
 			secondMutate: func(s *testState) {
 				s.Items = append(s.Items, "x")
 				s.Seats = 6
@@ -1467,7 +1414,7 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:         "[Success] When: the attempt changes nothing ; Should: return an empty list, keep versions",
-			firstMutate:  reserved,
+			earlier:      []func(*testState){reserved},
 			secondMutate: func(*testState) {},
 			wantChanged:  []string{},
 			wantMoved:    []string{seatsField},
@@ -1475,15 +1422,15 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name: "[Success] When: float, map, nil slice and time change in parallel ; Should: never conflict",
-			firstMutate: func(s *testState) {
+			earlier: []func(*testState){func(s *testState) {
 				s.Charge.Total = 2.5
 				s.Tags["g"] = 7
 				s.Items = append(s.Items, "x")
 				s.At++
-			},
+			}},
 			secondMutate: func(s *testState) { s.Link = &linkState{} },
-			wantChanged:  []string{"Link"},
-			wantMoved:    []string{"Charge", "Tags", "Items", "At", "Link"},
+			wantChanged:  []string{linkField},
+			wantMoved:    []string{chargeField, "Tags", itemsField, "At", linkField},
 			wantState: func() testState {
 				s := baseState()
 				s.Charge.Total = 2.5
@@ -1496,8 +1443,8 @@ func Test_store_commit(t *testing.T) {
 			}(),
 		},
 		{
-			name:        "[Fail] When: the second step writes NaN ; Should: return ErrInvalidState, name the path",
-			firstMutate: func(s *testState) { s.Tags["a"] = 10 },
+			name:    "[Fail] When: the second step writes NaN ; Should: return ErrInvalidState, name the path",
+			earlier: []func(*testState){func(s *testState) { s.Tags["a"] = 10 }},
 			secondMutate: func(s *testState) {
 				s.Seats = 6
 				s.Charge.Total = math.NaN()
@@ -1514,16 +1461,58 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:         "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
-			firstMutate:  reserved,
+			earlier:      []func(*testState){reserved},
 			secondMutate: func(s *testState) { s.Items = []string{} },
-			wantChanged:  []string{"Items"},
-			wantMoved:    []string{seatsField, "Items"},
+			wantChanged:  []string{itemsField},
+			wantMoved:    []string{seatsField, itemsField},
 			wantState: func() testState {
 				s := committed
 				s.Items = []string{}
 
 				return s
 			}(),
+		},
+		{
+			name:    "[Success] When: three fields change out of order ; Should: list them in declaration order",
+			earlier: []func(*testState){reserved},
+			secondMutate: func(s *testState) {
+				s.Link = &linkState{}
+				s.Items = []string{"x"}
+				s.Charge.Total = 10
+			},
+			secondSnapshotAfterFirst: true,
+			wantChanged:              []string{chargeField, itemsField, linkField},
+			wantMoved:                []string{chargeField, itemsField, linkField},
+			wantState: func() testState {
+				s := committed
+				s.Charge.Total = 10
+				s.Items = []string{"x"}
+				s.Link = &linkState{}
+
+				return s
+			}(),
+		},
+		{
+			name:         "[Fail] When: a field goes A to B to A after the snapshot ; Should: return ErrConflict",
+			earlier:      []func(*testState){reserved, func(s *testState) { s.Seats = 2 }},
+			secondMutate: func(s *testState) { s.Seats = 6 },
+			wantErr:      ErrConflict,
+			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
+			wantMoved:    []string{seatsField},
+			wantState:    baseState(),
+		},
+		{
+			name:    "[Fail] When: the second step makes Link a self-loop ; Should: return ErrInvalidState, no write",
+			earlier: []func(*testState){reserved},
+			secondMutate: func(s *testState) {
+				s.Seats = 6
+				s.Link = &linkState{}
+				s.Link.Next = s.Link
+			},
+			secondSnapshotAfterFirst: true,
+			wantErr:                  ErrInvalidState,
+			wantInMsg:                []string{"sagas: invalid state: Link: "},
+			wantState:                committed,
 		},
 	}
 
@@ -1535,13 +1524,17 @@ func Test_store_commit(t *testing.T) {
 			require.NoError(t, err)
 
 			early := st.snapshot()
-			first, err := copyState(early)
-			require.NoError(t, err)
 
-			tt.firstMutate(first)
+			for _, mutate := range tt.earlier {
+				snap := st.snapshot()
+				attempt, copyErr := copyState(snap)
+				require.NoError(t, copyErr)
 
-			_, err = st.commit(firstStep, early, *first)
-			require.NoError(t, err)
+				mutate(attempt)
+
+				_, commitErr := st.commit(firstStep, snap, *attempt)
+				require.NoError(t, commitErr)
+			}
 
 			second := early
 			if tt.secondSnapshotAfterFirst {

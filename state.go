@@ -2,13 +2,13 @@ package sagas
 
 import (
 	"bytes"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"reflect"
-	"runtime/debug"
 	"slices"
-	"strings"
+	"time"
 )
 
 var (
@@ -18,14 +18,15 @@ var (
 	ErrConflict = errors.New("sagas: state conflict")
 )
 
-type typeWalk struct {
-	onPath  map[reflect.Type]bool
-	modules buildModules
+type offense struct {
+	path string
+	rule string
 }
 
-type buildModules struct {
-	known bool
-	paths []string
+type typeWalk struct {
+	onPath map[reflect.Type]bool
+	done   map[reflect.Type][]offense
+	cut    bool
 }
 
 func checkState(t reflect.Type) error {
@@ -38,10 +39,15 @@ func checkState(t reflect.Type) error {
 		return fmt.Errorf("%w: %s: not a struct", ErrInvalidState, name)
 	}
 
-	info, _ := debug.ReadBuildInfo()
-	w := typeWalk{onPath: map[reflect.Type]bool{}, modules: modulePaths(info)}
+	w := typeWalk{onPath: map[reflect.Type]bool{}, done: map[reflect.Type][]offense{}}
+	offenses := w.walk(t)
 
-	return errors.Join(w.walk(t, name)...)
+	errs := make([]error, 0, len(offenses))
+	for _, o := range offenses {
+		errs = append(errs, fmt.Errorf("%w: %s%s: %s", ErrInvalidState, name, o.path, o.rule))
+	}
+
+	return errors.Join(errs...)
 }
 
 func encodeField(name string, v any) ([]byte, error) {
@@ -59,20 +65,14 @@ func encodeField(name string, v any) ([]byte, error) {
 }
 
 func decodeField(name string, data []byte, v any) error {
-	dst, err := decodeTarget(v)
+	dst, err := decodeTarget(name, v)
 	if err != nil {
 		return err
 	}
 
 	fresh := reflect.New(dst.Type().Elem())
 
-	err = json.Unmarshal(
-		data,
-		fresh.Interface(),
-		json.Deterministic(true),
-		json.FormatNilSliceAsNull(true),
-		json.FormatNilMapAsNull(true),
-	)
+	err = json.Unmarshal(data, fresh.Interface())
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrInvalidState, name, err)
 	}
@@ -82,30 +82,50 @@ func decodeField(name string, data []byte, v any) error {
 	return nil
 }
 
-func decodeTarget(v any) (reflect.Value, error) {
+func decodeTarget(name string, v any) (reflect.Value, error) {
 	dst := reflect.ValueOf(v)
 	if dst.Kind() != reflect.Pointer || dst.IsNil() {
-		return reflect.Value{}, fmt.Errorf("%w: decode destination %T is not a non-nil pointer", ErrInvalidState, v)
+		return reflect.Value{}, fmt.Errorf("%w: %s: decode destination %T is not a non-nil pointer",
+			ErrInvalidState, name, v)
 	}
 
 	return dst, nil
 }
 
-func (w *typeWalk) walk(t reflect.Type, path string) []error {
+func (w *typeWalk) walk(t reflect.Type) []offense {
 	if w.onPath[t] {
+		w.cut = true
+
 		return nil
 	}
 
-	if rule := standardRule(t, w.modules); rule != "" {
-		return []error{invalidAt(path, rule)}
+	if offenses, found := w.done[t]; found {
+		return offenses
+	}
+
+	outerCut := w.cut
+	w.cut = false
+	w.onPath[t] = true
+	offenses := w.rules(t)
+	delete(w.onPath, t)
+
+	if !w.cut {
+		w.done[t] = offenses
+	}
+
+	w.cut = w.cut || outerCut
+
+	return offenses
+}
+
+func (w *typeWalk) rules(t reflect.Type) []offense {
+	if t == reflect.TypeFor[time.Duration]() || t == reflect.TypeFor[jsontext.Value]() {
+		return []offense{{rule: "rejected type " + t.String()}}
 	}
 
 	if method := definesEncoding(t); method != "" {
-		return []error{invalidAt(path, "defines its own encoding with "+method)}
+		return []offense{{rule: "defines its own encoding with " + method}}
 	}
-
-	w.onPath[t] = true
-	defer delete(w.onPath, t)
 
 	switch t.Kind() {
 	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -114,54 +134,66 @@ func (w *typeWalk) walk(t reflect.Type, path string) []error {
 		return nil
 	case reflect.Invalid, reflect.Uintptr, reflect.Complex64, reflect.Complex128, reflect.Chan, reflect.Func,
 		reflect.Interface, reflect.UnsafePointer:
-		return []error{invalidAt(path, "rejected kind "+t.Kind().String())}
+		return []offense{{rule: "rejected kind " + t.Kind().String()}}
 	case reflect.Array, reflect.Slice:
-		return w.walk(t.Elem(), path+"[]")
+		return under(nil, "[]", w.walk(t.Elem()))
 	case reflect.Pointer:
-		return w.walk(t.Elem(), path)
+		return w.walkPointer(t)
 	case reflect.Map:
-		return w.walkMap(t, path)
+		return w.walkMap(t)
 	case reflect.Struct:
-		return w.walkStruct(t, path)
+		return w.walkStruct(t)
 	}
 
 	return nil
 }
 
-func (w *typeWalk) walkMap(t reflect.Type, path string) []error {
-	var errs []error
-	if isMapKeyKind(t.Key().Kind()) {
-		errs = w.walk(t.Key(), path+"[key]")
-	} else {
-		errs = []error{invalidAt(path+"[key]", "map key must be a string or an integer")}
+func (w *typeWalk) walkPointer(t reflect.Type) []offense {
+	if kind := t.Elem().Kind(); kind == reflect.Pointer || kind == reflect.Slice || kind == reflect.Map {
+		return []offense{{rule: "pointer to a pointer, slice or map"}}
 	}
 
-	return append(errs, w.walk(t.Elem(), path+"[value]")...)
+	return w.walk(t.Elem())
 }
 
-func (w *typeWalk) walkStruct(t reflect.Type, path string) []error {
-	var errs []error
+func (w *typeWalk) walkMap(t reflect.Type) []offense {
+	var offenses []offense
+	if isMapKeyKind(t.Key().Kind()) {
+		offenses = under(offenses, "[key]", w.walk(t.Key()))
+	} else {
+		offenses = append(offenses, offense{path: "[key]", rule: "map key must be a string or an integer"})
+	}
+
+	return under(offenses, "[value]", w.walk(t.Elem()))
+}
+
+func (w *typeWalk) walkStruct(t reflect.Type) []offense {
+	var offenses []offense
 
 	for field := range t.Fields() {
-		fieldPath := path + "." + field.Name
+		path := "." + field.Name
 
 		switch {
 		case field.Anonymous:
-			errs = append(errs, invalidAt(fieldPath, "embedded field"))
+			offenses = append(offenses, offense{path: path, rule: "embedded field"})
 		case !field.IsExported():
-			errs = append(errs, invalidAt(fieldPath, "unexported field"))
+			offenses = append(offenses, offense{path: path, rule: "unexported field"})
 		case field.Tag != "":
-			errs = append(errs, invalidAt(fieldPath, "struct tag"))
+			offenses = append(offenses, offense{path: path, rule: "struct tag"})
 		default:
-			errs = append(errs, w.walk(field.Type, fieldPath)...)
+			offenses = under(offenses, path, w.walk(field.Type))
 		}
 	}
 
-	return errs
+	return offenses
 }
 
-func invalidAt(path, rule string) error {
-	return fmt.Errorf("%w: %s: %s", ErrInvalidState, path, rule)
+func under(dst []offense, prefix string, offenses []offense) []offense {
+	for _, o := range offenses {
+		dst = append(dst, offense{path: prefix + o.path, rule: o.rule})
+	}
+
+	return dst
 }
 
 func definesEncoding(t reflect.Type) string {
@@ -176,70 +208,6 @@ func definesEncoding(t reflect.Type) string {
 	}
 
 	return ""
-}
-
-func modulePaths(info *debug.BuildInfo) buildModules {
-	if info == nil {
-		return buildModules{}
-	}
-
-	paths := make([]string, 0, len(info.Deps)+1)
-	if info.Main.Path != "" {
-		paths = append(paths, info.Main.Path)
-	}
-
-	for _, dep := range info.Deps {
-		if dep.Path != "" {
-			paths = append(paths, dep.Path)
-		}
-	}
-
-	return buildModules{known: true, paths: paths}
-}
-
-type stdAnswer int
-
-const (
-	notStandard stdAnswer = iota
-	standard
-	maybeStandard
-)
-
-func standardRule(t reflect.Type, modules buildModules) string {
-	switch isStandardPath(t.PkgPath(), modules) {
-	case notStandard:
-		return ""
-	case standard:
-		return "standard library type " + t.String()
-	case maybeStandard:
-		return "cannot tell whether " + t.String() + " is a standard library type without build info: " +
-			"give the module a dotted path such as example.com/myapp"
-	}
-
-	return ""
-}
-
-func isStandardPath(pkgPath string, modules buildModules) stdAnswer {
-	if pkgPath == "" || pkgPath == "main" {
-		return notStandard
-	}
-
-	if !modules.known {
-		first, _, _ := strings.Cut(pkgPath, "/")
-		if strings.Contains(first, ".") {
-			return notStandard
-		}
-
-		return maybeStandard
-	}
-
-	for _, module := range modules.paths {
-		if pkgPath == module || strings.HasPrefix(pkgPath, module+"/") {
-			return notStandard
-		}
-	}
-
-	return standard
 }
 
 func isMapKeyKind(kind reflect.Kind) bool {
@@ -268,6 +236,10 @@ type store[S any] struct {
 }
 
 func newStore[S any](initial S) (*store[S], error) {
+	if err := checkState(reflect.TypeFor[S]()); err != nil {
+		return nil, err
+	}
+
 	fields, err := encodeFields(reflect.ValueOf(initial))
 	if err != nil {
 		return nil, err
@@ -328,7 +300,7 @@ func (s *store[S]) writeBack(dst *S) error {
 		return fmt.Errorf("%w: write-back destination is nil", ErrInvalidState)
 	}
 
-	out, err := copyState(s.snapshot())
+	out, err := copyState(snapshot[S]{fields: s.fields})
 	if err != nil {
 		return err
 	}
