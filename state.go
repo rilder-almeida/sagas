@@ -31,7 +31,8 @@ func checkState(t reflect.Type) error {
 		return fmt.Errorf("%w: %s: not a struct", ErrInvalidState, name)
 	}
 
-	w := typeWalk{onPath: map[reflect.Type]bool{}, modules: modulePaths()}
+	info, _ := debug.ReadBuildInfo()
+	w := typeWalk{onPath: map[reflect.Type]bool{}, modules: modulePaths(info)}
 
 	return errors.Join(w.walk(t, name)...)
 }
@@ -51,9 +52,16 @@ func encodeField(v any) ([]byte, error) {
 }
 
 func decodeField(data []byte, v any) error {
+	dst := reflect.ValueOf(v)
+	if dst.Kind() != reflect.Pointer || dst.IsNil() {
+		return fmt.Errorf("%w: decode destination %T is not a non-nil pointer", ErrInvalidState, v)
+	}
+
+	fresh := reflect.New(dst.Type().Elem())
+
 	err := json.Unmarshal(
 		data,
-		v,
+		fresh.Interface(),
 		json.Deterministic(true),
 		json.FormatNilSliceAsNull(true),
 		json.FormatNilMapAsNull(true),
@@ -61,6 +69,8 @@ func decodeField(data []byte, v any) error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidState, err)
 	}
+
+	dst.Elem().Set(fresh.Elem())
 
 	return nil
 }
@@ -70,8 +80,8 @@ func (w *typeWalk) walk(t reflect.Type, path string) []error {
 		return nil
 	}
 
-	if t.PkgPath() != "" && isStandardPath(t.PkgPath(), w.modules) {
-		return []error{invalidAt(path, "standard library type "+t.String())}
+	if rule := standardRule(t, w.modules); rule != "" {
+		return []error{invalidAt(path, rule)}
 	}
 
 	if method := definesEncoding(t); method != "" {
@@ -152,40 +162,68 @@ func definesEncoding(t reflect.Type) string {
 	return ""
 }
 
-func modulePaths() []string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
+func modulePaths(info *debug.BuildInfo) []string {
+	if info == nil {
 		return nil
 	}
 
 	paths := make([]string, 0, len(info.Deps)+1)
-	paths = append(paths, info.Main.Path)
+	if info.Main.Path != "" {
+		paths = append(paths, info.Main.Path)
+	}
 
 	for _, dep := range info.Deps {
-		paths = append(paths, dep.Path)
+		if dep.Path != "" {
+			paths = append(paths, dep.Path)
+		}
 	}
 
 	return paths
 }
 
-func isStandardPath(pkgPath string, modules []string) bool {
+type stdAnswer int
+
+const (
+	notStandard stdAnswer = iota
+	standard
+	maybeStandard
+)
+
+func standardRule(t reflect.Type, modules []string) string {
+	switch isStandardPath(t.PkgPath(), modules) {
+	case notStandard:
+		return ""
+	case standard:
+		return "standard library type " + t.String()
+	case maybeStandard:
+		return "cannot tell whether " + t.String() + " is a standard library type without build info: " +
+			"give the module a dotted path such as example.com/myapp"
+	}
+
+	return ""
+}
+
+func isStandardPath(pkgPath string, modules []string) stdAnswer {
 	if pkgPath == "" || pkgPath == "main" {
-		return false
+		return notStandard
 	}
 
 	if len(modules) == 0 {
 		first, _, _ := strings.Cut(pkgPath, "/")
+		if strings.Contains(first, ".") {
+			return notStandard
+		}
 
-		return !strings.Contains(first, ".")
+		return maybeStandard
 	}
 
 	for _, module := range modules {
 		if pkgPath == module || strings.HasPrefix(pkgPath, module+"/") {
-			return false
+			return notStandard
 		}
 	}
 
-	return true
+	return standard
 }
 
 func isMapKeyKind(kind reflect.Kind) bool {

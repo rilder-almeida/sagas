@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/netip"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,14 @@ type boolKeyState struct {
 
 type structKeyState struct {
 	M map[innerState]int
+}
+
+type stdKeyState struct {
+	M map[time.Duration]int
+}
+
+type ownEncodingKeyState struct {
+	M map[onlyMarshalText]int
 }
 
 type timeState struct {
@@ -390,6 +399,18 @@ func Test_checkState(t *testing.T) {
 			wantInMsg: []string{"structKeyState.M[key]: map key must be a string or an integer"},
 		},
 		{
+			name:      "[Fail] When: a map with a time.Duration key ; Should: report the key as standard library",
+			typ:       reflect.TypeFor[stdKeyState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"stdKeyState.M[key]: standard library type time.Duration"},
+		},
+		{
+			name:      "[Fail] When: a map key type with only MarshalText ; Should: report the key and the method",
+			typ:       reflect.TypeFor[ownEncodingKeyState](),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{"ownEncodingKeyState.M[key]: defines its own encoding with MarshalText"},
+		},
+		{
 			name:      "[Fail] When: a time.Time field ; Should: report a standard library type",
 			typ:       reflect.TypeFor[timeState](),
 			wantErr:   ErrInvalidState,
@@ -589,79 +610,88 @@ func Test_definesEncoding(t *testing.T) {
 func Test_isStandardPath(t *testing.T) {
 	t.Parallel()
 
-	modules := []string{"myapp", "example.com/lib"}
+	const app = "myapp"
+
+	modules := []string{app, "example.com/lib"}
 	tests := []struct {
 		name    string
 		path    string
 		modules []string
-		want    bool
+		want    stdAnswer
 	}{
 		{
 			name:    "[Success] When: time ; Should: be standard",
 			path:    "time",
 			modules: modules,
-			want:    true,
+			want:    standard,
 		},
 		{
 			name:    "[Success] When: net/netip ; Should: be standard",
 			path:    "net/netip",
 			modules: modules,
-			want:    true,
+			want:    standard,
 		},
 		{
 			name:    "[Success] When: a path under no module ; Should: be standard",
 			path:    "example.com/other",
 			modules: modules,
-			want:    true,
+			want:    standard,
 		},
 		{
 			name:    "[Success] When: a module path prefix without a slash ; Should: be standard",
 			path:    "myappx",
 			modules: modules,
-			want:    true,
+			want:    standard,
 		},
 		{
 			name:    "[Fail] When: the empty path ; Should: not be standard",
 			path:    "",
 			modules: modules,
+			want:    notStandard,
 		},
 		{
 			name:    "[Fail] When: main ; Should: not be standard",
 			path:    "main",
 			modules: modules,
+			want:    notStandard,
 		},
 		{
 			name:    "[Fail] When: the dotless main module ; Should: not be standard",
-			path:    "myapp",
+			path:    app,
 			modules: modules,
+			want:    notStandard,
 		},
 		{
 			name:    "[Fail] When: a package of the dotless module ; Should: not be standard",
-			path:    "myapp/state",
+			path:    app + "/state",
 			modules: modules,
+			want:    notStandard,
 		},
 		{
 			name:    "[Fail] When: a package of a dependency ; Should: not be standard",
 			path:    "example.com/lib/x",
 			modules: modules,
+			want:    notStandard,
 		},
 		{
-			name: "[Success] When: no build info and time ; Should: be standard",
+			name: "[Success] When: no build info and time ; Should: be unsure",
 			path: "time",
-			want: true,
+			want: maybeStandard,
 		},
 		{
-			name: "[Success] When: no build info and a dotless path ; Should: be standard",
-			path: "myapp",
-			want: true,
+			name: "[Success] When: no build info and a dotless path ; Should: be unsure",
+			path: app,
+			want: maybeStandard,
 		},
 		{
 			name: "[Fail] When: no build info and a dotted path ; Should: not be standard",
 			path: "example.com/lib",
+			want: notStandard,
 		},
 		{
 			name: "[Fail] When: no build info and main ; Should: not be standard",
 			path: "main",
+			want: notStandard,
 		},
 	}
 
@@ -670,6 +700,109 @@ func Test_isStandardPath(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, tt.want, isStandardPath(tt.path, tt.modules))
+		})
+	}
+}
+
+func Test_standardRule(t *testing.T) {
+	t.Parallel()
+
+	modules := []string{"github.com/rilder-almeida/sagas"}
+	tests := []struct {
+		name    string
+		typ     reflect.Type
+		modules []string
+		want    string
+	}{
+		{
+			name:    "[Success] When: a predeclared type ; Should: return no rule",
+			typ:     reflect.TypeFor[int](),
+			modules: modules,
+		},
+		{
+			name:    "[Success] When: a type of the main module ; Should: return no rule",
+			typ:     reflect.TypeFor[userInt](),
+			modules: modules,
+		},
+		{
+			name: "[Success] When: no build info and a dotted package path ; Should: return no rule",
+			typ:  reflect.TypeFor[userInt](),
+		},
+		{
+			name:    "[Fail] When: a standard library type ; Should: name it as a standard library type",
+			typ:     reflect.TypeFor[time.Duration](),
+			modules: modules,
+			want:    "standard library type time.Duration",
+		},
+		{
+			name: "[Fail] When: no build info and a dotless package path ; Should: say it cannot tell",
+			typ:  reflect.TypeFor[time.Duration](),
+			want: "cannot tell whether time.Duration is a standard library type without build info: " +
+				"give the module a dotted path such as example.com/myapp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, standardRule(tt.typ, tt.modules))
+		})
+	}
+}
+
+func Test_modulePaths(t *testing.T) {
+	t.Parallel()
+
+	const (
+		app  = "myapp"
+		depA = "example.com/a"
+	)
+
+	tests := []struct {
+		name string
+		info *debug.BuildInfo
+		want []string
+	}{
+		{
+			name: "[Success] When: no build info ; Should: return no paths",
+		},
+		{
+			name: "[Success] When: only the main module ; Should: return its path",
+			info: &debug.BuildInfo{Main: debug.Module{Path: app}},
+			want: []string{app},
+		},
+		{
+			name: "[Success] When: the main module and dependencies ; Should: return every path in order",
+			info: &debug.BuildInfo{
+				Main: debug.Module{Path: app},
+				Deps: []*debug.Module{{Path: depA}, {Path: "example.com/b"}},
+			},
+			want: []string{app, depA, "example.com/b"},
+		},
+		{
+			name: "[Success] When: a replaced dependency ; Should: return its original path",
+			info: &debug.BuildInfo{
+				Main: debug.Module{Path: app},
+				Deps: []*debug.Module{{Path: depA, Replace: &debug.Module{Path: "../fork"}}},
+			},
+			want: []string{app, depA},
+		},
+		{
+			name: "[Success] When: a dependency with an empty path ; Should: ignore it",
+			info: &debug.BuildInfo{
+				Main: debug.Module{Path: app},
+				Deps: []*debug.Module{{Path: ""}, {Path: depA}},
+			},
+			want: []string{app, depA},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, modulePaths(tt.info))
 		})
 	}
 }
@@ -806,9 +939,11 @@ func Test_encodeField(t *testing.T) {
 func Test_decodeField(t *testing.T) {
 	t.Parallel()
 
+	start := encodeFixture{NilSlice: []int{9}, NilMap: map[string]int{"z": 9}}
 	tests := []struct {
 		name    string
 		data    string
+		start   encodeFixture
 		want    encodeFixture
 		wantErr error
 	}{
@@ -818,13 +953,23 @@ func Test_decodeField(t *testing.T) {
 			want: encodeFixture{EmptySlice: []int{}, Ordered: map[string]int{"a": 1}},
 		},
 		{
-			name:    "[Fail] When: the bytes end before any member ; Should: return ErrInvalidState, write nothing",
+			name:  "[Success] When: the destination holds values the bytes omit ; Should: replace it whole",
+			data:  `{"Ordered":{"a":1}}`,
+			start: start,
+			want:  encodeFixture{Ordered: map[string]int{"a": 1}},
+		},
+		{
+			name:    "[Fail] When: the bytes end before any member ; Should: return ErrInvalidState, keep dst",
 			data:    `{`,
+			start:   start,
+			want:    start,
 			wantErr: ErrInvalidState,
 		},
 		{
-			name:    "[Fail] When: the first member has a wrong type ; Should: return ErrInvalidState, write nothing",
-			data:    `{"Ordered":"x"}`,
+			name:    "[Fail] When: a later member has a wrong type ; Should: return ErrInvalidState, keep dst",
+			data:    `{"EmptySlice":[1],"Ordered":"x"}`,
+			start:   start,
+			want:    start,
 			wantErr: ErrInvalidState,
 		},
 	}
@@ -833,11 +978,35 @@ func Test_decodeField(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var got encodeFixture
+			got := tt.start
 
 			err := decodeField([]byte(tt.data), &got)
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func Test_decodeField_badDestination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		dst  any
+	}{
+		{name: "[Fail] When: the destination is nil ; Should: return ErrInvalidState", dst: nil},
+		{name: "[Fail] When: the destination is not a pointer ; Should: return ErrInvalidState", dst: encodeFixture{}},
+		{
+			name: "[Fail] When: the destination is a nil pointer ; Should: return ErrInvalidState",
+			dst:  (*encodeFixture)(nil),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.ErrorIs(t, decodeField([]byte(`{}`), tt.dst), ErrInvalidState)
 		})
 	}
 }
