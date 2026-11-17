@@ -904,14 +904,14 @@ func Test_checkState_roundTrip(t *testing.T) {
 			typ := reflect.TypeOf(tt.value)
 			require.NoError(t, checkState(typ))
 
-			data, err := encodeField(tt.value)
+			data, err := encodeField("State", tt.value)
 			require.NoError(t, err)
 
 			got := reflect.New(typ)
-			require.NoError(t, decodeField(data, got.Interface()))
+			require.NoError(t, decodeField("State", data, got.Interface()))
 			assert.Equal(t, tt.value, got.Elem().Interface())
 
-			again, err := encodeField(got.Elem().Interface())
+			again, err := encodeField("State", got.Elem().Interface())
 			require.NoError(t, err)
 			assert.Equal(t, string(data), string(again))
 		})
@@ -936,10 +936,11 @@ func Test_encodeField(t *testing.T) {
 	loop.Next = loop
 
 	tests := []struct {
-		name    string
-		value   any
-		want    string
-		wantErr error
+		name      string
+		value     any
+		want      string
+		wantErr   error
+		wantInMsg []string
 	}{
 		{
 			name: "[Success] When: nil and empty containers and a map ; Should: keep nil as null and sort map keys",
@@ -950,14 +951,16 @@ func Test_encodeField(t *testing.T) {
 			want: `{"NilSlice":null,"EmptySlice":[],"NilMap":null,"Ordered":{"a":1,"b":2,"c":3}}`,
 		},
 		{
-			name:    "[Fail] When: the value is NaN ; Should: return ErrInvalidState and no bytes",
-			value:   math.NaN(),
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: the value is NaN ; Should: return ErrInvalidState and no bytes",
+			value:     math.NaN(),
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid},
 		},
 		{
-			name:    "[Fail] When: the value holds a pointer cycle ; Should: return ErrInvalidState and no bytes",
-			value:   loop,
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: the value holds a pointer cycle ; Should: return ErrInvalidState and no bytes",
+			value:     loop,
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid},
 		},
 	}
 
@@ -965,8 +968,10 @@ func Test_encodeField(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := encodeField(tt.value)
+			got, err := encodeField("Value", tt.value)
 			require.ErrorIs(t, err, tt.wantErr)
+			assertInOrder(t, errText(err), tt.wantInMsg)
+			assert.LessOrEqual(t, strings.Count(errText(err), ErrInvalidState.Error()), 1)
 			assert.Equal(t, tt.want, string(got))
 		})
 	}
@@ -977,11 +982,12 @@ func Test_decodeField(t *testing.T) {
 
 	start := encodeFixture{NilSlice: []int{9}, NilMap: map[string]int{"z": 9}}
 	tests := []struct {
-		name    string
-		data    string
-		start   encodeFixture
-		want    encodeFixture
-		wantErr error
+		name      string
+		data      string
+		start     encodeFixture
+		want      encodeFixture
+		wantErr   error
+		wantInMsg []string
 	}{
 		{
 			name: "[Success] When: null and empty containers ; Should: keep nil as nil and empty as empty",
@@ -995,18 +1001,20 @@ func Test_decodeField(t *testing.T) {
 			want:  encodeFixture{Ordered: map[string]int{"a": 1}},
 		},
 		{
-			name:    "[Fail] When: the bytes end before any member ; Should: return ErrInvalidState, keep dst",
-			data:    `{`,
-			start:   start,
-			want:    start,
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: the bytes end before any member ; Should: return ErrInvalidState, keep dst",
+			data:      `{`,
+			start:     start,
+			want:      start,
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid},
 		},
 		{
-			name:    "[Fail] When: a later member has a wrong type ; Should: return ErrInvalidState, keep dst",
-			data:    `{"EmptySlice":[1],"Ordered":"x"}`,
-			start:   start,
-			want:    start,
-			wantErr: ErrInvalidState,
+			name:      "[Fail] When: a later member has a wrong type ; Should: return ErrInvalidState, keep dst",
+			data:      `{"EmptySlice":[1],"Ordered":"x"}`,
+			start:     start,
+			want:      start,
+			wantErr:   ErrInvalidState,
+			wantInMsg: []string{valueInvalid},
 		},
 	}
 
@@ -1016,8 +1024,10 @@ func Test_decodeField(t *testing.T) {
 
 			got := tt.start
 
-			err := decodeField([]byte(tt.data), &got)
+			err := decodeField("Value", []byte(tt.data), &got)
 			require.ErrorIs(t, err, tt.wantErr)
+			assertInOrder(t, errText(err), tt.wantInMsg)
+			assert.LessOrEqual(t, strings.Count(errText(err), ErrInvalidState.Error()), 1)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -1086,8 +1096,11 @@ type testState struct {
 }
 
 const (
-	reserveStep = "reserve"
-	chargeStep  = "charge"
+	valueInvalid = "sagas: invalid state: Value: "
+	seatsField   = "Seats"
+	firstStep    = "reserve"
+	secondStep   = "charge"
+	probeStep    = "probe"
 )
 
 func baseState() testState {
@@ -1099,12 +1112,43 @@ func baseState() testState {
 	}
 }
 
+func probeState() testState {
+	return testState{
+		Seats:  -1,
+		Charge: chargeState{Total: -1},
+		Tags:   map[string]int{"probe": 1},
+		Items:  []string{"probe"},
+		At:     -1,
+		Link:   &linkState{Next: &linkState{}},
+	}
+}
+
 func errText(err error) string {
 	if err == nil {
 		return ""
 	}
 
 	return err.Error()
+}
+
+func assertMoved(t *testing.T, st *store[testState], snap snapshot[testState], want []string) {
+	t.Helper()
+
+	_, err := st.commit(probeStep, snap, probeState())
+	if len(want) == 0 {
+		require.NoError(t, err)
+
+		return
+	}
+
+	require.ErrorIs(t, err, ErrConflict)
+
+	msg := err.Error()
+	assert.Equal(t, len(want), strings.Count(msg, `changed by step "probe"`), msg)
+
+	for _, field := range want {
+		assert.Contains(t, msg, "field "+field+` changed by step "probe"`)
+	}
 }
 
 func Test_newStore(t *testing.T) {
@@ -1127,20 +1171,20 @@ func Test_newStore(t *testing.T) {
 		wantInMsg []string
 	}{
 		{
-			name:    "[Success] When: a valid state ; Should: hold every field at version 0",
+			name:    "[Success] When: a valid state ; Should: accept a commit of every field from its first snapshot",
 			initial: baseState(),
 		},
 		{
 			name:      "[Fail] When: a NaN at depth 2 ; Should: return ErrInvalidState that names the path",
 			initial:   nan,
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"field Charge", "Total"},
+			wantInMsg: []string{"sagas: invalid state: Charge: ", "Total"},
 		},
 		{
 			name:      "[Fail] When: a pointer cycle ; Should: return ErrInvalidState that names the field",
 			initial:   cycle,
 			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"field Link"},
+			wantInMsg: []string{"sagas: invalid state: Link: "},
 		},
 	}
 
@@ -1151,6 +1195,7 @@ func Test_newStore(t *testing.T) {
 			st, err := newStore(tt.initial)
 			require.ErrorIs(t, err, tt.wantErr)
 			assertInOrder(t, errText(err), tt.wantInMsg)
+			assert.LessOrEqual(t, strings.Count(errText(err), ErrInvalidState.Error()), 1)
 
 			if err != nil {
 				assert.Nil(t, st)
@@ -1161,7 +1206,7 @@ func Test_newStore(t *testing.T) {
 			var got testState
 			require.NoError(t, st.writeBack(&got))
 			assert.Equal(t, tt.initial, got)
-			assert.Equal(t, make([]uint64, reflect.TypeFor[testState]().NumField()), st.snapshot().versions)
+			assertMoved(t, st, st.snapshot(), nil)
 		})
 	}
 }
@@ -1220,62 +1265,92 @@ func Test_copyState(t *testing.T) {
 	assert.NotSame(t, base.SharedA, base.SharedB)
 
 	tests := []struct {
-		name      string
-		overrides map[string]string
-		mutate    func(*copyFixture)
-		want      *copyFixture
-		wantErr   error
+		name   string
+		mutate func(*copyFixture)
 	}{
 		{
 			name:   "[Success] When: the copy changes a scalar ; Should: leave the next copy unchanged",
 			mutate: func(c *copyFixture) { c.Scalar = 9 },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy appends to a nil slice ; Should: leave the next copy nil",
 			mutate: func(c *copyFixture) { c.NilSlice = append(c.NilSlice, 9) },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy appends to an empty slice ; Should: leave the next copy empty",
 			mutate: func(c *copyFixture) { c.EmptySlice = append(c.EmptySlice, 9) },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy sets a nil map ; Should: leave the next copy nil",
 			mutate: func(c *copyFixture) { c.NilMap = map[string]int{"x": 9} },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy writes an empty map ; Should: leave the next copy empty",
 			mutate: func(c *copyFixture) { c.EmptyMap["x"] = 9 },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy writes through a pointer ; Should: leave the next target unchanged",
 			mutate: func(c *copyFixture) { *c.Ptr = 9 },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy changes a nested struct ; Should: leave the next copy unchanged",
 			mutate: func(c *copyFixture) { c.Nested.N = 9 },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy changes a Unix nanosecond time ; Should: leave the next copy unchanged",
 			mutate: func(c *copyFixture) { c.At++ },
-			want:   new(newCopyFixture()),
 		},
 		{
 			name:   "[Success] When: the copy writes through a shared pointer ; Should: leave the next copy unchanged",
 			mutate: func(c *copyFixture) { c.SharedA.N = 9 },
-			want:   new(newCopyFixture()),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			snap := st.snapshot()
+
+			first, firstErr := copyState(snap)
+			require.NoError(t, firstErr)
+
+			tt.mutate(first)
+
+			second, secondErr := copyState(snap)
+			require.NoError(t, secondErr)
+			assert.Equal(t, newCopyFixture(), *second)
+		})
+	}
+}
+
+func Test_copyState_malformedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[copyFixture]()))
+
+	st, err := newStore(newCopyFixture())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		overrides map[string]string
+		wantInMsg []string
+	}{
+		{
+			name:      "[Fail] When: one field holds malformed bytes ; Should: return ErrInvalidState that names it",
+			overrides: map[string]string{"Nested": `{`},
+			wantInMsg: []string{"sagas: invalid state: Nested: "},
 		},
 		{
-			name:      "[Fail] When: the snapshot holds malformed bytes for one field ; Should: return ErrInvalidState",
-			overrides: map[string]string{"Nested": `{`},
-			mutate:    func(*copyFixture) {},
-			wantErr:   ErrInvalidState,
+			name:      "[Fail] When: one field holds JSON of the wrong type ; Should: return ErrInvalidState, name it",
+			overrides: map[string]string{"Scalar": `"x"`},
+			wantInMsg: []string{"sagas: invalid state: Scalar: "},
+		},
+		{
+			name:      "[Fail] When: two fields hold bad bytes ; Should: name both, the first field in front",
+			overrides: map[string]string{"Nested": `{`, "Scalar": `"x"`},
+			wantInMsg: []string{"sagas: invalid state: Scalar: ", "sagas: invalid state: Nested: "},
 		},
 	}
 
@@ -1292,14 +1367,11 @@ func Test_copyState(t *testing.T) {
 				snap.fields[field.Index[0]] = []byte(data)
 			}
 
-			first, firstErr := copyState(snap)
-			require.ErrorIs(t, firstErr, tt.wantErr)
-
-			tt.mutate(first)
-
-			second, secondErr := copyState(snap)
-			require.ErrorIs(t, secondErr, tt.wantErr)
-			assert.Equal(t, tt.want, second)
+			got, copyErr := copyState(snap)
+			require.ErrorIs(t, copyErr, ErrInvalidState)
+			assert.Nil(t, got)
+			assertInOrder(t, copyErr.Error(), tt.wantInMsg)
+			assert.Equal(t, len(tt.overrides), strings.Count(copyErr.Error(), ErrInvalidState.Error()))
 		})
 	}
 }
@@ -1309,33 +1381,29 @@ func Test_store_commit(t *testing.T) {
 
 	require.NoError(t, checkState(reflect.TypeFor[testState]()))
 
+	reserved := func(s *testState) { s.Seats = 5 }
 	committed := baseState()
-	committed.Seats = 5
+	reserved(&committed)
 
 	tests := []struct {
 		name                     string
-		firstStep                string
 		firstMutate              func(*testState)
-		secondStep               string
 		secondMutate             func(*testState)
 		secondSnapshotAfterFirst bool
 		wantChanged              []string
 		wantErr                  error
 		wantInMsg                []string
-		wantVersions             []uint64
+		wantMoved                []string
 		wantState                testState
 	}{
 		{
 			name:         "[Success] When: parallel snapshots change disjoint fields ; Should: commit both",
-			firstStep:    reserveStep,
-			firstMutate:  func(s *testState) { s.Seats = 5 },
-			secondStep:   chargeStep,
+			firstMutate:  reserved,
 			secondMutate: func(s *testState) { s.Charge.Total = 10 },
 			wantChanged:  []string{"Charge"},
-			wantVersions: []uint64{1, 1, 0, 0, 0, 0},
+			wantMoved:    []string{seatsField, "Charge"},
 			wantState: func() testState {
-				s := baseState()
-				s.Seats = 5
+				s := committed
 				s.Charge.Total = 10
 
 				return s
@@ -1343,24 +1411,20 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:         "[Fail] When: parallel snapshots change one field ; Should: return ErrConflict, both steps",
-			firstStep:    reserveStep,
-			firstMutate:  func(s *testState) { s.Seats = 5 },
-			secondStep:   chargeStep,
+			firstMutate:  reserved,
 			secondMutate: func(s *testState) { s.Seats = 6 },
 			wantErr:      ErrConflict,
 			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantVersions: []uint64{1, 0, 0, 0, 0, 0},
+			wantMoved:    []string{seatsField},
 			wantState:    committed,
 		},
 		{
 			name:                     "[Success] When: the same field changes in sequence ; Should: commit both",
-			firstStep:                reserveStep,
-			firstMutate:              func(s *testState) { s.Seats = 5 },
-			secondStep:               chargeStep,
+			firstMutate:              reserved,
 			secondMutate:             func(s *testState) { s.Seats = 6 },
 			secondSnapshotAfterFirst: true,
-			wantChanged:              []string{"Seats"},
-			wantVersions:             []uint64{2, 0, 0, 0, 0, 0},
+			wantChanged:              []string{seatsField},
+			wantMoved:                []string{seatsField},
 			wantState: func() testState {
 				s := baseState()
 				s.Seats = 6
@@ -1370,39 +1434,41 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:        "[Fail] When: a conflict and a free change in one commit ; Should: write neither",
-			firstStep:   reserveStep,
-			firstMutate: func(s *testState) { s.Seats = 5 },
-			secondStep:  chargeStep,
+			firstMutate: reserved,
 			secondMutate: func(s *testState) {
 				s.Items = append(s.Items, "x")
 				s.Seats = 6
 			},
-			wantErr:      ErrConflict,
-			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantVersions: []uint64{1, 0, 0, 0, 0, 0},
-			wantState:    committed,
+			wantErr:   ErrConflict,
+			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
+			wantMoved: []string{seatsField},
+			wantState: committed,
 		},
 		{
 			name:         "[Success] When: the attempt changes nothing ; Should: return an empty list, keep versions",
-			firstStep:    reserveStep,
-			firstMutate:  func(s *testState) { s.Seats = 5 },
-			secondStep:   chargeStep,
+			firstMutate:  reserved,
 			secondMutate: func(*testState) {},
 			wantChanged:  []string{},
-			wantVersions: []uint64{1, 0, 0, 0, 0, 0},
+			wantMoved:    []string{seatsField},
 			wantState:    committed,
 		},
 		{
-			name:         "[Success] When: float, map, nil slice and time stay untouched ; Should: never conflict",
-			firstStep:    reserveStep,
-			firstMutate:  func(s *testState) { s.Seats = 5 },
-			secondStep:   chargeStep,
+			name: "[Success] When: float, map, nil slice and time change in parallel ; Should: never conflict",
+			firstMutate: func(s *testState) {
+				s.Charge.Total = 2.5
+				s.Tags["g"] = 7
+				s.Items = append(s.Items, "x")
+				s.At++
+			},
 			secondMutate: func(s *testState) { s.Link = &linkState{} },
 			wantChanged:  []string{"Link"},
-			wantVersions: []uint64{1, 0, 0, 0, 0, 1},
+			wantMoved:    []string{"Charge", "Tags", "Items", "At", "Link"},
 			wantState: func() testState {
 				s := baseState()
-				s.Seats = 5
+				s.Charge.Total = 2.5
+				s.Tags["g"] = 7
+				s.Items = []string{"x"}
+				s.At++
 				s.Link = &linkState{}
 
 				return s
@@ -1410,30 +1476,29 @@ func Test_store_commit(t *testing.T) {
 		},
 		{
 			name:        "[Fail] When: the second step writes NaN ; Should: return ErrInvalidState, name the path",
-			firstStep:   reserveStep,
-			firstMutate: func(s *testState) { s.Seats = 5 },
-			secondStep:  chargeStep,
+			firstMutate: func(s *testState) { s.Tags["a"] = 10 },
 			secondMutate: func(s *testState) {
 				s.Seats = 6
 				s.Charge.Total = math.NaN()
 			},
 			secondSnapshotAfterFirst: true,
 			wantErr:                  ErrInvalidState,
-			wantInMsg:                []string{"field Charge", "Total"},
-			wantVersions:             []uint64{1, 0, 0, 0, 0, 0},
-			wantState:                committed,
+			wantInMsg:                []string{"sagas: invalid state: Charge: ", "Total"},
+			wantState: func() testState {
+				s := baseState()
+				s.Tags["a"] = 10
+
+				return s
+			}(),
 		},
 		{
 			name:         "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
-			firstStep:    reserveStep,
-			firstMutate:  func(s *testState) { s.Seats = 5 },
-			secondStep:   chargeStep,
+			firstMutate:  reserved,
 			secondMutate: func(s *testState) { s.Items = []string{} },
 			wantChanged:  []string{"Items"},
-			wantVersions: []uint64{1, 0, 0, 1, 0, 0},
+			wantMoved:    []string{seatsField, "Items"},
 			wantState: func() testState {
-				s := baseState()
-				s.Seats = 5
+				s := committed
 				s.Items = []string{}
 
 				return s
@@ -1454,7 +1519,7 @@ func Test_store_commit(t *testing.T) {
 
 			tt.firstMutate(first)
 
-			_, err = st.commit(tt.firstStep, early, *first)
+			_, err = st.commit(firstStep, early, *first)
 			require.NoError(t, err)
 
 			second := early
@@ -1467,15 +1532,16 @@ func Test_store_commit(t *testing.T) {
 
 			tt.secondMutate(attempt)
 
-			changed, err := st.commit(tt.secondStep, second, *attempt)
+			changed, err := st.commit(secondStep, second, *attempt)
 			require.ErrorIs(t, err, tt.wantErr)
 			assertInOrder(t, errText(err), tt.wantInMsg)
 			assert.Equal(t, tt.wantChanged, changed)
-			assert.Equal(t, tt.wantVersions, st.snapshot().versions)
 
 			var got testState
 			require.NoError(t, st.writeBack(&got))
 			assert.Equal(t, tt.wantState, got)
+
+			assertMoved(t, st, second, tt.wantMoved)
 		})
 	}
 }
@@ -1519,7 +1585,7 @@ func Test_store_writeBack(t *testing.T) {
 			require.NoError(t, err)
 
 			attempt.Seats = 5
-			_, err = st.commit(reserveStep, snap, *attempt)
+			_, err = st.commit(firstStep, snap, *attempt)
 			require.NoError(t, err)
 
 			require.ErrorIs(t, st.writeBack(tt.dst), tt.wantErr)
@@ -1530,7 +1596,7 @@ func Test_store_writeBack(t *testing.T) {
 
 			next.Seats = 7
 			next.Tags["a"] = 100
-			_, err = st.commit(chargeStep, later, *next)
+			_, err = st.commit(secondStep, later, *next)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.want, tt.dst)

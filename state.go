@@ -44,7 +44,7 @@ func checkState(t reflect.Type) error {
 	return errors.Join(w.walk(t, name)...)
 }
 
-func encodeField(v any) ([]byte, error) {
+func encodeField(name string, v any) ([]byte, error) {
 	data, err := json.Marshal(
 		v,
 		json.Deterministic(true),
@@ -52,13 +52,13 @@ func encodeField(v any) ([]byte, error) {
 		json.FormatNilMapAsNull(true),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidState, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrInvalidState, name, err)
 	}
 
 	return data, nil
 }
 
-func decodeField(data []byte, v any) error {
+func decodeField(name string, data []byte, v any) error {
 	dst, err := decodeTarget(v)
 	if err != nil {
 		return err
@@ -74,7 +74,7 @@ func decodeField(data []byte, v any) error {
 		json.FormatNilMapAsNull(true),
 	)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidState, err)
+		return fmt.Errorf("%w: %s: %w", ErrInvalidState, name, err)
 	}
 
 	dst.Elem().Set(fresh.Elem())
@@ -345,8 +345,8 @@ func copyState[S any](snap snapshot[S]) (*S, error) {
 
 	v := reflect.ValueOf(out).Elem()
 	for i, data := range snap.fields {
-		if err := decodeField(data, v.Field(i).Addr().Interface()); err != nil {
-			errs = append(errs, fmt.Errorf("field %s: %w", v.Type().Field(i).Name, err))
+		if err := decodeField(v.Type().Field(i).Name, data, v.Field(i).Addr().Interface()); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
@@ -363,9 +363,9 @@ func encodeFields(v reflect.Value) ([][]byte, error) {
 	var errs []error
 
 	for i := range fields {
-		data, err := encodeField(v.Field(i).Interface())
+		data, err := encodeField(v.Type().Field(i).Name, v.Field(i).Interface())
 		if err != nil {
-			errs = append(errs, fmt.Errorf("field %s: %w", v.Type().Field(i).Name, err))
+			errs = append(errs, err)
 		}
 
 		fields[i] = data
