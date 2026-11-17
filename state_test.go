@@ -592,7 +592,7 @@ func Test_checkState(t *testing.T) {
 			t.Parallel()
 
 			err := checkState(tt.typ)
-			assert.Equal(t, len(tt.wantInMsg) > 0, errors.Is(err, ErrInvalidState), err)
+			assertStateErr(t, len(tt.wantInMsg) > 0, err)
 
 			msg := errText(err)
 			assertInOrder(t, msg, tt.wantInMsg)
@@ -640,6 +640,13 @@ func Test_typeWalk_walk(t *testing.T) {
 			assert.Equal(t, tt.want, w.walk(tt.typ))
 		})
 	}
+}
+
+func assertStateErr(t *testing.T, wantInvalid bool, err error) {
+	t.Helper()
+
+	assert.Equal(t, wantInvalid, err != nil, err)
+	assert.Equal(t, wantInvalid, errors.Is(err, ErrInvalidState), err)
 }
 
 func assertInOrder(t *testing.T, msg string, parts []string) {
