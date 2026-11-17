@@ -3,6 +3,7 @@ package sagas
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"math"
 	"math/big"
 	"net/netip"
@@ -929,6 +930,18 @@ type cyclic struct {
 	Next *cyclic
 }
 
+func jsonCause(err error) reflect.Type {
+	if semantic, ok := errors.AsType[*json.SemanticError](err); ok {
+		return reflect.TypeOf(semantic)
+	}
+
+	if syntactic, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
+		return reflect.TypeOf(syntactic)
+	}
+
+	return nil
+}
+
 func Test_encodeField(t *testing.T) {
 	t.Parallel()
 
@@ -941,6 +954,7 @@ func Test_encodeField(t *testing.T) {
 		want      string
 		wantErr   error
 		wantInMsg []string
+		wantCause reflect.Type
 	}{
 		{
 			name: "[Success] When: nil and empty containers and a map ; Should: keep nil as null and sort map keys",
@@ -955,12 +969,14 @@ func Test_encodeField(t *testing.T) {
 			value:     math.NaN(),
 			wantErr:   ErrInvalidState,
 			wantInMsg: []string{valueInvalid},
+			wantCause: reflect.TypeFor[*json.SemanticError](),
 		},
 		{
 			name:      "[Fail] When: the value holds a pointer cycle ; Should: return ErrInvalidState and no bytes",
 			value:     loop,
 			wantErr:   ErrInvalidState,
 			wantInMsg: []string{valueInvalid},
+			wantCause: reflect.TypeFor[*json.SemanticError](),
 		},
 	}
 
@@ -970,6 +986,7 @@ func Test_encodeField(t *testing.T) {
 
 			got, err := encodeField("Value", tt.value)
 			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantCause, jsonCause(err))
 			assertInOrder(t, errText(err), tt.wantInMsg)
 			assert.LessOrEqual(t, strings.Count(errText(err), ErrInvalidState.Error()), 1)
 			assert.Equal(t, tt.want, string(got))
@@ -988,6 +1005,7 @@ func Test_decodeField(t *testing.T) {
 		want      encodeFixture
 		wantErr   error
 		wantInMsg []string
+		wantCause reflect.Type
 	}{
 		{
 			name: "[Success] When: null and empty containers ; Should: keep nil as nil and empty as empty",
@@ -1007,6 +1025,7 @@ func Test_decodeField(t *testing.T) {
 			want:      start,
 			wantErr:   ErrInvalidState,
 			wantInMsg: []string{valueInvalid},
+			wantCause: reflect.TypeFor[*jsontext.SyntacticError](),
 		},
 		{
 			name:      "[Fail] When: a later member has a wrong type ; Should: return ErrInvalidState, keep dst",
@@ -1015,6 +1034,7 @@ func Test_decodeField(t *testing.T) {
 			want:      start,
 			wantErr:   ErrInvalidState,
 			wantInMsg: []string{valueInvalid},
+			wantCause: reflect.TypeFor[*json.SemanticError](),
 		},
 	}
 
@@ -1026,6 +1046,7 @@ func Test_decodeField(t *testing.T) {
 
 			err := decodeField("Value", []byte(tt.data), &got)
 			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantCause, jsonCause(err))
 			assertInOrder(t, errText(err), tt.wantInMsg)
 			assert.LessOrEqual(t, strings.Count(errText(err), ErrInvalidState.Error()), 1)
 			assert.Equal(t, tt.want, got)
