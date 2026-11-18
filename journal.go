@@ -3,7 +3,10 @@ package sagas
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -14,6 +17,8 @@ var (
 	ErrExecutionExists = errors.New("sagas: execution exists")
 	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
 	ErrConcurrentWriter = errors.New("sagas: concurrent writer")
+
+	errInvalidSeq = errors.New("sagas: invalid event sequence")
 )
 
 // Journal records events append only and never delivers work, removes or marks an event. Append writes an event
@@ -115,4 +120,74 @@ func (z Zone) String() string {
 	}
 
 	return "Zone(" + strconv.Itoa(int(z)) + ")"
+}
+
+type memoryJournal struct {
+	mu      sync.Mutex
+	streams map[string][]Event
+}
+
+func newMemoryJournal() *memoryJournal {
+	return &memoryJournal{streams: map[string][]Event{}}
+}
+
+func (j *memoryJournal) Append(_ context.Context, e Event) error {
+	if e.Seq < 1 {
+		return fmt.Errorf("%w: execution %q seq %d", errInvalidSeq, e.Execution, e.Seq)
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	stream := j.streams[e.Execution]
+	if e.Seq == len(stream)+1 {
+		cloneSlices(&e)
+		j.streams[e.Execution] = append(stream, e)
+
+		return nil
+	}
+
+	if e.Seq <= len(stream) && sameEvent(&stream[e.Seq-1], &e) {
+		return nil
+	}
+
+	rejection := ErrConcurrentWriter
+	if e.Seq == 1 {
+		rejection = ErrExecutionExists
+	}
+
+	return fmt.Errorf("%w: execution %q seq %d", rejection, e.Execution, e.Seq)
+}
+
+func (j *memoryJournal) events(execution string) []Event {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return copyEvents(j.streams[execution])
+}
+
+func copyEvents(events []Event) []Event {
+	out := make([]Event, len(events))
+	copy(out, events)
+
+	for i := range out {
+		cloneSlices(&out[i])
+	}
+
+	return out
+}
+
+func cloneSlices(e *Event) {
+	e.Changed = slices.Clone(e.Changed)
+	e.Steps = slices.Clone(e.Steps)
+}
+
+func sameEvent(a, b *Event) bool {
+	return sameScalars(a, b) && slices.Equal(a.Changed, b.Changed) && slices.Equal(a.Steps, b.Steps) &&
+		a.Time.Equal(b.Time)
+}
+
+func sameScalars(a, b *Event) bool {
+	return a.Saga == b.Saga && a.Execution == b.Execution && a.Writer == b.Writer && a.Seq == b.Seq &&
+		a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Err == b.Err && a.Status == b.Status
 }
