@@ -644,6 +644,82 @@ func pipelineLateSecondCallRow() pipelineRow {
 	}
 }
 
+const hedgeMark = "hedge fail"
+
+func hedging(next Handler) Handler {
+	return func(ctx context.Context) error {
+		replies := make(chan error, 2)
+
+		for range 2 {
+			go func() { replies <- next(ctx) }()
+		}
+
+		return <-replies
+	}
+}
+
+func hedgedCall(r *recorder) func(context.Context, *pipeState) error {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	slow := slowCall(r)
+
+	return func(ctx context.Context, s *pipeState) error {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+
+		if !first {
+			return slow(ctx, s)
+		}
+
+		time.Sleep(time.Millisecond)
+		r.add(hedgeMark)
+
+		return errBoom
+	}
+}
+
+func pipelineHedgedRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: middleware runs next twice at once and returns the first reply while the other " +
+			"call runs ; Should: end unknown after 1 attempt with both errors and never start attempt 2",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{hedging}
+		},
+		call:         hedgedCall,
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantErrs:     []error{errBoom, ErrCallUnfinished},
+		wantTrace:    []string{hedgeMark, slowMark},
+	}
+}
+
+func pipelinePanicAfterLateStartRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: middleware starts a late next in a goroutine and then panics ; " +
+			"Should: return a PanicError as unknown and never run the action",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					lateStart(ctx, next)
+
+					panic("bad middleware")
+				}
+			}}
+		},
+		call:         slowCall,
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantPanic:    true,
+	}
+}
+
 type pipelineRow struct {
 	name         string
 	spec         callSpec
@@ -995,6 +1071,8 @@ func Test_pipeline(t *testing.T) {
 		pipelineUnfinishedRow(),
 		pipelineLateStartRow(),
 		pipelineLateSecondCallRow(),
+		pipelineHedgedRow(),
+		pipelinePanicAfterLateStartRow(),
 	}
 
 	for _, tt := range tests {

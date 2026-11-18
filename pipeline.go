@@ -63,25 +63,22 @@ type callState[S any] struct {
 
 type callStateKey struct{}
 
-type callProgress string
-
-const (
-	callNotStarted callProgress = ""
-	callRunning    callProgress = "running"
-	callReturned   callProgress = "returned"
-)
-
 type callResult[S any] struct {
-	progress callProgress
-	out      *S
-	err      error
+	out *S
+	err error
+}
+
+type attemptProgress[S any] struct {
+	started bool
+	running int
+	last    callResult[S]
 }
 
 type attemptState[S any] struct {
-	base   snapshot[S]
-	mu     sync.Mutex
-	closed bool
-	last   callResult[S]
+	base     snapshot[S]
+	mu       sync.Mutex
+	closed   bool
+	progress attemptProgress[S]
 }
 
 type attemptStateKey struct{}
@@ -94,7 +91,8 @@ func (a *attemptState[S]) start() bool {
 		return false
 	}
 
-	a.last = callResult[S]{progress: callRunning}
+	a.progress.started = true
+	a.progress.running++
 
 	return true
 }
@@ -103,16 +101,17 @@ func (a *attemptState[S]) finish(out *S, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.last = callResult[S]{progress: callReturned, out: out, err: err}
+	a.progress.running--
+	a.progress.last = callResult[S]{out: out, err: err}
 }
 
-func (a *attemptState[S]) close() callResult[S] {
+func (a *attemptState[S]) close() attemptProgress[S] {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.closed = true
 
-	return a.last
+	return a.progress
 }
 
 func classify(err error) outcomeKind {
@@ -181,10 +180,12 @@ func requireRan[S any](next Handler) Handler {
 
 		at := &attemptState[S]{base: st.base}
 
-		err := next(context.WithValue(ctx, attemptStateKey{}, at))
-		last := at.close()
+		defer at.close()
 
-		if last.progress == callRunning {
+		err := next(context.WithValue(ctx, attemptStateKey{}, at))
+		progress := at.close()
+
+		if progress.running > 0 {
 			return Permanent(errors.Join(err, ErrCallUnfinished))
 		}
 
@@ -192,13 +193,13 @@ func requireRan[S any](next Handler) Handler {
 			return err
 		}
 
-		if last.progress == callNotStarted {
+		if !progress.started {
 			return Permanent(ErrCallNotRun)
 		}
 
-		st.out = last.out
+		st.out = progress.last.out
 
-		return last.err
+		return progress.last.err
 	}
 }
 
