@@ -1,0 +1,49 @@
+package sagas
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Mermaid returns the saga as a Mermaid flowchart. Node ids are s plus the declaration index, the pivot is a
+// hexagon, a conditional step ends in "(if)", and forward-only steps join the forwardOnly class. A double quote
+// in a step name is written as #quot;.
+func (s *Saga[S]) Mermaid() string {
+	var b strings.Builder
+
+	b.WriteString("flowchart TD\n")
+
+	var forwardOnly []string
+
+	for i := range s.steps {
+		n := &s.steps[i]
+		label := strings.ReplaceAll(n.name, `"`, "#quot;")
+
+		switch {
+		case i == s.pivot:
+			fmt.Fprintf(&b, "    s%d{{\"%s\"}}\n", i, label)
+		case n.pred != nil:
+			fmt.Fprintf(&b, "    s%d[\"%s (if)\"]\n", i, label)
+		default:
+			fmt.Fprintf(&b, "    s%d[\"%s\"]\n", i, label)
+		}
+
+		if n.zone == ZoneForwardOnly {
+			forwardOnly = append(forwardOnly, "s"+strconv.Itoa(i))
+		}
+	}
+
+	for i := range s.steps {
+		for _, p := range s.steps[i].parents {
+			fmt.Fprintf(&b, "    s%d --> s%d\n", p, i)
+		}
+	}
+
+	if len(forwardOnly) > 0 {
+		b.WriteString("    classDef forwardOnly stroke-dasharray: 5 5\n")
+		b.WriteString("    class " + strings.Join(forwardOnly, ",") + " forwardOnly\n")
+	}
+
+	return b.String()
+}
