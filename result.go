@@ -8,11 +8,12 @@ import (
 )
 
 var (
-	// ErrCompensated is returned when a run fails and every completed compensable step is compensated.
+	// ErrCompensated is returned when a run fails and every started compensable step is compensated.
 	ErrCompensated = errors.New("sagas: compensated")
 	// ErrCompensationFailed is returned when a run fails and at least one compensation does not succeed.
 	ErrCompensationFailed = errors.New("sagas: compensation failed")
-	// ErrIncomplete is returned when a run stops after its pivot with forward-only work still pending.
+	// ErrIncomplete is returned when a run cannot finish forward: the pivot's outcome stays unknown, or a
+	// forward-only step fails after the pivot succeeds.
 	ErrIncomplete = errors.New("sagas: incomplete")
 )
 
@@ -100,7 +101,8 @@ type StepResult struct {
 	End             time.Time
 }
 
-// Result is the outcome of one execution, built from its journal events.
+// Result is the outcome of one execution, built from its journal events. It describes a run that ended: a step
+// still running looks unknown.
 type Result struct {
 	Execution string
 	Status    Status
