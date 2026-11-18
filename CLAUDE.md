@@ -7,6 +7,8 @@
 - `docs/glossary.md` is the vocabulary.
 - Take the simplest code that meets each rule. Measure performance with a benchmark
   instead of guessing, and record the numbers when a change touches a hot path.
+- Tests prove each rule through the real code path of each row. No test doubles of our own
+  code; a test may use a real standard-library implementation, such as `slog.NewJSONHandler`.
 
 ## API style
 
