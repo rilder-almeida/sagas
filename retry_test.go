@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -205,11 +206,24 @@ func Test_backoff(t *testing.T) {
 			want:    DefaultMaxDelay,
 		},
 		{
-			name:    "[Success] When: jitter draws the top of the range ; Should: wait the full delay",
+			name:    "[Success] When: jitter draws the top of the range ; Should: wait just under the delay",
 			policy:  RetryPolicy{},
 			attempt: 2,
 			r:       upper,
-			want:    400 * time.Millisecond,
+			want:    400*time.Millisecond - 1,
+		},
+		{
+			name:    "[Success] When: Max is the largest duration and growth passes it ; Should: return Max",
+			policy:  RetryPolicy{Max: math.MaxInt64, Multiplier: 10, NoJitter: true},
+			attempt: 1000,
+			want:    math.MaxInt64,
+		},
+		{
+			name:    "[Success] When: Max is the largest duration and jitter draws the top ; Should: stay positive",
+			policy:  RetryPolicy{Max: math.MaxInt64, Multiplier: 10},
+			attempt: 1000,
+			r:       upper,
+			want:    math.MaxInt64 - 1,
 		},
 		{
 			name:    "[Success] When: jitter draws zero ; Should: not wait",

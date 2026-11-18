@@ -29,7 +29,8 @@ type RetryPolicy struct {
 	Max time.Duration
 	// Multiplier is the growth factor of the delay. Zero means DefaultMultiplier. One means a constant delay.
 	Multiplier float64
-	// NoJitter turns off the random spread of each delay.
+	// NoJitter turns off the random spread of each delay. False, the zero value, draws each delay at random
+	// between zero and its computed value.
 	NoJitter bool
 }
 
@@ -77,8 +78,8 @@ func (*permanentError) Is(target error) bool { return target == errPermanent }
 
 // Permanent marks err so that the retry loop stops on it. It returns nil for a nil err.
 func Permanent(err error) error {
-	if err == nil || isPermanent(err) {
-		return err
+	if err == nil {
+		return nil
 	}
 
 	return &permanentError{err: err}
@@ -87,25 +88,27 @@ func Permanent(err error) error {
 func isPermanent(err error) bool { return errors.Is(err, errPermanent) }
 
 func backoff(p RetryPolicy, attempt int, r func(int64) int64) time.Duration {
-	growth := float64(p.initial()) * math.Pow(p.multiplier(), float64(attempt-1))
-	delay := time.Duration(math.Min(growth, float64(p.maxDelay())))
+	delay := p.maxDelay()
+	if growth := float64(p.initial()) * math.Pow(p.multiplier(), float64(attempt-1)); growth < float64(delay) {
+		delay = time.Duration(growth)
+	}
 
 	if p.NoJitter {
 		return delay
 	}
 
-	return time.Duration(r(int64(delay) + 1))
+	return time.Duration(r(int64(delay)))
 }
 
 func retry(p RetryPolicy) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context) error {
-			return attempts(ctx, p, next)
+			return runAttempts(ctx, p, next)
 		}
 	}
 }
 
-func attempts(ctx context.Context, p RetryPolicy, next Handler) error {
+func runAttempts(ctx context.Context, p RetryPolicy, next Handler) error {
 	meta := metaFrom(ctx)
 
 	for attempt := 1; ; attempt++ {
@@ -114,7 +117,7 @@ func attempts(ctx context.Context, p RetryPolicy, next Handler) error {
 		}
 
 		err := next(ctx)
-		if err == nil || !retryable(ctx, err) || attempt >= p.attempts() {
+		if err == nil || !retryable(err) || attempt >= p.attempts() {
 			return err
 		}
 
@@ -124,10 +127,10 @@ func attempts(ctx context.Context, p RetryPolicy, next Handler) error {
 	}
 }
 
-func retryable(ctx context.Context, err error) bool {
+func retryable(err error) bool {
 	var panicked *PanicError
 
-	return ctx.Err() == nil && !isPermanent(err) && !errors.As(err, &panicked)
+	return !isPermanent(err) && !errors.As(err, &panicked)
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
@@ -135,9 +138,9 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	defer timer.Stop()
 
 	select {
-	case <-timer.C:
-		return true
 	case <-ctx.Done():
-		return false
+	case <-timer.C:
 	}
+
+	return ctx.Err() == nil
 }
