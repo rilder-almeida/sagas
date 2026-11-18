@@ -93,6 +93,8 @@ func backoff(p RetryPolicy, attempt int, r func(int64) int64) time.Duration {
 		delay = time.Duration(growth)
 	}
 
+	delay = max(delay, 1)
+
 	if p.NoJitter {
 		return delay
 	}

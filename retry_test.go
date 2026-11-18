@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -211,6 +212,19 @@ func Test_backoff(t *testing.T) {
 			attempt: 2,
 			r:       upper,
 			want:    400*time.Millisecond - 1,
+		},
+		{
+			name:    "[Success] When: the delay shrinks below 1ns ; Should: wait 1ns",
+			policy:  RetryPolicy{Multiplier: 1e-10, NoJitter: true},
+			attempt: 5,
+			want:    1,
+		},
+		{
+			name:    "[Success] When: the shrunk delay is jittered ; Should: not panic and draw zero",
+			policy:  RetryPolicy{Multiplier: 1e-10},
+			attempt: 5,
+			r:       rand.Int64N,
+			want:    0,
 		},
 		{
 			name:    "[Success] When: Max is the largest duration and growth passes it ; Should: return Max",
