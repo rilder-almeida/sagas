@@ -314,3 +314,43 @@ func Test_WithRecoveryTimeout(t *testing.T) {
 		})
 	}
 }
+
+func Test_isNilValue(t *testing.T) {
+	t.Parallel()
+
+	var (
+		nilPointer *int
+		nilMap     map[string]int
+		nilSlice   []int
+		nilFunc    func()
+		nilChan    chan int
+		number     = 1
+	)
+
+	tests := []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{name: "[Success] When: the value is an untyped nil ; Should: report nil", value: nil, want: true},
+		{name: "[Success] When: the value is a nil pointer ; Should: report nil", value: nilPointer, want: true},
+		{name: "[Success] When: the value is a nil map ; Should: report nil", value: nilMap, want: true},
+		{name: "[Success] When: the value is a nil slice ; Should: report nil", value: nilSlice, want: true},
+		{name: "[Success] When: the value is a nil func ; Should: report nil", value: nilFunc, want: true},
+		{name: "[Success] When: the value is a nil chan ; Should: report nil", value: nilChan, want: true},
+		{name: "[Success] When: the value is a set pointer ; Should: report not nil", value: &number},
+		{name: "[Success] When: the value is a set map ; Should: report not nil", value: map[string]int{}},
+		{name: "[Success] When: the value is a set slice ; Should: report not nil", value: []int{}},
+		{name: "[Success] When: the value is a set func ; Should: report not nil", value: func() {}},
+		{name: "[Success] When: the value is a set chan ; Should: report not nil", value: make(chan int)},
+		{name: "[Success] When: the value is an int ; Should: report not nil", value: number},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, isNilValue(tt.value))
+		})
+	}
+}
