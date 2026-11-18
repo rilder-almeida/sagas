@@ -170,11 +170,25 @@ func Test_classify(t *testing.T) {
 	}
 }
 
+var errCall = errors.New("call failed")
+
 type pipeState struct {
 	A int
 	B string
 	C bool
 }
+
+type badState struct {
+	A string
+	B string
+	C string
+}
+
+func swallow(error) error { return nil }
+
+func discard(error) {}
+
+func lastErr(_, last error) error { return last }
 
 type recorder struct {
 	mu    sync.Mutex
@@ -465,15 +479,167 @@ func compensationSpec() callSpec {
 	return spec
 }
 
+func pipelineSwallowRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: a middleware swallows the call error ; Should: end the attempt with that call error",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error { return swallow(next(ctx)) }
+			}}
+		},
+		call:         failWith(errBoom),
+		wantKind:     outcomeFailure,
+		wantAttempts: 3,
+		wantErr:      errBoom,
+	}
+}
+
+func pipelineStaleCopyRow() pipelineRow {
+	spec := actionSpec()
+	spec.retry.Attempts = 2
+
+	return pipelineRow{
+		name: "[Fail] When: attempt 1 succeeds but fails in middleware and attempt 2 is swallowed ; " +
+			"Should: fail with attempt 2's call error and no state",
+		spec: spec,
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					err := next(ctx)
+					if attemptOf(ctx) == 1 {
+						return errors.Join(err, errBoom)
+					}
+
+					return swallow(err)
+				}
+			}}
+		},
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			return func(ctx context.Context, s *pipeState) error {
+				if attemptOf(ctx) == 1 {
+					s.B = "stale"
+
+					return nil
+				}
+
+				return errCall
+			}
+		},
+		wantKind:     outcomeFailure,
+		wantAttempts: 2,
+		wantErr:      errCall,
+	}
+}
+
+func twiceMiddleware(final func(first, second error) error) func(*recorder) []Middleware {
+	return func(*recorder) []Middleware {
+		return []Middleware{func(next Handler) Handler {
+			return func(ctx context.Context) error { return final(next(ctx), next(ctx)) }
+		}}
+	}
+}
+
+func pipelineSecondCallWinsRow() pipelineRow {
+	return pipelineRow{
+		name:       "[Success] When: next runs twice and the first call fails ; Should: succeed with the second copy",
+		spec:       actionSpec(),
+		middleware: twiceMiddleware(lastErr),
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			n := 0
+
+			return func(_ context.Context, s *pipeState) error {
+				n++
+				if n == 1 {
+					s.B = "first"
+
+					return errBoom
+				}
+
+				s.A = n
+
+				return nil
+			}
+		},
+		wantKind:     outcomeSuccess,
+		wantAttempts: 1,
+		wantState:    &pipeState{A: 2},
+	}
+}
+
+func pipelineLastCallFailsRow() pipelineRow {
+	spec := actionSpec()
+	spec.retry.Attempts = 1
+
+	return pipelineRow{
+		name: "[Fail] When: next runs twice, the second call fails and middleware returns nil ; " +
+			"Should: fail with the second call's error",
+		spec: spec,
+		middleware: twiceMiddleware(func(first, second error) error {
+			discard(first)
+
+			return swallow(second)
+		}),
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			n := 0
+
+			return func(_ context.Context, s *pipeState) error {
+				n++
+				if n == 1 {
+					s.A = 1
+
+					return nil
+				}
+
+				return errCall
+			}
+		},
+		wantKind:     outcomeFailure,
+		wantAttempts: 1,
+		wantErr:      errCall,
+	}
+}
+
+func pipelineLostContextRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: a middleware passes on a context without the call state ; " +
+			"Should: not run the call and fail with ErrCallContextLost",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(context.Context) error { return next(context.Background()) }
+			}}
+		},
+		call:         recordCall,
+		wantKind:     outcomeFailure,
+		wantAttempts: 1,
+		wantErr:      ErrCallContextLost,
+	}
+}
+
+func pipelineCorruptBaseRow() pipelineRow {
+	return pipelineRow{
+		name:         "[Fail] When: the base cannot be decoded ; Should: fail permanently without running the call",
+		spec:         actionSpec(),
+		call:         recordCall,
+		corruptBase:  true,
+		wantKind:     outcomeFailure,
+		wantAttempts: 1,
+		wantErr:      ErrInvalidState,
+	}
+}
+
 func baseFor(t *testing.T, row *pipelineRow) snapshot[pipeState] {
 	t.Helper()
 
-	base := baseOf(t, row.base)
 	if row.corruptBase {
-		base.fields[0] = []byte("not json")
+		st, err := newStore(badState{A: "abc", B: "abc", C: "abc"})
+		require.NoError(t, err)
+
+		return snapshot[pipeState](st.snapshot())
 	}
 
-	return base
+	return baseOf(t, row.base)
 }
 
 func assertCallErr(t *testing.T, got, want error) {
@@ -504,6 +670,11 @@ func Test_pipeline(t *testing.T) {
 		pipelineNotRunRow(),
 		pipelineTwiceRow(),
 		pipelineCorruptBaseRow(),
+		pipelineSwallowRow(),
+		pipelineStaleCopyRow(),
+		pipelineSecondCallWinsRow(),
+		pipelineLastCallFailsRow(),
+		pipelineLostContextRow(),
 	}
 
 	for _, tt := range tests {
@@ -537,33 +708,35 @@ func Test_pipeline(t *testing.T) {
 	}
 }
 
-func pipelineCorruptBaseRow() pipelineRow {
-	return pipelineRow{
-		name:         "[Fail] When: the base cannot be decoded ; Should: fail permanently without running the call",
-		spec:         actionSpec(),
-		call:         recordCall,
-		corruptBase:  true,
-		wantKind:     outcomeFailure,
-		wantAttempts: 1,
-		wantErr:      ErrInvalidState,
-	}
-}
-
 func Benchmark_pipeline(b *testing.B) {
-	spec := callSpec{saga: "s", step: "pay", phase: PhaseAction, retry: RetryPolicy{Attempts: 1}}
-	call := pipeline(&spec, func(_ context.Context, s *pipeState) error {
-		s.A++
+	benches := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{name: "no-timeout", timeout: 0},
+		{name: "timeout", timeout: time.Second},
+	}
 
-		return nil
-	})
-	base := baseOf(b, pipeState{A: 1, B: "x"})
-	ctx := context.Background()
+	for _, bb := range benches {
+		b.Run(bb.name, func(b *testing.B) {
+			spec := callSpec{
+				saga: "s", step: "pay", phase: PhaseAction, timeout: bb.timeout, retry: RetryPolicy{Attempts: 1},
+			}
+			call := pipeline(&spec, func(_ context.Context, s *pipeState) error {
+				s.A++
 
-	b.ReportAllocs()
+				return nil
+			})
+			base := baseOf(b, pipeState{A: 1, B: "x"})
+			ctx := context.Background()
 
-	for b.Loop() {
-		if got := call(ctx, "exec-1", base); got.kind != outcomeSuccess {
-			b.Fatal(got.err)
-		}
+			b.ReportAllocs()
+
+			for b.Loop() {
+				if got := call(ctx, "exec-1", base); got.kind != outcomeSuccess {
+					b.Fatal(got.err)
+				}
+			}
+		})
 	}
 }

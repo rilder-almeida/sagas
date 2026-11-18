@@ -12,6 +12,9 @@ import (
 // ErrCallNotRun is the error of a call that middleware returned from without running the action or compensation.
 var ErrCallNotRun = errors.New("sagas: middleware returned without running the call")
 
+// ErrCallContextLost is the error of a call whose context no longer carries the call state.
+var ErrCallContextLost = errors.New("sagas: middleware passed on a context that lost the call state")
+
 // PanicError is the error a panic in a call becomes. It holds the panic value and the stack.
 type PanicError struct {
 	Value any
@@ -50,9 +53,10 @@ type callSpec struct {
 }
 
 type callState[S any] struct {
-	base snapshot[S]
-	ran  bool
-	out  *S
+	base   snapshot[S]
+	called bool
+	out    *S
+	err    error
 }
 
 type callStateKey struct{}
@@ -93,47 +97,53 @@ func timeout(d time.Duration) Middleware {
 	}
 }
 
-func stateFrom[S any](ctx context.Context) *callState[S] {
-	if st, ok := ctx.Value(callStateKey{}).(*callState[S]); ok {
-		return st
-	}
+func stateFrom[S any](ctx context.Context) (*callState[S], bool) {
+	st, ok := ctx.Value(callStateKey{}).(*callState[S])
 
-	return &callState[S]{}
+	return st, ok
 }
 
 func requireRan[S any](next Handler) Handler {
 	return func(ctx context.Context) error {
-		st := stateFrom[S](ctx)
-		st.ran = false
+		st, ok := stateFrom[S](ctx)
+		if !ok {
+			return Permanent(ErrCallContextLost)
+		}
+
+		st.called, st.out, st.err = false, nil, nil
 
 		err := next(ctx)
-		if err == nil && !st.ran {
+		if err != nil {
+			return err
+		}
+
+		if !st.called {
 			return Permanent(ErrCallNotRun)
 		}
 
-		return err
+		return st.err
 	}
 }
 
 func runCall[S any](call func(context.Context, *S) error) Handler {
 	return func(ctx context.Context) error {
-		st := stateFrom[S](ctx)
+		st, ok := stateFrom[S](ctx)
+		if !ok {
+			return Permanent(ErrCallContextLost)
+		}
+
+		st.called, st.out = true, nil
 
 		fresh, err := copyState(st.base)
 		if err != nil {
-			return Permanent(err)
+			err = Permanent(err)
+		} else if err = call(ctx, fresh); err == nil {
+			st.out = fresh
 		}
 
-		st.ran = true
+		st.err = err
 
-		err = call(ctx, fresh)
-		if err != nil {
-			return err
-		}
-
-		st.out = fresh
-
-		return nil
+		return err
 	}
 }
 
