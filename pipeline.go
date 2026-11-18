@@ -63,38 +63,54 @@ type callState[S any] struct {
 
 type callStateKey struct{}
 
-type callPhase string
+type callProgress string
 
 const (
-	callNotStarted callPhase = ""
-	callRunning    callPhase = "running"
-	callReturned   callPhase = "returned"
+	callNotStarted callProgress = ""
+	callRunning    callProgress = "running"
+	callReturned   callProgress = "returned"
 )
 
 type callResult[S any] struct {
-	phase callPhase
-	out   *S
-	err   error
+	progress callProgress
+	out      *S
+	err      error
 }
 
 type attemptState[S any] struct {
-	base snapshot[S]
-	mu   sync.Mutex
-	last callResult[S]
+	base   snapshot[S]
+	mu     sync.Mutex
+	closed bool
+	last   callResult[S]
 }
 
 type attemptStateKey struct{}
 
-func (a *attemptState[S]) set(last callResult[S]) {
+func (a *attemptState[S]) start() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.last = last
+	if a.closed {
+		return false
+	}
+
+	a.last = callResult[S]{progress: callRunning}
+
+	return true
 }
 
-func (a *attemptState[S]) result() callResult[S] {
+func (a *attemptState[S]) finish(out *S, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	a.last = callResult[S]{progress: callReturned, out: out, err: err}
+}
+
+func (a *attemptState[S]) close() callResult[S] {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.closed = true
 
 	return a.last
 }
@@ -166,18 +182,18 @@ func requireRan[S any](next Handler) Handler {
 		at := &attemptState[S]{base: st.base}
 
 		err := next(context.WithValue(ctx, attemptStateKey{}, at))
+		last := at.close()
+
+		if last.progress == callRunning {
+			return Permanent(errors.Join(err, ErrCallUnfinished))
+		}
+
 		if err != nil {
 			return err
 		}
 
-		last := at.result()
-
-		if last.phase == callNotStarted {
+		if last.progress == callNotStarted {
 			return Permanent(ErrCallNotRun)
-		}
-
-		if last.phase == callRunning {
-			return Permanent(ErrCallUnfinished)
 		}
 
 		st.out = last.out
@@ -193,7 +209,9 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 			return Permanent(ErrCallContextLost)
 		}
 
-		at.set(callResult[S]{phase: callRunning})
+		if !at.start() {
+			return Permanent(ErrCallNotRun)
+		}
 
 		fresh, err := copyState(at.base)
 		if err != nil {
@@ -202,7 +220,7 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 			fresh = nil
 		}
 
-		at.set(callResult[S]{phase: callReturned, out: fresh, err: err})
+		at.finish(fresh, err)
 
 		return err
 	}

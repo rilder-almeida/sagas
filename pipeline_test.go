@@ -343,7 +343,7 @@ func pipelineTimeoutRow() pipelineRow {
 		},
 		wantKind:     outcomeUnknown,
 		wantAttempts: 3,
-		wantErr:      context.DeadlineExceeded,
+		wantErrs:     []error{context.DeadlineExceeded},
 	}
 }
 
@@ -392,7 +392,7 @@ func pipelineFailureRow() pipelineRow {
 		call:         failWith(errBoom),
 		wantKind:     outcomeFailure,
 		wantAttempts: 3,
-		wantErr:      errBoom,
+		wantErrs:     []error{errBoom},
 	}
 }
 
@@ -403,7 +403,7 @@ func pipelinePermanentRow() pipelineRow {
 		call:         failWith(Permanent(errBoom)),
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
-		wantErr:      errBoom,
+		wantErrs:     []error{errBoom},
 	}
 }
 
@@ -463,7 +463,7 @@ func pipelineNotRunRow() pipelineRow {
 		call:         recordCall,
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
-		wantErr:      ErrCallNotRun,
+		wantErrs:     []error{ErrCallNotRun},
 	}
 }
 
@@ -510,46 +510,48 @@ func abandoning(start, limit time.Duration) Middleware {
 	}
 }
 
-const lateCall = "late call"
+const slowMark = "slow call"
 
-func lateFirstCall(r *recorder) func(context.Context, *pipeState) error {
+func slowCall(r *recorder) func(context.Context, *pipeState) error {
 	return func(ctx context.Context, s *pipeState) error {
-		if attemptOf(ctx) == 1 {
-			time.Sleep(20 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 
-			s.B = lateCall
+		s.A = attemptOf(ctx)
 
-			r.add(lateCall)
-
-			return nil
-		}
-
-		s.A = 2
+		r.add(slowMark)
 
 		return nil
 	}
 }
 
+func lateStart(ctx context.Context, next Handler) {
+	go func() {
+		time.Sleep(time.Millisecond)
+
+		discard(next(ctx))
+	}()
+}
+
 func pipelineAbandonedRow() pipelineRow {
 	return pipelineRow{
-		name: "[Success] When: middleware abandons attempt 1's call and attempt 2 runs ; " +
-			"Should: succeed with attempt 2's copy and never attempt 1's late one",
+		name: "[Fail] When: middleware returns DeadlineExceeded while attempt 1's call runs ; " +
+			"Should: end unknown after 1 attempt with both errors and one action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
 			return []Middleware{abandoning(0, 10*time.Millisecond)}
 		},
-		call:         lateFirstCall,
-		wantKind:     outcomeSuccess,
-		wantAttempts: 2,
-		wantState:    &pipeState{A: 2},
-		wantTrace:    []string{lateCall},
+		call:         slowCall,
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantErrs:     []error{context.DeadlineExceeded, ErrCallUnfinished},
+		wantTrace:    []string{slowMark},
 	}
 }
 
 func pipelineAbandonedThenSkipRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: attempt 1's abandoned call ends late and attempt 2 returns nil without next ; " +
-			"Should: fail with ErrCallNotRun",
+		name: "[Fail] When: attempt 1's goroutine reaches next after a timeout and attempt 2 returns nil " +
+			"without next ; Should: fail with ErrCallNotRun and run no action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
 			first := abandoning(15*time.Millisecond, 10*time.Millisecond)
@@ -566,17 +568,16 @@ func pipelineAbandonedThenSkipRow() pipelineRow {
 				}
 			}}
 		},
-		call:         lateFirstCall,
+		call:         slowCall,
 		wantKind:     outcomeFailure,
 		wantAttempts: 2,
-		wantErr:      ErrCallNotRun,
-		wantTrace:    []string{lateCall},
+		wantErrs:     []error{ErrCallNotRun},
 	}
 }
 
 func pipelineUnfinishedRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: middleware starts next in a goroutine and returns nil at once ; " +
+		name: "[Fail] When: middleware starts next in a goroutine and returns nil while the call runs ; " +
 			"Should: end unknown with ErrCallUnfinished after 1 attempt",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -590,19 +591,56 @@ func pipelineUnfinishedRow() pipelineRow {
 				}
 			}}
 		},
-		call: func(r *recorder) func(context.Context, *pipeState) error {
-			return func(context.Context, *pipeState) error {
-				time.Sleep(10 * time.Millisecond)
-
-				r.add(lateCall)
-
-				return nil
-			}
-		},
+		call:         slowCall,
 		wantKind:     outcomeUnknown,
 		wantAttempts: 1,
-		wantErr:      ErrCallUnfinished,
-		wantTrace:    []string{lateCall},
+		wantErrs:     []error{ErrCallUnfinished},
+		wantTrace:    []string{slowMark},
+	}
+}
+
+func pipelineLateStartRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: middleware returns nil before its goroutine reaches next ; " +
+			"Should: fail with ErrCallNotRun and never run the action",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					lateStart(ctx, next)
+
+					return nil
+				}
+			}}
+		},
+		call:         slowCall,
+		wantKind:     outcomeFailure,
+		wantAttempts: 1,
+		wantErrs:     []error{ErrCallNotRun},
+	}
+}
+
+func pipelineLateSecondCallRow() pipelineRow {
+	return pipelineRow{
+		name: "[Success] When: middleware runs next, then starts it again in a goroutine and returns ; " +
+			"Should: succeed with the first copy and never run the second action",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					err := next(ctx)
+
+					lateStart(ctx, next)
+
+					return err
+				}
+			}}
+		},
+		call:         slowCall,
+		wantKind:     outcomeSuccess,
+		wantAttempts: 1,
+		wantState:    &pipeState{A: 1},
+		wantTrace:    []string{slowMark},
 	}
 }
 
@@ -615,7 +653,7 @@ type pipelineRow struct {
 	call         func(r *recorder) func(context.Context, *pipeState) error
 	wantKind     outcomeKind
 	wantAttempts int
-	wantErr      error
+	wantErrs     []error
 	wantPanic    bool
 	wantState    *pipeState
 	wantTrace    []string
@@ -647,7 +685,7 @@ func pipelineSwallowRow() pipelineRow {
 		call:         failWith(errBoom),
 		wantKind:     outcomeFailure,
 		wantAttempts: 3,
-		wantErr:      errBoom,
+		wantErrs:     []error{errBoom},
 	}
 }
 
@@ -684,7 +722,7 @@ func pipelineStaleCopyRow() pipelineRow {
 		},
 		wantKind:     outcomeFailure,
 		wantAttempts: 2,
-		wantErr:      errCall,
+		wantErrs:     []error{errCall},
 	}
 }
 
@@ -752,7 +790,7 @@ func pipelineLastCallFailsRow() pipelineRow {
 		},
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
-		wantErr:      errCall,
+		wantErrs:     []error{errCall},
 	}
 }
 
@@ -777,7 +815,7 @@ func pipelineLaterAttemptSkipRow() pipelineRow {
 		call:         failWith(errCall),
 		wantKind:     outcomeFailure,
 		wantAttempts: 2,
-		wantErr:      ErrCallNotRun,
+		wantErrs:     []error{ErrCallNotRun},
 	}
 }
 
@@ -794,7 +832,7 @@ func pipelineLostContextRow() pipelineRow {
 		call:         recordCall,
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
-		wantErr:      ErrCallContextLost,
+		wantErrs:     []error{ErrCallContextLost},
 	}
 }
 
@@ -806,7 +844,7 @@ func pipelineCorruptBaseRow() pipelineRow {
 		corruptBase:  true,
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
-		wantErr:      ErrInvalidState,
+		wantErrs:     []error{ErrInvalidState},
 	}
 }
 
@@ -823,16 +861,18 @@ func baseFor(t *testing.T, row *pipelineRow) snapshot[pipeState] {
 	return baseOf(t, row.base)
 }
 
-func assertCallErr(t *testing.T, got, want error) {
+func assertCallErr(t *testing.T, got error, want []error) {
 	t.Helper()
 
-	if want == nil {
+	if len(want) == 0 {
 		require.NoError(t, got)
 
 		return
 	}
 
-	require.ErrorIs(t, got, want)
+	for _, w := range want {
+		require.ErrorIs(t, got, w)
+	}
 }
 
 type requireRanRow struct {
@@ -953,6 +993,8 @@ func Test_pipeline(t *testing.T) {
 		pipelineAbandonedRow(),
 		pipelineAbandonedThenSkipRow(),
 		pipelineUnfinishedRow(),
+		pipelineLateStartRow(),
+		pipelineLateSecondCallRow(),
 	}
 
 	for _, tt := range tests {
@@ -982,7 +1024,7 @@ func Test_pipeline(t *testing.T) {
 					return
 				}
 
-				assertCallErr(t, got.err, tt.wantErr)
+				assertCallErr(t, got.err, tt.wantErrs)
 			})
 		})
 	}
