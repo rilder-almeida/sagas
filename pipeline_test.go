@@ -155,6 +155,11 @@ func Test_classify(t *testing.T) {
 			want: outcomeUnknown,
 		},
 		{
+			name: "[Fail] When: a permanent error wraps ErrCallUnfinished ; Should: be unknown",
+			err:  Permanent(ErrCallUnfinished),
+			want: outcomeUnknown,
+		},
+		{
 			name: "[Fail] When: a permanent error wraps a PanicError ; Should: be unknown",
 			err:  Permanent(&PanicError{Value: "bad"}),
 			want: outcomeUnknown,
@@ -569,6 +574,38 @@ func pipelineAbandonedThenSkipRow() pipelineRow {
 	}
 }
 
+func pipelineUnfinishedRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: middleware starts next in a goroutine and returns nil at once ; " +
+			"Should: end unknown with ErrCallUnfinished after 1 attempt",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					go func() { discard(next(ctx)) }()
+
+					time.Sleep(time.Millisecond)
+
+					return nil
+				}
+			}}
+		},
+		call: func(r *recorder) func(context.Context, *pipeState) error {
+			return func(context.Context, *pipeState) error {
+				time.Sleep(10 * time.Millisecond)
+
+				r.add(lateCall)
+
+				return nil
+			}
+		},
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantErr:      ErrCallUnfinished,
+		wantTrace:    []string{lateCall},
+	}
+}
+
 type pipelineRow struct {
 	name         string
 	spec         callSpec
@@ -890,42 +927,6 @@ func Test_requireRan(t *testing.T) {
 	}
 }
 
-func Test_attemptState_record(t *testing.T) {
-	t.Parallel()
-
-	out := &pipeState{A: 1}
-
-	tests := []struct {
-		name       string
-		sealFirst  bool
-		wantResult callResult[pipeState]
-	}{
-		{
-			name:       "[Success] When: a call records before the seal ; Should: keep its result",
-			wantResult: callResult[pipeState]{called: true, out: out},
-		},
-		{
-			name:      "[Fail] When: a call records after the seal ; Should: drop its result",
-			sealFirst: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			at := &attemptState[pipeState]{}
-			if tt.sealFirst {
-				assert.Equal(t, callResult[pipeState]{}, at.seal())
-			}
-
-			at.record(out, nil)
-
-			assert.Equal(t, tt.wantResult, at.seal())
-		})
-	}
-}
-
 func Test_pipeline(t *testing.T) {
 	t.Parallel()
 
@@ -951,6 +952,7 @@ func Test_pipeline(t *testing.T) {
 		pipelineLaterAttemptSkipRow(),
 		pipelineAbandonedRow(),
 		pipelineAbandonedThenSkipRow(),
+		pipelineUnfinishedRow(),
 	}
 
 	for _, tt := range tests {

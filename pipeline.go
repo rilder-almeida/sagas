@@ -13,6 +13,9 @@ import (
 // ErrCallNotRun is the error of a call that middleware returned from without running the action or compensation.
 var ErrCallNotRun = errors.New("sagas: middleware returned without running the call")
 
+// ErrCallUnfinished is the error of a call that middleware returned from while the call was still running.
+var ErrCallUnfinished = errors.New("sagas: middleware returned before the call finished")
+
 // ErrCallContextLost is the error of a call whose context no longer carries the call state.
 var ErrCallContextLost = errors.New("sagas: middleware passed on a context that lost the call state")
 
@@ -60,37 +63,38 @@ type callState[S any] struct {
 
 type callStateKey struct{}
 
+type callPhase string
+
+const (
+	callNotStarted callPhase = ""
+	callRunning    callPhase = "running"
+	callReturned   callPhase = "returned"
+)
+
 type callResult[S any] struct {
-	called bool
-	out    *S
-	err    error
+	phase callPhase
+	out   *S
+	err   error
 }
 
 type attemptState[S any] struct {
-	base   snapshot[S]
-	mu     sync.Mutex
-	sealed bool
-	last   callResult[S]
+	base snapshot[S]
+	mu   sync.Mutex
+	last callResult[S]
 }
 
 type attemptStateKey struct{}
 
-func (a *attemptState[S]) record(out *S, err error) {
+func (a *attemptState[S]) set(last callResult[S]) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.sealed {
-		return
-	}
-
-	a.last = callResult[S]{called: true, out: out, err: err}
+	a.last = last
 }
 
-func (a *attemptState[S]) seal() callResult[S] {
+func (a *attemptState[S]) result() callResult[S] {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	a.sealed = true
 
 	return a.last
 }
@@ -101,7 +105,8 @@ func classify(err error) outcomeKind {
 	switch {
 	case err == nil:
 		return outcomeSuccess
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.As(err, &panicked):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrCallUnfinished),
+		errors.As(err, &panicked):
 		return outcomeUnknown
 	default:
 		return outcomeFailure
@@ -161,21 +166,23 @@ func requireRan[S any](next Handler) Handler {
 		at := &attemptState[S]{base: st.base}
 
 		err := next(context.WithValue(ctx, attemptStateKey{}, at))
-
-		last := at.seal()
-
-		switch {
-		case err != nil:
+		if err != nil {
 			return err
-		case !last.called:
+		}
+
+		last := at.result()
+
+		if last.phase == callNotStarted {
 			return Permanent(ErrCallNotRun)
-		case last.err != nil:
-			return last.err
+		}
+
+		if last.phase == callRunning {
+			return Permanent(ErrCallUnfinished)
 		}
 
 		st.out = last.out
 
-		return nil
+		return last.err
 	}
 }
 
@@ -186,6 +193,8 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 			return Permanent(ErrCallContextLost)
 		}
 
+		at.set(callResult[S]{phase: callRunning})
+
 		fresh, err := copyState(at.base)
 		if err != nil {
 			err = Permanent(err)
@@ -193,7 +202,7 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 			fresh = nil
 		}
 
-		at.record(fresh, err)
+		at.set(callResult[S]{phase: callReturned, out: fresh, err: err})
 
 		return err
 	}
