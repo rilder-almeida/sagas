@@ -108,6 +108,100 @@ func topoOrder(parents [][]int) ordering {
 	return ordering{order: order, cycle: cycle}
 }
 
+func reach(adj [][]int, from int) []bool {
+	seen := make([]bool, len(adj))
+	stack := slices.Clone(adj[from])
+
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if seen[n] {
+			continue
+		}
+
+		seen[n] = true
+
+		stack = append(stack, adj[n]...)
+	}
+
+	return seen
+}
+
+func zones(parents, children [][]int, pivot int) []Zone {
+	out := make([]Zone, len(parents))
+	for i := range out {
+		out[i] = ZoneCompensable
+	}
+
+	if pivot < 0 {
+		return out
+	}
+
+	for i, after := range reach(children, pivot) {
+		if after {
+			out[i] = ZoneForwardOnly
+		}
+	}
+
+	out[pivot] = ZonePivot
+
+	return out
+}
+
+func pivotsOf(defs []stepDef) []int {
+	var pivots []int
+
+	for i := range defs {
+		if defs[i].pivot {
+			pivots = append(pivots, i)
+		}
+	}
+
+	return pivots
+}
+
+func checkPivot(saga string, defs []stepDef) []error {
+	pivots := pivotsOf(defs)
+	if len(pivots) <= 1 {
+		return nil
+	}
+
+	names := make([]string, 0, len(pivots))
+	for _, p := range pivots {
+		names = append(names, fmt.Sprintf("%q", defs[p].name))
+	}
+
+	return []error{fmt.Errorf("%w: saga %q: more than one Pivot, on steps %v", ErrInvalidStep, saga, names)}
+}
+
+func checkReach(defs []stepDef, parents [][]int) []error {
+	pivots := pivotsOf(defs)
+	if len(pivots) != 1 {
+		return nil
+	}
+
+	pivot := pivots[0]
+	before := reach(parents, pivot)
+	after := reach(childrenOf(parents), pivot)
+
+	var errs []error
+
+	for i := range defs {
+		switch {
+		case i != pivot && !before[i] && !after[i]:
+			errs = append(errs, fmt.Errorf("%w: step %q: neither before nor after the pivot %q",
+				ErrInvalidStep, defs[i].name, defs[pivot].name))
+		case after[i] && defs[i].undo != nil:
+			errs = append(errs, fmt.Errorf("%w: step %q: a step after the pivot has Compensate",
+				ErrInvalidStep, defs[i].name))
+		default:
+		}
+	}
+
+	return errs
+}
+
 type graph struct {
 	parents [][]int
 	order   []int

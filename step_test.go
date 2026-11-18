@@ -145,6 +145,68 @@ func Test_After(t *testing.T) {
 	}
 }
 
+func Test_Pivot(t *testing.T) {
+	t.Parallel()
+
+	undo := func(context.Context, *tripState) error { return nil }
+
+	tests := []struct {
+		name      string
+		steps     []Option
+		wantPivot int
+		wantZones []Zone
+		wantErr   error
+	}{
+		{
+			name: "[Success] When: the pivot pays after three bookings and a receipt follows ; Should: set each zone",
+			steps: []Option{
+				Step("hotel", okAction, Compensate(undo)),
+				Step("flight", okAction, Compensate(undo)),
+				Step("car", okAction, Compensate(undo), If(func(*tripState) bool { return true })),
+				Step("pay", okAction, Pivot(), After("hotel", "flight", "car")),
+				Step("receipt", okAction, After("pay")),
+			},
+			wantPivot: 3,
+			wantZones: []Zone{ZoneCompensable, ZoneCompensable, ZoneCompensable, ZonePivot, ZoneForwardOnly},
+		},
+		{
+			name:      "[Success] When: no step is the pivot ; Should: store -1 and make every step compensable",
+			steps:     []Option{Step("a", okAction), Step("b", okAction, After("a"))},
+			wantPivot: -1,
+			wantZones: []Zone{ZoneCompensable, ZoneCompensable},
+		},
+		{
+			name:    "[Fail] When: Pivot is given twice on one step ; Should: reject it",
+			steps:   []Option{Step("a", okAction, twice(Pivot())...)},
+			wantErr: ErrInvalidStep,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := New[tripState]("trip", tt.steps...)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.ErrorContains(t, err, "Pivot given more than once")
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPivot, s.pivot)
+
+			got := make([]Zone, 0, len(s.steps))
+			for _, n := range s.steps {
+				got = append(got, n.zone)
+			}
+
+			assert.Equal(t, tt.wantZones, got)
+		})
+	}
+}
+
 func Test_Compensate(t *testing.T) {
 	t.Parallel()
 
@@ -583,6 +645,21 @@ func Test_checkStep(t *testing.T) {
 			name:         "[Fail] When: Timeout is given twice ; Should: report it",
 			step:         Step("a", okAction, twice(Timeout(time.Second))...),
 			wantContains: []string{"Timeout given more than once"},
+		},
+		{
+			name:         "[Fail] When: the pivot has Compensate ; Should: report it",
+			step:         Step("a", okAction, Pivot(), Compensate(undo)),
+			wantContains: []string{stepA, "pivot has Compensate"},
+		},
+		{
+			name:         "[Fail] When: the pivot has If ; Should: report it",
+			step:         Step("a", okAction, Pivot(), If(pred)),
+			wantContains: []string{stepA, "pivot has If"},
+		},
+		{
+			name:         "[Fail] When: Pivot is given twice ; Should: report it",
+			step:         Step("a", okAction, twice(Pivot())...),
+			wantContains: []string{"Pivot given more than once"},
 		},
 		{
 			name:         "[Fail] When: After is given twice ; Should: report it",

@@ -34,6 +34,7 @@ type stepDef struct {
 	retry      RetryPolicy
 	policy     CompensationFailurePolicy
 	after      []string
+	pivot      bool
 	given      map[string]int
 	nilOptions int
 }
@@ -98,6 +99,14 @@ func OnCompensationFailure(p CompensationFailurePolicy) StepOption {
 	}
 }
 
+// Pivot marks the step as the point of no return. Steps after it cannot be compensated. A saga has at most one.
+func Pivot() StepOption {
+	return func(s *stepDef) {
+		s.pivot = true
+		s.given["Pivot"]++
+	}
+}
+
 // After makes the step wait for the steps called names. Call it once with every name.
 func After(names ...string) StepOption {
 	return func(s *stepDef) {
@@ -130,6 +139,15 @@ func checkStep[S any](d *stepDef) []error {
 	rules = append(rules, checkRetry(d.retry)...)
 	rules = append(rules, checkPolicy(d)...)
 	rules = append(rules, checkAfter(d.after)...)
+
+	if d.pivot && d.undo != nil {
+		rules = append(rules, "pivot has Compensate")
+	}
+
+	if d.pivot && d.pred != nil {
+		rules = append(rules, "pivot has If")
+	}
+
 	rules = append(rules, checkRepeats(d.given, d.nilOptions, "StepOption")...)
 
 	errs := make([]error, 0, len(rules))

@@ -25,6 +25,8 @@ var errNilSaga = errors.New("sagas: test: New returned a nil saga without an err
 
 func okAction(context.Context, *tripState) error { return nil }
 
+func okPredicate(*tripState) bool { return true }
+
 func okMiddleware(next Handler) Handler { return next }
 
 func okMiddleware2(next Handler) Handler { return next }
@@ -62,6 +64,7 @@ func Test_New(t *testing.T) {
 		name         string
 		build        func() error
 		wantErrs     []error
+		wantNoErrs   []error
 		wantContains []string
 	}{
 		{
@@ -146,7 +149,7 @@ func Test_New(t *testing.T) {
 			name:         "[Fail] When: two steps share a name ; Should: return ErrDuplicateStep naming it",
 			build:        func() error { return buildTrip(twice(step())...) },
 			wantErrs:     []error{ErrDuplicateStep},
-			wantContains: []string{`"a"`},
+			wantContains: []string{stepA},
 		},
 		{
 			name: "[Fail] When: two steps wait for each other ; Should: return ErrCycle naming both",
@@ -173,6 +176,68 @@ func Test_New(t *testing.T) {
 			},
 			wantErrs:     []error{ErrUnknownDependency, ErrCycle},
 			wantContains: []string{`"ghost"`, `"b"`, `"c"`},
+		},
+		{
+			name: "[Fail] When: two steps are pivots ; Should: reject it naming both",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, Pivot(), After("a")))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{sagaTrip, "more than one Pivot", `"a"`, `"b"`},
+		},
+		{
+			name: "[Fail] When: a step is parallel to the pivot ; Should: reject it naming the step",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "b"`, "neither before nor after the pivot"},
+		},
+		{
+			name: "[Fail] When: the pivot has Compensate ; Should: reject it",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot(), Compensate(okAction)))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "a"`, "pivot has Compensate"},
+		},
+		{
+			name:         "[Fail] When: the pivot has If ; Should: reject it",
+			build:        func() error { return buildTrip(Step("a", okAction, Pivot(), If(okPredicate))) },
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "a"`, "pivot has If"},
+		},
+		{
+			name: "[Fail] When: a step after the pivot has Compensate ; Should: reject it naming the step",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, After("a"), Compensate(okAction)))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "b"`, "after the pivot has Compensate"},
+		},
+		{
+			name: "[Fail] When: a cycle and one pivot exist ; Should: report only the cycle",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("b")),
+					Step("b", okAction, After("a")),
+					Step("p", okAction, Pivot()),
+				)
+			},
+			wantErrs:   []error{ErrCycle},
+			wantNoErrs: []error{ErrInvalidStep},
+		},
+		{
+			name: "[Fail] When: a cycle exists and the pivot has Compensate ; Should: report both errors",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("b")),
+					Step("b", okAction, After("a")),
+					Step("p", okAction, Pivot(), Compensate(okAction)),
+				)
+			},
+			wantErrs:     []error{ErrCycle, ErrInvalidStep},
+			wantContains: []string{"pivot has Compensate"},
 		},
 		{
 			name: "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
@@ -209,6 +274,10 @@ func Test_New(t *testing.T) {
 
 			for _, want := range tt.wantErrs {
 				require.ErrorIs(t, err, want)
+			}
+
+			for _, no := range tt.wantNoErrs {
+				require.NotErrorIs(t, err, no)
 			}
 
 			for _, want := range tt.wantContains {

@@ -163,3 +163,53 @@ func Test_link(t *testing.T) {
 		})
 	}
 }
+
+func Test_zones(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		parents [][]int
+		pivot   int
+		want    []Zone
+	}{
+		{
+			name:    "[Success] When: there is no pivot ; Should: make every step compensable",
+			parents: [][]int{{}, {0}},
+			pivot:   -1,
+			want:    []Zone{ZoneCompensable, ZoneCompensable},
+		},
+		{
+			name:    "[Success] When: the pivot ends a chain ; Should: leave nothing forward-only",
+			parents: [][]int{{}, {0}, {1}},
+			pivot:   2,
+			want:    []Zone{ZoneCompensable, ZoneCompensable, ZonePivot},
+		},
+		{
+			name:    "[Success] When: steps follow the pivot ; Should: make its descendants forward-only",
+			parents: [][]int{{}, {0}, {1}, {2}},
+			pivot:   1,
+			want:    []Zone{ZoneCompensable, ZonePivot, ZoneForwardOnly, ZoneForwardOnly},
+		},
+		{
+			name:    "[Success] When: the graph is a diamond around the pivot ; Should: split before and after",
+			parents: [][]int{{}, {0}, {0}, {1, 2}, {3}},
+			pivot:   3,
+			want:    []Zone{ZoneCompensable, ZoneCompensable, ZoneCompensable, ZonePivot, ZoneForwardOnly},
+		},
+		{
+			name:    "[Success] When: a descendant is reached by two paths ; Should: mark it once as forward-only",
+			parents: [][]int{{}, {0}, {0}, {1, 2}},
+			pivot:   0,
+			want:    []Zone{ZonePivot, ZoneForwardOnly, ZoneForwardOnly, ZoneForwardOnly},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, zones(tt.parents, childrenOf(tt.parents), tt.pivot))
+		})
+	}
+}

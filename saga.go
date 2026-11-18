@@ -40,6 +40,7 @@ type Saga[S any] struct {
 	journal  Journal
 	recovery time.Duration
 	order    []int
+	pivot    int
 }
 
 type stepNode[S any] struct {
@@ -50,6 +51,7 @@ type stepNode[S any] struct {
 	policy   CompensationFailurePolicy
 	parents  []int
 	children []int
+	zone     Zone
 }
 
 // New builds the saga called name from its options. It returns every problem of the definition, joined.
@@ -75,6 +77,11 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 
 	g, graphErrs := checkGraph(d.steps)
 	errs = append(errs, graphErrs...)
+	errs = append(errs, checkPivot(name, d.steps)...)
+
+	if len(graphErrs) == 0 {
+		errs = append(errs, checkReach(d.steps, g.parents)...)
+	}
 
 	if err := checkState(reflect.TypeFor[S]()); err != nil {
 		errs = append(errs, err)
@@ -90,6 +97,7 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 func build[S any](name string, d *definition, g graph) *Saga[S] {
 	s := &Saga[S]{
 		name: name, journal: d.journal, recovery: d.recovery, order: g.order,
+		pivot: slices.IndexFunc(d.steps, func(s stepDef) bool { return s.pivot }),
 		steps: make([]stepNode[S], 0, len(d.steps)),
 	}
 	if s.recovery == 0 {
@@ -112,8 +120,11 @@ func build[S any](name string, d *definition, g graph) *Saga[S] {
 	}
 
 	children := childrenOf(g.parents)
+	zoned := zones(g.parents, children, s.pivot)
+
 	for i := range s.steps {
 		s.steps[i].children = children[i]
+		s.steps[i].zone = zoned[i]
 	}
 
 	return s
