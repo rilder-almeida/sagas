@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"sync"
@@ -172,6 +173,96 @@ func scribbleEvent(e *Event) {
 
 	for k := range e.Steps {
 		e.Steps[k].Name = "scribbled"
+	}
+}
+
+type readableJournal interface {
+	Journal
+	events(execution string) []Event
+}
+
+type aliasingJournal struct {
+	stored []*Event
+}
+
+func (j *aliasingJournal) Append(_ context.Context, e *Event) error {
+	j.stored = append(j.stored, e)
+
+	return nil
+}
+
+func (j *aliasingJournal) events(_ string) []Event {
+	out := make([]Event, len(j.stored))
+	for i, e := range j.stored {
+		out[i] = *e
+	}
+
+	return out
+}
+
+type shallowJournal struct {
+	stored []Event
+}
+
+func (j *shallowJournal) Append(_ context.Context, e *Event) error {
+	j.stored = append(j.stored, *e)
+
+	return nil
+}
+
+func (j *shallowJournal) events(_ string) []Event {
+	return j.stored
+}
+
+type leak struct {
+	scalar bool
+	slice  bool
+}
+
+func callerChangeLeaks(t *testing.T, j readableJournal) leak {
+	t.Helper()
+
+	e := journalEvent("leak", 1)
+	require.NoError(t, j.Append(t.Context(), &e))
+	scribbleEvent(&e)
+
+	stored := j.events("leak")
+	require.Len(t, stored, 1)
+
+	return leak{scalar: stored[0].Step == e.Step, slice: stored[0].Changed[0] == e.Changed[0]}
+}
+
+func Test_memoryJournal_Append_callerChange(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		journal readableJournal
+		want    leak
+	}{
+		{
+			name:    "[Success] When: memoryJournal and the caller changes the event ; Should: report no leak",
+			journal: newMemoryJournal(),
+			want:    leak{},
+		},
+		{
+			name:    "[Fail] When: a journal keeps the caller's pointer ; Should: report a scalar and a slice leak",
+			journal: &aliasingJournal{},
+			want:    leak{scalar: true, slice: true},
+		},
+		{
+			name:    "[Fail] When: a journal copies the event but shares its slices ; Should: report a slice leak only",
+			journal: &shallowJournal{},
+			want:    leak{slice: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, callerChangeLeaks(t, tt.journal))
+		})
 	}
 }
 
