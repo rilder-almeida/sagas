@@ -55,18 +55,18 @@ type EventKind string
 
 // EventKind values.
 const (
-	EventSagaStarted           EventKind = "saga started"
-	EventStepStarted           EventKind = "step started"
-	EventStepSucceeded         EventKind = "step succeeded"
-	EventStepFailed            EventKind = "step failed"
-	EventStepUnknown           EventKind = "step unknown"
-	EventStepSkipped           EventKind = "step skipped"
-	EventCompensationStarted   EventKind = "compensation started"
-	EventCompensationSucceeded EventKind = "compensation succeeded"
-	EventCompensationFailed    EventKind = "compensation failed"
-	EventCompensationBlocked   EventKind = "compensation blocked"
-	EventCompensationHalted    EventKind = "compensation halted"
-	EventSagaFinished          EventKind = "saga finished"
+	EventSagaStarted           EventKind = "saga-started"
+	EventStepStarted           EventKind = "step-started"
+	EventStepSucceeded         EventKind = "step-succeeded"
+	EventStepFailed            EventKind = "step-failed"
+	EventStepUnknown           EventKind = "step-unknown"
+	EventStepSkipped           EventKind = "step-skipped"
+	EventCompensationStarted   EventKind = "compensation-started"
+	EventCompensationSucceeded EventKind = "compensation-succeeded"
+	EventCompensationFailed    EventKind = "compensation-failed"
+	EventCompensationBlocked   EventKind = "compensation-blocked"
+	EventCompensationHalted    EventKind = "compensation-halted"
+	EventSagaFinished          EventKind = "saga-finished"
 )
 
 // Zone says whether a step can be compensated: before the pivot, the pivot itself, or after it. The empty string

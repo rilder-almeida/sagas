@@ -24,7 +24,7 @@ const (
 	StatusUnfinished         Status = "unfinished"
 	StatusCompleted          Status = "completed"
 	StatusCompensated        Status = "compensated"
-	StatusCompensationFailed Status = "compensation failed"
+	StatusCompensationFailed Status = "compensation-failed"
 	StatusIncomplete         Status = "incomplete"
 )
 
@@ -33,13 +33,13 @@ type StepStatus string
 
 // StepStatus values.
 const (
-	StepNotStarted         StepStatus = "not started"
+	StepNotStarted         StepStatus = "not-started"
 	StepSucceeded          StepStatus = "succeeded"
 	StepFailed             StepStatus = "failed"
 	StepUnknown            StepStatus = "unknown"
 	StepSkipped            StepStatus = "skipped"
 	StepCompensated        StepStatus = "compensated"
-	StepCompensationFailed StepStatus = "compensation failed"
+	StepCompensationFailed StepStatus = "compensation-failed"
 	StepBlocked            StepStatus = "blocked"
 	StepHalted             StepStatus = "halted"
 )
