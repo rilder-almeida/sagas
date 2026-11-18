@@ -145,14 +145,6 @@ func withEvent(e *Event, change func(*Event)) *Event {
 	return &out
 }
 
-func cloneEvent(e *Event) *Event {
-	if e == nil {
-		return nil
-	}
-
-	return withEvent(e, func(*Event) {})
-}
-
 func scribble(events []Event) {
 	for i := range events {
 		scribbleEvent(&events[i])
@@ -160,10 +152,6 @@ func scribble(events []Event) {
 }
 
 func scribbleEvent(e *Event) {
-	if e == nil {
-		return
-	}
-
 	e.Step = "scribbled"
 	e.Seq = 99
 
@@ -380,21 +368,20 @@ func Test_memoryJournal_Append(t *testing.T) {
 
 			j := newMemoryJournal()
 			for i := range tt.prior {
-				require.NoError(t, j.Append(t.Context(), cloneEvent(&tt.prior[i])))
+				require.NoError(t, j.Append(t.Context(), &tt.prior[i]))
 			}
 
-			in := cloneEvent(tt.event)
-			err := j.Append(t.Context(), in)
+			err := j.Append(t.Context(), tt.event)
 
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantMsg, errText(err))
-
-			scribbleEvent(in)
 
 			for execution, want := range tt.want {
 				scribble(j.events(execution))
 				assert.Equal(t, want, j.events(execution), execution)
 			}
+
+			assert.Equal(t, leak{}, callerChangeLeaks(t, j))
 		})
 	}
 }
