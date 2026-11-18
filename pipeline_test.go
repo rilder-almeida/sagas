@@ -654,6 +654,98 @@ func assertCallErr(t *testing.T, got, want error) {
 	require.ErrorIs(t, got, want)
 }
 
+type requireRanRow struct {
+	name      string
+	noState   bool
+	next      func(reached *bool) Handler
+	wantErr   error
+	wantReach bool
+}
+
+func reaching(reached *bool, h Handler) Handler {
+	return func(ctx context.Context) error {
+		*reached = true
+
+		return h(ctx)
+	}
+}
+
+func requireRanRows() []requireRanRow {
+	run := func(err error) Handler {
+		return runCall(func(context.Context, *pipeState) error { return err })
+	}
+
+	return []requireRanRow{
+		{
+			name:    "[Fail] When: the context has no call state ; Should: fail with ErrCallContextLost, no next",
+			noState: true,
+			next: func(reached *bool) Handler {
+				return reaching(reached, func(context.Context) error { return nil })
+			},
+			wantErr: ErrCallContextLost,
+		},
+		{
+			name: "[Fail] When: the wrapped handler returns its own error ; Should: return it unchanged",
+			next: func(reached *bool) Handler {
+				return reaching(reached, func(context.Context) error { return errBoom })
+			},
+			wantErr:   errBoom,
+			wantReach: true,
+		},
+		{
+			name: "[Fail] When: the wrapped handler returns nil and no call ran ; Should: fail with ErrCallNotRun",
+			next: func(reached *bool) Handler {
+				return reaching(reached, func(context.Context) error { return nil })
+			},
+			wantErr:   ErrCallNotRun,
+			wantReach: true,
+		},
+		{
+			name: "[Fail] When: the last call failed and next returns nil ; Should: return the call error",
+			next: func(reached *bool) Handler {
+				return reaching(reached, func(ctx context.Context) error { return swallow(run(errCall)(ctx)) })
+			},
+			wantErr:   errCall,
+			wantReach: true,
+		},
+		{
+			name: "[Success] When: the last call succeeded ; Should: return nil",
+			next: func(reached *bool) Handler {
+				return reaching(reached, run(nil))
+			},
+			wantReach: true,
+		},
+	}
+}
+
+func Test_requireRan(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range requireRanRows() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if !tt.noState {
+				ctx = context.WithValue(ctx, callStateKey{}, &callState[pipeState]{base: baseOf(t, pipeState{})})
+			}
+
+			reached := false
+			err := requireRan[pipeState](tt.next(&reached))(ctx)
+
+			assert.Equal(t, tt.wantReach, reached)
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
 func Test_pipeline(t *testing.T) {
 	t.Parallel()
 
