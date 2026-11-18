@@ -34,8 +34,10 @@ func eventTime(seq int) time.Time {
 }
 
 func runEvents(tail ...Event) []Event {
-	events := append([]Event{{Kind: EventSagaStarted, Steps: runSteps()}}, tail...)
+	return runEventsFrom(append([]Event{{Kind: EventSagaStarted, Steps: runSteps()}}, tail...))
+}
 
+func runEventsFrom(events []Event) []Event {
 	for i := range events {
 		base := journalEvent("x1", i+1)
 		events[i].Saga, events[i].Execution, events[i].Writer = base.Saga, base.Execution, base.Writer
@@ -61,14 +63,106 @@ func wantSteps(reached ...StepResult) []StepResult {
 	return steps
 }
 
+func literalEvents(tail ...Event) []Event {
+	steps := []StepZone{
+		{Name: holdStep, Zone: "compensable"},
+		{Name: bookStep, Zone: "compensable"},
+		{Name: payStep, Zone: "pivot"},
+		{Name: shipStep, Zone: "forward-only"},
+		{Name: notifyStep, Zone: "forward-only"},
+		{Name: archiveStep, Zone: "forward-only"},
+	}
+
+	return runEventsFrom(append([]Event{{Kind: "saga-started", Steps: steps}}, tail...))
+}
+
+func wantLiteralSteps(reached ...StepResult) []StepResult {
+	steps := wantSteps(reached...)
+
+	for i := range steps {
+		if steps[i].Status == StepNotStarted {
+			steps[i].Status = "not-started"
+		}
+	}
+
+	return steps
+}
+
+type buildResultRow struct {
+	name   string
+	events []Event
+	want   Result
+}
+
+func finished(status Status) Event {
+	return Event{Kind: "saga-finished", Status: status}
+}
+
+func storedTextRows() []buildResultRow {
+	return []buildResultRow{
+		{
+			name: "[Success] When: the stored texts say a run completed ; Should: report completed and succeeded",
+			events: literalEvents(
+				Event{Kind: "step-started", Step: holdStep},
+				Event{Kind: "step-succeeded", Step: holdStep},
+				finished(StatusCompleted),
+			),
+			want: Result{Execution: "x1", Status: "completed", Steps: wantLiteralSteps(
+				StepResult{Name: holdStep, Status: "succeeded", Start: eventTime(2), End: eventTime(3)},
+			)},
+		},
+		{
+			name: "[Success] When: the stored texts say a run was compensated ; Should: report compensated and failed",
+			events: literalEvents(
+				Event{Kind: "step-succeeded", Step: holdStep},
+				Event{Kind: "step-failed", Step: bookStep},
+				Event{Kind: "compensation-started", Step: holdStep},
+				Event{Kind: "compensation-succeeded", Step: holdStep},
+				finished(StatusCompensated),
+			),
+			want: Result{Execution: "x1", Status: "compensated", Steps: wantLiteralSteps(
+				StepResult{Name: holdStep, Status: "compensated", End: eventTime(5)},
+				StepResult{Name: bookStep, Status: "failed", End: eventTime(3)},
+			)},
+		},
+		{
+			name: "[Fail] When: the stored texts say a compensation failed ; Should: report it and halted",
+			events: literalEvents(
+				Event{Kind: "compensation-failed", Step: bookStep},
+				Event{Kind: "compensation-halted", Step: holdStep},
+				finished(StatusCompensationFailed),
+			),
+			want: Result{Execution: "x1", Status: "compensation-failed", Steps: wantLiteralSteps(
+				StepResult{Name: holdStep, Status: "halted", End: eventTime(3)},
+				StepResult{Name: bookStep, Status: "compensation-failed", End: eventTime(2)},
+			)},
+		},
+		{
+			name: "[Fail] When: the stored texts say a run is incomplete ; Should: report unknown, skipped and blocked",
+			events: literalEvents(
+				Event{Kind: "step-unknown", Step: payStep},
+				Event{Kind: "step-skipped", Step: shipStep},
+				Event{Kind: "compensation-blocked", Step: bookStep},
+				finished(StatusIncomplete),
+			),
+			want: Result{Execution: "x1", Status: "incomplete", Steps: wantLiteralSteps(
+				StepResult{Name: bookStep, Status: "blocked", End: eventTime(4)},
+				StepResult{Name: payStep, Status: "unknown", End: eventTime(2)},
+				StepResult{Name: shipStep, Status: "skipped"},
+			)},
+		},
+		{
+			name:   "[Fail] When: the stored texts hold only saga-started ; Should: report unfinished and not-started",
+			events: literalEvents(),
+			want:   Result{Execution: "x1", Status: "unfinished", Steps: wantLiteralSteps()},
+		},
+	}
+}
+
 func Test_buildResult(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name   string
-		events []Event
-		want   Result
-	}{
+	tests := append([]buildResultRow{
 		{
 			name: "[Success] When: every step succeeds ; Should: report a completed run with each outcome",
 			events: runEvents(
@@ -252,7 +346,7 @@ func Test_buildResult(t *testing.T) {
 			events: nil,
 			want:   Result{Execution: "", Status: StatusUnfinished, Steps: nil},
 		},
-	}
+	}, storedTextRows()...)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -423,6 +517,15 @@ func Test_Result_Pending(t *testing.T) {
 				Event{Kind: EventSagaFinished, Status: StatusCompensated},
 			),
 			want: nil,
+		},
+		{
+			name: "[Fail] When: the stored zones say the pivot succeeded ; Should: list forward-only steps left undone",
+			events: literalEvents(
+				Event{Kind: "step-failed", Step: holdStep},
+				Event{Kind: "step-succeeded", Step: payStep},
+				Event{Kind: "step-failed", Step: shipStep},
+			),
+			want: []string{shipStep, notifyStep, archiveStep},
 		},
 		{
 			name: "[Fail] When: a compensation fails and another is blocked ; Should: list both in step order",
