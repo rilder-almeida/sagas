@@ -415,6 +415,37 @@ func pipelineCallPanicRow() pipelineRow {
 	}
 }
 
+func observePanic(r *recorder) Middleware {
+	return func(next Handler) Handler {
+		return func(ctx context.Context) error {
+			err := next(ctx)
+
+			if panicked, ok := errors.AsType[*PanicError](err); ok {
+				r.add(fmt.Sprint("panic:", panicked.Value))
+			}
+
+			return err
+		}
+	}
+}
+
+func pipelineMiddlewareSeesPanicRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: the call panics ; Should: give middleware a PanicError and return unknown after 1 attempt",
+		spec: actionSpec(),
+		middleware: func(r *recorder) []Middleware {
+			return []Middleware{observePanic(r)}
+		},
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			return func(context.Context, *pipeState) error { panic("bad call") }
+		},
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantPanic:    true,
+		wantTrace:    []string{"panic:bad call"},
+	}
+}
+
 func pipelineNotRunRow() pipelineRow {
 	return pipelineRow{
 		name: "[Fail] When: a middleware returns nil without calling next ; Should: fail with ErrCallNotRun",
@@ -784,6 +815,7 @@ func Test_pipeline(t *testing.T) {
 		pipelineFailureRow(),
 		pipelinePermanentRow(),
 		pipelineCallPanicRow(),
+		pipelineMiddlewareSeesPanicRow(),
 		pipelineNotRunRow(),
 		pipelineTwiceRow(),
 		pipelineCorruptBaseRow(),

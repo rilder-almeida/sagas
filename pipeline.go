@@ -141,7 +141,7 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 		fresh, err := copyState(st.base)
 		if err != nil {
 			err = Permanent(err)
-		} else if err = call(ctx, fresh); err == nil {
+		} else if err = recoverer(func(ctx context.Context) error { return call(ctx, fresh) })(ctx); err == nil {
 			st.out = fresh
 		}
 
