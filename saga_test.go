@@ -19,7 +19,12 @@ type otherState struct {
 	Car string
 }
 
-const sagaTrip = `saga "trip"`
+const (
+	quotedB  = `"b"`
+	sagaTrip = `saga "trip"`
+	quotedA  = `"a"`
+	noReach  = "neither before nor after"
+)
 
 var errNilSaga = errors.New("sagas: test: New returned a nil saga without an error")
 
@@ -54,19 +59,178 @@ func oneStep(opts ...StepOption) (*Saga[tripState], error) {
 	return New[tripState]("trip", Step("a", okAction, opts...))
 }
 
+type newCase struct {
+	name         string
+	build        func() error
+	wantErrs     []error
+	wantNoErrs   []error
+	wantContains []string
+	wantAbsent   []string
+}
+
+func newGraphCases() []newCase {
+	step := func(opts ...StepOption) Option { return Step("a", okAction, opts...) }
+
+	return []newCase{
+		{
+			name:         "[Fail] When: two steps share a name ; Should: return ErrDuplicateStep naming it",
+			build:        func() error { return buildTrip(twice(step())...) },
+			wantErrs:     []error{ErrDuplicateStep},
+			wantContains: []string{`step "a": declared more than once`},
+		},
+		{
+			name: "[Fail] When: two steps wait for each other ; Should: return ErrCycle naming both",
+			build: func() error {
+				return buildTrip(Step("a", okAction, After("b")), Step("b", okAction, After("a")))
+			},
+			wantErrs:     []error{ErrCycle},
+			wantContains: []string{`saga "trip"`, quotedA, quotedB, "form a cycle"},
+		},
+		{
+			name: "[Fail] When: a step only waits behind a cycle ; Should: name the cycle steps and not that step",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("b")),
+					Step("b", okAction, After("a")),
+					Step("c", okAction, After("a")),
+				)
+			},
+			wantErrs:     []error{ErrCycle},
+			wantContains: []string{quotedA, quotedB},
+			wantAbsent:   []string{`"c"`},
+		},
+		{
+			name:         "[Fail] When: a step waits for itself ; Should: return ErrCycle naming it",
+			build:        func() error { return buildTrip(Step("a", okAction, After("a"))) },
+			wantErrs:     []error{ErrCycle},
+			wantContains: []string{`"a"`},
+		},
+		{
+			name: "[Fail] When: one step has an unknown dependency and two others form a cycle ; Should: return both",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("ghost")),
+					Step("b", okAction, After("c")),
+					Step("c", okAction, After("b")),
+				)
+			},
+			wantErrs:     []error{ErrUnknownDependency, ErrCycle},
+			wantContains: []string{`"ghost"`, quotedB, `"c"`},
+		},
+		{
+			name: "[Fail] When: two steps are pivots ; Should: reject it naming both",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, Pivot(), After("a")))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{sagaTrip, "more than one Pivot", `"a"`, quotedB},
+		},
+		{
+			name: "[Fail] When: a cycle exists and two steps are pivots ; Should: report the cycle and the pivot count",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("b")),
+					Step("b", okAction, After("a")),
+					Step("p", okAction, Pivot()),
+					Step("q", okAction, Pivot()),
+				)
+			},
+			wantErrs:     []error{ErrCycle, ErrInvalidStep},
+			wantContains: []string{"more than one Pivot"},
+			wantAbsent:   []string{noReach},
+		},
+		{
+			name: "[Fail] When: two pivots and a step parallel to both exist ; Should: report only the pivot count",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, Pivot()),
+					Step("b", okAction, Pivot(), After("a")),
+					Step("c", okAction),
+				)
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"more than one Pivot"},
+			wantAbsent:   []string{noReach},
+		},
+		{
+			name: "[Fail] When: a dependency is unknown and a step is parallel to the pivot ; Should: report only that",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, Pivot()),
+					Step("b", okAction, After("ghost")),
+					Step("c", okAction),
+				)
+			},
+			wantErrs:     []error{ErrUnknownDependency},
+			wantNoErrs:   []error{ErrInvalidStep},
+			wantContains: []string{`step "b"`, `After names unknown step "ghost"`},
+			wantAbsent:   []string{noReach},
+		},
+		{
+			name: "[Fail] When: a step is parallel to the pivot ; Should: reject it naming the step",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "b"`, "neither before nor after the pivot"},
+		},
+		{
+			name: "[Fail] When: the pivot has Compensate ; Should: reject it",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot(), Compensate(okAction)))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "a"`, "pivot has Compensate"},
+		},
+		{
+			name:         "[Fail] When: the pivot has If ; Should: reject it",
+			build:        func() error { return buildTrip(Step("a", okAction, Pivot(), If(okPredicate))) },
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "a"`, "pivot has If"},
+		},
+		{
+			name: "[Fail] When: a step after the pivot has Compensate ; Should: reject it naming the step",
+			build: func() error {
+				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, After("a"), Compensate(okAction)))
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "b"`, "after the pivot has Compensate"},
+		},
+		{
+			name: "[Fail] When: a cycle and one pivot exist ; Should: report only the cycle",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("b")),
+					Step("b", okAction, After("a")),
+					Step("p", okAction, Pivot()),
+				)
+			},
+			wantErrs:   []error{ErrCycle},
+			wantNoErrs: []error{ErrInvalidStep},
+			wantAbsent: []string{noReach},
+		},
+		{
+			name: "[Fail] When: a cycle exists and the pivot has Compensate ; Should: report both errors",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("b")),
+					Step("b", okAction, After("a")),
+					Step("p", okAction, Pivot(), Compensate(okAction)),
+				)
+			},
+			wantErrs:     []error{ErrCycle, ErrInvalidStep},
+			wantContains: []string{"pivot has Compensate"},
+		},
+	}
+}
+
 func Test_New(t *testing.T) {
 	t.Parallel()
 
 	step := func(opts ...StepOption) Option { return Step("a", okAction, opts...) }
 	journal := newMemoryJournal()
 
-	tests := []struct {
-		name         string
-		build        func() error
-		wantErrs     []error
-		wantNoErrs   []error
-		wantContains []string
-	}{
+	tests := slices.Concat(newGraphCases(), []newCase{
 		{
 			name:  "[Success] When: the saga is valid ; Should: return a saga",
 			build: func() error { return buildTrip(step()) },
@@ -146,100 +310,6 @@ func Test_New(t *testing.T) {
 			wantContains: []string{"WithRecoveryTimeout given more than once"},
 		},
 		{
-			name:         "[Fail] When: two steps share a name ; Should: return ErrDuplicateStep naming it",
-			build:        func() error { return buildTrip(twice(step())...) },
-			wantErrs:     []error{ErrDuplicateStep},
-			wantContains: []string{stepA},
-		},
-		{
-			name: "[Fail] When: two steps wait for each other ; Should: return ErrCycle naming both",
-			build: func() error {
-				return buildTrip(Step("a", okAction, After("b")), Step("b", okAction, After("a")))
-			},
-			wantErrs:     []error{ErrCycle},
-			wantContains: []string{`"a"`, `"b"`},
-		},
-		{
-			name:         "[Fail] When: a step waits for itself ; Should: return ErrCycle naming it",
-			build:        func() error { return buildTrip(Step("a", okAction, After("a"))) },
-			wantErrs:     []error{ErrCycle},
-			wantContains: []string{`"a"`},
-		},
-		{
-			name: "[Fail] When: one step has an unknown dependency and two others form a cycle ; Should: return both",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("ghost")),
-					Step("b", okAction, After("c")),
-					Step("c", okAction, After("b")),
-				)
-			},
-			wantErrs:     []error{ErrUnknownDependency, ErrCycle},
-			wantContains: []string{`"ghost"`, `"b"`, `"c"`},
-		},
-		{
-			name: "[Fail] When: two steps are pivots ; Should: reject it naming both",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, Pivot(), After("a")))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{sagaTrip, "more than one Pivot", `"a"`, `"b"`},
-		},
-		{
-			name: "[Fail] When: a step is parallel to the pivot ; Should: reject it naming the step",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, "neither before nor after the pivot"},
-		},
-		{
-			name: "[Fail] When: the pivot has Compensate ; Should: reject it",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot(), Compensate(okAction)))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "a"`, "pivot has Compensate"},
-		},
-		{
-			name:         "[Fail] When: the pivot has If ; Should: reject it",
-			build:        func() error { return buildTrip(Step("a", okAction, Pivot(), If(okPredicate))) },
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "a"`, "pivot has If"},
-		},
-		{
-			name: "[Fail] When: a step after the pivot has Compensate ; Should: reject it naming the step",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, After("a"), Compensate(okAction)))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, "after the pivot has Compensate"},
-		},
-		{
-			name: "[Fail] When: a cycle and one pivot exist ; Should: report only the cycle",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("b")),
-					Step("b", okAction, After("a")),
-					Step("p", okAction, Pivot()),
-				)
-			},
-			wantErrs:   []error{ErrCycle},
-			wantNoErrs: []error{ErrInvalidStep},
-		},
-		{
-			name: "[Fail] When: a cycle exists and the pivot has Compensate ; Should: report both errors",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("b")),
-					Step("b", okAction, After("a")),
-					Step("p", okAction, Pivot(), Compensate(okAction)),
-				)
-			},
-			wantErrs:     []error{ErrCycle, ErrInvalidStep},
-			wantContains: []string{"pivot has Compensate"},
-		},
-		{
 			name: "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
 			build: func() error {
 				_, err := New[chanState]("trip", Step("a", func(context.Context, *chanState) error { return nil }))
@@ -259,7 +329,7 @@ func Test_New(t *testing.T) {
 			wantErrs:     []error{ErrInvalidStep, ErrInvalidState},
 			wantContains: []string{"action is nil", "chanState"},
 		},
-	}
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -280,10 +350,20 @@ func Test_New(t *testing.T) {
 				require.NotErrorIs(t, err, no)
 			}
 
-			for _, want := range tt.wantContains {
-				assert.ErrorContains(t, err, want)
-			}
+			requireText(t, err, tt.wantContains, tt.wantAbsent)
 		})
+	}
+}
+
+func requireText(t *testing.T, err error, contains, absent []string) {
+	t.Helper()
+
+	for _, want := range contains {
+		require.ErrorContains(t, err, want)
+	}
+
+	for _, no := range absent {
+		require.NotContains(t, err.Error(), no)
 	}
 }
 

@@ -139,15 +139,6 @@ func checkStep[S any](d *stepDef) []error {
 	rules = append(rules, checkRetry(d.retry)...)
 	rules = append(rules, checkPolicy(d)...)
 	rules = append(rules, checkAfter(d.after)...)
-
-	if d.pivot && d.undo != nil {
-		rules = append(rules, "pivot has Compensate")
-	}
-
-	if d.pivot && d.pred != nil {
-		rules = append(rules, "pivot has If")
-	}
-
 	rules = append(rules, checkRepeats(d.given, d.nilOptions, "StepOption")...)
 
 	errs := make([]error, 0, len(rules))

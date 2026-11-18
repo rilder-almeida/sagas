@@ -12,7 +12,7 @@ func indexSteps(defs []stepDef) (map[string]int, []error) {
 
 	for i := range defs {
 		if _, seen := index[defs[i].name]; seen {
-			errs = append(errs, fmt.Errorf("%w: step %q is declared more than once", ErrDuplicateStep, defs[i].name))
+			errs = append(errs, fmt.Errorf("%w: step %q: declared more than once", ErrDuplicateStep, defs[i].name))
 
 			continue
 		}
@@ -34,7 +34,8 @@ func link(defs []stepDef, index map[string]int) ([][]int, []error) {
 		for _, name := range defs[i].after {
 			p, ok := index[name]
 			if !ok {
-				errs = append(errs, fmt.Errorf("%w: step %q depends on %q", ErrUnknownDependency, defs[i].name, name))
+				errs = append(errs,
+					fmt.Errorf("%w: step %q: After names unknown step %q", ErrUnknownDependency, defs[i].name, name))
 
 				continue
 			}
@@ -128,8 +129,8 @@ func reach(adj [][]int, from int) []bool {
 	return seen
 }
 
-func zones(parents, children [][]int, pivot int) []Zone {
-	out := make([]Zone, len(parents))
+func zones(children [][]int, pivot int) []Zone {
+	out := make([]Zone, len(children))
 	for i := range out {
 		out[i] = ZoneCompensable
 	}
@@ -161,27 +162,37 @@ func pivotsOf(defs []stepDef) []int {
 	return pivots
 }
 
-func checkPivot(saga string, defs []stepDef) []error {
-	pivots := pivotsOf(defs)
-	if len(pivots) <= 1 {
-		return nil
-	}
+func checkPivot(saga string, defs []stepDef, pivots []int, parents [][]int, graphErrs []error) []error {
+	var errs []error
 
-	names := make([]string, 0, len(pivots))
 	for _, p := range pivots {
-		names = append(names, fmt.Sprintf("%q", defs[p].name))
+		if defs[p].undo != nil {
+			errs = append(errs, fmt.Errorf("%w: step %q: pivot has Compensate", ErrInvalidStep, defs[p].name))
+		}
+
+		if defs[p].pred != nil {
+			errs = append(errs, fmt.Errorf("%w: step %q: pivot has If", ErrInvalidStep, defs[p].name))
+		}
 	}
 
-	return []error{fmt.Errorf("%w: saga %q: more than one Pivot, on steps %v", ErrInvalidStep, saga, names)}
+	switch {
+	case len(pivots) > 1:
+		names := make([]string, 0, len(pivots))
+		for _, p := range pivots {
+			names = append(names, fmt.Sprintf("%q", defs[p].name))
+		}
+
+		errs = append(errs,
+			fmt.Errorf("%w: saga %q: more than one Pivot, on steps %v", ErrInvalidStep, saga, names))
+	case len(pivots) == 1 && len(graphErrs) == 0:
+		errs = append(errs, checkReach(defs, parents, pivots[0])...)
+	default:
+	}
+
+	return errs
 }
 
-func checkReach(defs []stepDef, parents [][]int) []error {
-	pivots := pivotsOf(defs)
-	if len(pivots) != 1 {
-		return nil
-	}
-
-	pivot := pivots[0]
+func checkReach(defs []stepDef, parents [][]int, pivot int) []error {
 	before := reach(parents, pivot)
 	after := reach(childrenOf(parents), pivot)
 
@@ -205,22 +216,39 @@ func checkReach(defs []stepDef, parents [][]int) []error {
 type graph struct {
 	parents [][]int
 	order   []int
+	pivot   int
 }
 
-func checkGraph(defs []stepDef) (graph, []error) {
+func checkGraph(saga string, defs []stepDef) (graph, []error) {
 	index, errs := indexSteps(defs)
 	parents, linkErrs := link(defs, index)
 	errs = append(errs, linkErrs...)
 
 	o := topoOrder(parents)
 	if len(o.cycle) > 0 {
-		names := make([]string, 0, len(o.cycle))
-		for _, i := range o.cycle {
-			names = append(names, fmt.Sprintf("%q", defs[i].name))
-		}
-
-		errs = append(errs, fmt.Errorf("%w: steps %v depend on each other", ErrCycle, names))
+		errs = append(errs, cycleError(saga, defs, parents, o.cycle))
 	}
 
-	return graph{parents: parents, order: o.order}, errs
+	pivots := pivotsOf(defs)
+	pivot := -1
+
+	if len(pivots) == 1 {
+		pivot = pivots[0]
+	}
+
+	return graph{parents: parents, order: o.order, pivot: pivot},
+		append(errs, checkPivot(saga, defs, pivots, parents, errs)...)
+}
+
+func cycleError(saga string, defs []stepDef, parents [][]int, left []int) error {
+	children := childrenOf(parents)
+	names := make([]string, 0, len(left))
+
+	for _, i := range left {
+		if reach(children, i)[i] {
+			names = append(names, fmt.Sprintf("%q", defs[i].name))
+		}
+	}
+
+	return fmt.Errorf("%w: saga %q: steps %v form a cycle", ErrCycle, saga, names)
 }

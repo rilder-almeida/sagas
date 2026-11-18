@@ -106,7 +106,7 @@ func Test_After(t *testing.T) {
 			name:         "[Fail] When: a step waits for an unknown step ; Should: return ErrUnknownDependency",
 			steps:        []Option{node("a", "ghost")},
 			wantErr:      ErrUnknownDependency,
-			wantContains: `step "a"`,
+			wantContains: `After names unknown step "ghost"`,
 		},
 		{
 			name:         "[Fail] When: After is given twice ; Should: reject it",
@@ -156,6 +156,8 @@ func Test_Pivot(t *testing.T) {
 		wantPivot int
 		wantZones []Zone
 		wantErr   error
+
+		wantContains string
 	}{
 		{
 			name: "[Success] When: the pivot pays after three bookings and a receipt follows ; Should: set each zone",
@@ -176,9 +178,10 @@ func Test_Pivot(t *testing.T) {
 			wantZones: []Zone{ZoneCompensable, ZoneCompensable},
 		},
 		{
-			name:    "[Fail] When: Pivot is given twice on one step ; Should: reject it",
-			steps:   []Option{Step("a", okAction, twice(Pivot())...)},
-			wantErr: ErrInvalidStep,
+			name:         "[Fail] When: Pivot is given twice on one step ; Should: reject it",
+			steps:        []Option{Step("a", okAction, twice(Pivot())...)},
+			wantErr:      ErrInvalidStep,
+			wantContains: "Pivot given more than once",
 		},
 	}
 
@@ -189,7 +192,7 @@ func Test_Pivot(t *testing.T) {
 			s, err := New[tripState]("trip", tt.steps...)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
-				assert.ErrorContains(t, err, "Pivot given more than once")
+				assert.ErrorContains(t, err, tt.wantContains)
 
 				return
 			}
@@ -645,16 +648,6 @@ func Test_checkStep(t *testing.T) {
 			name:         "[Fail] When: Timeout is given twice ; Should: report it",
 			step:         Step("a", okAction, twice(Timeout(time.Second))...),
 			wantContains: []string{"Timeout given more than once"},
-		},
-		{
-			name:         "[Fail] When: the pivot has Compensate ; Should: report it",
-			step:         Step("a", okAction, Pivot(), Compensate(undo)),
-			wantContains: []string{stepA, "pivot has Compensate"},
-		},
-		{
-			name:         "[Fail] When: the pivot has If ; Should: report it",
-			step:         Step("a", okAction, Pivot(), If(pred)),
-			wantContains: []string{stepA, "pivot has If"},
 		},
 		{
 			name:         "[Fail] When: Pivot is given twice ; Should: report it",
