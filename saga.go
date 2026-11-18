@@ -86,10 +86,10 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 		return nil, err
 	}
 
-	return build[S](name, d, g), nil
+	return build[S](name, d, &g), nil
 }
 
-func build[S any](name string, d *definition, g graph) *Saga[S] {
+func build[S any](name string, d *definition, g *graph) *Saga[S] {
 	s := &Saga[S]{
 		name: name, journal: d.journal, recovery: d.recovery, order: g.order,
 		pivot: g.pivot,
@@ -114,11 +114,10 @@ func build[S any](name string, d *definition, g graph) *Saga[S] {
 		s.steps = append(s.steps, n)
 	}
 
-	children := childrenOf(g.parents)
-	zoned := zones(children, s.pivot)
+	zoned := zones(g.children, s.pivot)
 
 	for i := range s.steps {
-		s.steps[i].children = children[i]
+		s.steps[i].children = g.children[i]
 		s.steps[i].zone = zoned[i]
 	}
 

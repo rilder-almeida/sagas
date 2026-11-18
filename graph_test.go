@@ -70,7 +70,7 @@ func Test_topoOrder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := topoOrder(tt.parents)
+			got := topoOrder(tt.parents, childrenOf(tt.parents))
 			assert.Equal(t, tt.wantOrder, got.order)
 			assert.Equal(t, tt.wantCycle, got.cycle)
 		})

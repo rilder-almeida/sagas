@@ -69,8 +69,7 @@ type ordering struct {
 	cycle []int
 }
 
-func topoOrder(parents [][]int) ordering {
-	children := childrenOf(parents)
+func topoOrder(parents, children [][]int) ordering {
 	waiting := make([]int, len(parents))
 	order := make([]int, 0, len(parents))
 
@@ -162,7 +161,7 @@ func pivotsOf(defs []stepDef) []int {
 	return pivots
 }
 
-func checkPivot(saga string, defs []stepDef, pivots []int, parents [][]int, graphErrs []error) []error {
+func checkPivot(saga string, defs []stepDef, pivots []int, g *graph, graphErrs []error) []error {
 	var errs []error
 
 	for _, p := range pivots {
@@ -185,16 +184,16 @@ func checkPivot(saga string, defs []stepDef, pivots []int, parents [][]int, grap
 		errs = append(errs,
 			fmt.Errorf("%w: saga %q: more than one Pivot, on steps %v", ErrInvalidStep, saga, names))
 	case len(pivots) == 1 && len(graphErrs) == 0:
-		errs = append(errs, checkReach(defs, parents, pivots[0])...)
+		errs = append(errs, checkReach(defs, g, pivots[0])...)
 	default:
 	}
 
 	return errs
 }
 
-func checkReach(defs []stepDef, parents [][]int, pivot int) []error {
-	before := reach(parents, pivot)
-	after := reach(childrenOf(parents), pivot)
+func checkReach(defs []stepDef, g *graph, pivot int) []error {
+	before := reach(g.parents, pivot)
+	after := reach(g.children, pivot)
 
 	var errs []error
 
@@ -214,9 +213,10 @@ func checkReach(defs []stepDef, parents [][]int, pivot int) []error {
 }
 
 type graph struct {
-	parents [][]int
-	order   []int
-	pivot   int
+	parents  [][]int
+	children [][]int
+	order    []int
+	pivot    int
 }
 
 func checkGraph(saga string, defs []stepDef) (graph, []error) {
@@ -224,24 +224,26 @@ func checkGraph(saga string, defs []stepDef) (graph, []error) {
 	parents, linkErrs := link(defs, index)
 	errs = append(errs, linkErrs...)
 
-	o := topoOrder(parents)
+	g := graph{parents: parents, children: childrenOf(parents), pivot: -1}
+
+	o := topoOrder(g.parents, g.children)
+	g.order = o.order
+
 	if len(o.cycle) > 0 {
-		errs = append(errs, cycleError(saga, defs, parents, o.cycle))
+		errs = append(errs, cycleError(saga, defs, g.children, o.cycle))
 	}
 
 	pivots := pivotsOf(defs)
-	pivot := -1
-
 	if len(pivots) == 1 {
-		pivot = pivots[0]
+		g.pivot = pivots[0]
 	}
 
-	return graph{parents: parents, order: o.order, pivot: pivot},
-		append(errs, checkPivot(saga, defs, pivots, parents, errs)...)
+	errs = append(errs, checkPivot(saga, defs, pivots, &g, errs)...)
+
+	return g, errs
 }
 
-func cycleError(saga string, defs []stepDef, parents [][]int, left []int) error {
-	children := childrenOf(parents)
+func cycleError(saga string, defs []stepDef, children [][]int, left []int) error {
 	names := make([]string, 0, len(left))
 
 	for _, i := range left {

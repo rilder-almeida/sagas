@@ -84,7 +84,7 @@ func newGraphCases() []newCase {
 				return buildTrip(Step("a", okAction, After("b")), Step("b", okAction, After("a")))
 			},
 			wantErrs:     []error{ErrCycle},
-			wantContains: []string{`saga "trip"`, quotedA, quotedB, "form a cycle"},
+			wantContains: []string{sagaTrip, quotedA, quotedB, "form a cycle"},
 		},
 		{
 			name: "[Fail] When: a step only waits behind a cycle ; Should: name the cycle steps and not that step",
@@ -103,7 +103,7 @@ func newGraphCases() []newCase {
 			name:         "[Fail] When: a step waits for itself ; Should: return ErrCycle naming it",
 			build:        func() error { return buildTrip(Step("a", okAction, After("a"))) },
 			wantErrs:     []error{ErrCycle},
-			wantContains: []string{`"a"`},
+			wantContains: []string{quotedA},
 		},
 		{
 			name: "[Fail] When: one step has an unknown dependency and two others form a cycle ; Should: return both",
@@ -123,7 +123,7 @@ func newGraphCases() []newCase {
 				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, Pivot(), After("a")))
 			},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{sagaTrip, "more than one Pivot", `"a"`, quotedB},
+			wantContains: []string{sagaTrip, "more than one Pivot", quotedA, quotedB},
 		},
 		{
 			name: "[Fail] When: a cycle exists and two steps are pivots ; Should: report the cycle and the pivot count",
