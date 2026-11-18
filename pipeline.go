@@ -74,15 +74,19 @@ func classify(err error) outcomeKind {
 	}
 }
 
-func recoverer(next Handler) Handler {
-	return func(ctx context.Context) (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				err = &PanicError{Value: r, Stack: debug.Stack()}
-			}
-		}()
+func catchPanic(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = &PanicError{Value: r, Stack: debug.Stack()}
+		}
+	}()
 
-		return next(ctx)
+	return fn()
+}
+
+func recoverer(next Handler) Handler {
+	return func(ctx context.Context) error {
+		return catchPanic(func() error { return next(ctx) })
 	}
 }
 
@@ -141,7 +145,7 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 		fresh, err := copyState(st.base)
 		if err != nil {
 			err = Permanent(err)
-		} else if err = recoverer(func(ctx context.Context) error { return call(ctx, fresh) })(ctx); err == nil {
+		} else if err = catchPanic(func() error { return call(ctx, fresh) }); err == nil {
 			st.out = fresh
 		}
 
