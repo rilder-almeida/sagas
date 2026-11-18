@@ -160,6 +160,11 @@ func Test_classify(t *testing.T) {
 			want: outcomeUnknown,
 		},
 		{
+			name: "[Fail] When: a permanent error wraps ErrCallConcurrent ; Should: be a failure",
+			err:  Permanent(ErrCallConcurrent),
+			want: outcomeFailure,
+		},
+		{
 			name: "[Fail] When: a permanent error wraps a PanicError ; Should: be unknown",
 			err:  Permanent(&PanicError{Value: "bad"}),
 			want: outcomeUnknown,
@@ -659,23 +664,7 @@ func hedging(next Handler) Handler {
 }
 
 func hedgedCall(r *recorder) func(context.Context, *pipeState) error {
-	var (
-		mu    sync.Mutex
-		calls int
-	)
-
-	slow := slowCall(r)
-
-	return func(ctx context.Context, s *pipeState) error {
-		mu.Lock()
-		calls++
-		first := calls == 1
-		mu.Unlock()
-
-		if !first {
-			return slow(ctx, s)
-		}
-
+	return func(context.Context, *pipeState) error {
 		time.Sleep(time.Millisecond)
 		r.add(hedgeMark)
 
@@ -685,8 +674,8 @@ func hedgedCall(r *recorder) func(context.Context, *pipeState) error {
 
 func pipelineHedgedRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: middleware runs next twice at once and returns the first reply while the other " +
-			"call runs ; Should: end unknown after 1 attempt with both errors and never start attempt 2",
+		name: "[Fail] When: middleware runs next twice at once and returns the first reply ; " +
+			"Should: refuse the second call and end unknown after 1 attempt with one action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
 			return []Middleware{hedging}
@@ -694,8 +683,38 @@ func pipelineHedgedRow() pipelineRow {
 		call:         hedgedCall,
 		wantKind:     outcomeUnknown,
 		wantAttempts: 1,
-		wantErrs:     []error{errBoom, ErrCallUnfinished},
-		wantTrace:    []string{hedgeMark, slowMark},
+		wantErrs:     []error{ErrCallConcurrent, ErrCallUnfinished},
+		wantTrace:    []string{hedgeMark},
+	}
+}
+
+func waitingBoth(next Handler) Handler {
+	return func(ctx context.Context) error {
+		replies := make(chan error, 2)
+
+		for range 2 {
+			go func() { replies <- next(ctx) }()
+		}
+
+		discard(<-replies)
+
+		return swallow(<-replies)
+	}
+}
+
+func pipelineConcurrentWaitRow() pipelineRow {
+	return pipelineRow{
+		name: "[Success] When: middleware runs next twice at once and waits for both ; " +
+			"Should: refuse the second call and succeed with the copy of the one action",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{waitingBoth}
+		},
+		call:         slowCall,
+		wantKind:     outcomeSuccess,
+		wantAttempts: 1,
+		wantState:    &pipeState{A: 1},
+		wantTrace:    []string{slowMark},
 	}
 }
 
@@ -1072,6 +1091,7 @@ func Test_pipeline(t *testing.T) {
 		pipelineLateStartRow(),
 		pipelineLateSecondCallRow(),
 		pipelineHedgedRow(),
+		pipelineConcurrentWaitRow(),
 		pipelinePanicAfterLateStartRow(),
 	}
 

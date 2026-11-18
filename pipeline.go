@@ -16,6 +16,9 @@ var ErrCallNotRun = errors.New("sagas: middleware returned without running the c
 // ErrCallUnfinished is the error of a call that middleware returned from while the call was still running.
 var ErrCallUnfinished = errors.New("sagas: middleware returned before the call finished")
 
+// ErrCallConcurrent is the error of a call that middleware started while another call of the attempt was running.
+var ErrCallConcurrent = errors.New("sagas: middleware called next while a call was running")
+
 // ErrCallContextLost is the error of a call whose context no longer carries the call state.
 var ErrCallContextLost = errors.New("sagas: middleware passed on a context that lost the call state")
 
@@ -70,7 +73,7 @@ type callResult[S any] struct {
 
 type attemptProgress[S any] struct {
 	started bool
-	running int
+	running bool
 	last    callResult[S]
 }
 
@@ -83,25 +86,28 @@ type attemptState[S any] struct {
 
 type attemptStateKey struct{}
 
-func (a *attemptState[S]) start() bool {
+func (a *attemptState[S]) start() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.closed {
-		return false
+	switch {
+	case a.closed:
+		return ErrCallNotRun
+	case a.progress.running:
+		return ErrCallConcurrent
 	}
 
 	a.progress.started = true
-	a.progress.running++
+	a.progress.running = true
 
-	return true
+	return nil
 }
 
 func (a *attemptState[S]) finish(out *S, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.progress.running--
+	a.progress.running = false
 	a.progress.last = callResult[S]{out: out, err: err}
 }
 
@@ -185,7 +191,7 @@ func requireRan[S any](next Handler) Handler {
 		err := next(context.WithValue(ctx, attemptStateKey{}, at))
 		progress := at.close()
 
-		if progress.running > 0 {
+		if progress.running {
 			return Permanent(errors.Join(err, ErrCallUnfinished))
 		}
 
@@ -210,8 +216,8 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 			return Permanent(ErrCallContextLost)
 		}
 
-		if !at.start() {
-			return Permanent(ErrCallNotRun)
+		if err := at.start(); err != nil {
+			return Permanent(err)
 		}
 
 		fresh, err := copyState(at.base)
