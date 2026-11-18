@@ -30,17 +30,31 @@ func decodeRecords(tb testing.TB, out *bytes.Buffer) []map[string]any {
 	return records
 }
 
-func requireLastErr(tb testing.TB, got error, results []error) {
+func requireErrorText(tb testing.TB, err error, want string) {
 	tb.Helper()
 
-	last := results[len(results)-1]
-	if last == nil {
-		require.NoError(tb, got)
+	if want == "" {
+		require.NoError(tb, err)
 
 		return
 	}
 
-	require.ErrorIs(tb, got, last)
+	require.ErrorContains(tb, err, want)
+}
+
+func assertErrorAttr(tb testing.TB, rec map[string]any, want string) {
+	tb.Helper()
+
+	const baseKeys = 9
+
+	if want == "" {
+		assert.Len(tb, rec, baseKeys)
+
+		return
+	}
+
+	assert.Len(tb, rec, baseKeys+1)
+	assert.Contains(tb, rec["error"], want)
 }
 
 func Test_Slog(t *testing.T) {
@@ -48,30 +62,27 @@ func Test_Slog(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		direct     bool
 		phase      Phase
 		policy     RetryPolicy
 		results    []error
+		panicValue any
 		sleep      time.Duration
 		wantLevels []string
+		wantErrors []string
 	}{
-		{
-			name:       "[Fail] When: called outside a pipeline and fails ; Should: return the error and log no step",
-			direct:     true,
-			results:    []error{errCall},
-			wantLevels: []string{"WARN"},
-		},
 		{
 			name:       "[Success] When: the call succeeds ; Should: log one info record with every attribute",
 			phase:      PhaseAction,
 			results:    []error{nil},
 			wantLevels: []string{"INFO"},
+			wantErrors: []string{""},
 		},
 		{
 			name:       "[Fail] When: the call fails ; Should: log one warn record with the error",
 			phase:      PhaseAction,
 			results:    []error{Permanent(errCall)},
 			wantLevels: []string{"WARN"},
+			wantErrors: []string{"call failed"},
 		},
 		{
 			name:       "[Success] When: the first attempt fails ; Should: log attempts 1 and 2",
@@ -79,6 +90,7 @@ func Test_Slog(t *testing.T) {
 			policy:     RetryPolicy{Attempts: 2, Initial: time.Millisecond, NoJitter: true},
 			results:    []error{errCall, nil},
 			wantLevels: []string{"WARN", "INFO"},
+			wantErrors: []string{"call failed", ""},
 		},
 		{
 			name:       "[Success] When: the call sleeps three seconds ; Should: log a duration of three seconds",
@@ -86,6 +98,14 @@ func Test_Slog(t *testing.T) {
 			results:    []error{nil},
 			sleep:      3 * time.Second,
 			wantLevels: []string{"INFO"},
+			wantErrors: []string{""},
+		},
+		{
+			name:       "[Fail] When: the call panics ; Should: log one warn record with the panic value",
+			phase:      PhaseAction,
+			panicValue: "bad call",
+			wantLevels: []string{"WARN"},
+			wantErrors: []string{"sagas: panic: bad call"},
 		},
 	}
 
@@ -96,11 +116,21 @@ func Test_Slog(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var out bytes.Buffer
 
-				logger := slog.New(slog.NewJSONHandler(&out, nil))
+				spec := &callSpec{
+					saga:       "saga-1",
+					step:       "step-1",
+					phase:      tt.phase,
+					retry:      tt.policy,
+					middleware: []Middleware{Slog(slog.New(slog.NewJSONHandler(&out, nil)))},
+				}
 
 				attempt := 0
-				run := func(context.Context) error {
+				call := func(context.Context, *pipeState) error {
 					time.Sleep(tt.sleep)
+
+					if tt.panicValue != nil {
+						panic(tt.panicValue)
+					}
 
 					err := tt.results[attempt]
 					attempt++
@@ -108,50 +138,51 @@ func Test_Slog(t *testing.T) {
 					return err
 				}
 
-				var gotErr error
+				got := pipeline(spec, call)(t.Context(), "exec-1", baseOf(t, pipeState{}))
 
-				wantSaga, wantExecution, wantStep, firstAttempt := "saga-1", "exec-1", "step-1", 1
-
-				if tt.direct {
-					wantSaga, wantExecution, wantStep, firstAttempt = "", "", "", 0
-					gotErr = Slog(logger)(run)(t.Context())
-				} else {
-					spec := &callSpec{
-						saga:       wantSaga,
-						step:       wantStep,
-						phase:      tt.phase,
-						retry:      tt.policy,
-						middleware: []Middleware{Slog(logger)},
-					}
-					call := func(ctx context.Context, _ *pipeState) error { return run(ctx) }
-
-					gotErr = pipeline(spec, call)(t.Context(), wantExecution, baseOf(t, pipeState{})).err
-				}
-
-				requireLastErr(t, gotErr, tt.results)
+				requireErrorText(t, got.err, tt.wantErrors[len(tt.wantErrors)-1])
 
 				records := decodeRecords(t, &out)
-				require.Len(t, records, len(tt.results))
+				require.Len(t, records, len(tt.wantLevels))
 
-				for i, got := range records {
-					assert.Equal(t, tt.wantLevels[i], got["level"])
-					assert.Equal(t, wantSaga, got["saga"])
-					assert.Equal(t, wantExecution, got["execution"])
-					assert.Equal(t, wantStep, got["step"])
-					assert.Equal(t, string(tt.phase), got["phase"])
-					assert.InDelta(t, float64(firstAttempt+i), got["attempt"], 0)
-					assert.InDelta(t, float64(tt.sleep), got["duration"], 0)
+				for i, rec := range records {
+					assert.Equal(t, tt.wantLevels[i], rec["level"])
+					assert.Equal(t, "saga-1", rec["saga"])
+					assert.Equal(t, "exec-1", rec["execution"])
+					assert.Equal(t, "step-1", rec["step"])
+					assert.Equal(t, string(tt.phase), rec["phase"])
+					assert.InDelta(t, float64(i+1), rec["attempt"], 0)
+					assert.InDelta(t, float64(tt.sleep), rec["duration"], 0)
 
-					wantKeys := 9
-					if err := tt.results[i]; err != nil {
-						wantKeys++
-
-						assert.Equal(t, err.Error(), got["error"])
-					}
-
-					assert.Len(t, got, wantKeys)
+					assertErrorAttr(t, rec, tt.wantErrors[i])
 				}
 			})
 		})
 	}
+}
+
+func Test_Slog_direct(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+
+	h := func(context.Context) error { return errCall }
+
+	err := Slog(slog.New(slog.NewJSONHandler(&out, nil)))(h)(t.Context())
+
+	require.ErrorIs(t, err, errCall)
+
+	records := decodeRecords(t, &out)
+	require.Len(t, records, 1)
+
+	rec := records[0]
+	assert.Equal(t, "WARN", rec["level"])
+
+	for _, key := range []string{"saga", "execution", "step", "phase"} {
+		assert.Contains(t, rec, key)
+		assert.Empty(t, rec[key])
+	}
+
+	assert.InDelta(t, 0, rec["attempt"], 0)
+	assert.Equal(t, "call failed", rec["error"])
 }

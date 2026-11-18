@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// Slog returns middleware that logs each attempt to l with the saga, execution, step, phase, attempt and
-// duration, and the error when the attempt fails. It logs at info on success and at warn on error, never
-// logs the state, and returns the error of the call unchanged. Outside a pipeline call the step fields are empty.
+// Slog returns middleware that logs each attempt to l: saga, execution, step, phase, attempt, duration,
+// and the error when the attempt fails, at info on success and warn on error. It never logs the state and
+// returns the call error unchanged. Outside a pipeline call the step fields are empty.
 func Slog(l *slog.Logger) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context) error {
