@@ -97,60 +97,58 @@ func OnCompensationFailure(p CompensationFailurePolicy) StepOption {
 	}
 }
 
-func stepProblems[S any](d *stepDef) []error {
+func checkStep[S any](d *stepDef) []error {
 	rules := []string{}
 
 	if d.name == "" {
 		rules = append(rules, "empty name")
 	}
 
-	rules = append(rules, funcProblem[func(context.Context, *S) error](d.do, "action"))
+	rules = append(rules, checkFunc[func(context.Context, *S) error](d.do, "action")...)
 
 	if d.undo != nil {
-		rules = append(rules, funcProblem[func(context.Context, *S) error](d.undo, "Compensate function"))
+		rules = append(rules, checkFunc[func(context.Context, *S) error](d.undo, "Compensate function")...)
 	}
 
 	if d.pred != nil {
-		rules = append(rules, funcProblem[func(*S) bool](d.pred, "If function"))
+		rules = append(rules, checkFunc[func(*S) bool](d.pred, "If function")...)
 	}
 
 	if d.timeout < 0 {
 		rules = append(rules, "Timeout is negative")
 	}
 
-	rules = append(rules, retryProblems(d.retry)...)
-	rules = append(rules, policyProblems(d)...)
-	rules = append(rules, givenProblems(d.given, d.nilOptions, "StepOption")...)
+	rules = append(rules, checkRetry(d.retry)...)
+	rules = append(rules, checkPolicy(d)...)
+	rules = append(rules, checkRepeats(d.given, d.nilOptions, "StepOption")...)
 
 	errs := make([]error, 0, len(rules))
 
 	for _, rule := range rules {
-		if rule != "" {
-			errs = append(errs, fmt.Errorf("%w: step %q: %s", ErrInvalidStep, d.name, rule))
-		}
+		errs = append(errs, fmt.Errorf("%w: step %q: %s", ErrInvalidStep, d.name, rule))
 	}
 
 	return errs
 }
 
-func funcProblem[F any](v any, label string) string {
+func checkFunc[F any](v any, label string) []string {
 	f, ok := v.(F)
 	if !ok {
 		if v == nil {
-			return label + " is nil"
+			return []string{label + " is nil"}
 		}
 
-		return label + " is for another state type"
+		return []string{label + " is for another state type"}
 	}
 
 	if reflect.ValueOf(f).IsNil() {
-		return label + " is nil"
+		return []string{label + " is nil"}
 	}
 
-	return ""
+	return nil
 }
 
-func policyProblems(d *stepDef) []string {
+func checkPolicy(d *stepDef) []string {
 	var rules []string
 
 	switch d.policy {
@@ -166,7 +164,7 @@ func policyProblems(d *stepDef) []string {
 	return rules
 }
 
-func givenProblems(given map[string]int, nilOptions int, kind string) []string {
+func checkRepeats(given map[string]int, nilOptions int, kind string) []string {
 	var rules []string
 
 	if nilOptions > 0 {
@@ -182,7 +180,7 @@ func givenProblems(given map[string]int, nilOptions int, kind string) []string {
 	return rules
 }
 
-func retryProblems(p RetryPolicy) []string {
+func checkRetry(p RetryPolicy) []string {
 	var rules []string
 
 	if p.Attempts < 0 {

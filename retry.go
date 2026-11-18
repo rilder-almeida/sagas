@@ -102,7 +102,7 @@ func backoff(p RetryPolicy, attempt int, r func(int64) int64) time.Duration {
 	return time.Duration(r(int64(delay)))
 }
 
-func retryMiddleware(p RetryPolicy) Middleware {
+func withRetry(p RetryPolicy) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context) error {
 			return runAttempts(ctx, p, next, rand.Int64N)

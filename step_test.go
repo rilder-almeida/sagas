@@ -274,7 +274,7 @@ func Test_Retry(t *testing.T) {
 	}
 }
 
-func Test_retryProblems(t *testing.T) {
+func Test_checkRetry(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -326,7 +326,7 @@ func Test_retryProblems(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, retryProblems(tt.policy))
+			assert.Equal(t, tt.want, checkRetry(tt.policy))
 		})
 	}
 }
@@ -394,7 +394,7 @@ func Test_OnCompensationFailure(t *testing.T) {
 	}
 }
 
-func Test_stepProblems(t *testing.T) {
+func Test_checkStep(t *testing.T) {
 	t.Parallel()
 
 	undo := func(context.Context, *tripState) error { return nil }
@@ -405,6 +405,7 @@ func Test_stepProblems(t *testing.T) {
 		name         string
 		stepName     string
 		do           func(context.Context, *tripState) error
+		doOther      func(context.Context, *otherState) error
 		opts         []StepOption
 		wantContains []string
 	}{
@@ -421,6 +422,12 @@ func Test_stepProblems(t *testing.T) {
 			name:         "[Fail] When: the action is nil ; Should: report it naming the step",
 			stepName:     "a",
 			wantContains: []string{stepA, "action is nil"},
+		},
+		{
+			name:         "[Fail] When: the action is for another state type ; Should: report it",
+			stepName:     "a",
+			doOther:      func(context.Context, *otherState) error { return nil },
+			wantContains: []string{stepA, "action is for another state type"},
 		},
 		{
 			name:     "[Fail] When: Compensate is for another state type ; Should: report it",
@@ -510,10 +517,15 @@ func Test_stepProblems(t *testing.T) {
 			t.Parallel()
 
 			d := &definition{given: map[string]int{}}
-			Step(tt.stepName, tt.do, tt.opts...)(d)
+			if tt.doOther != nil {
+				Step(tt.stepName, tt.doOther, tt.opts...)(d)
+			} else {
+				Step(tt.stepName, tt.do, tt.opts...)(d)
+			}
+
 			require.Len(t, d.steps, 1)
 
-			errs := stepProblems[tripState](&d.steps[0])
+			errs := checkStep[tripState](&d.steps[0])
 			if len(tt.wantContains) == 0 {
 				assert.Empty(t, errs)
 

@@ -29,6 +29,10 @@ func okMiddleware(next Handler) Handler { return next }
 
 func okMiddleware2(next Handler) Handler { return next }
 
+type pointerJournal struct{}
+
+func (*pointerJournal) Append(context.Context, *Event) error { return nil }
+
 func twice[T any](v T) []T { return []T{v, v} }
 
 func buildTrip(opts ...Option) error {
@@ -72,7 +76,7 @@ func Test_New(t *testing.T) {
 				return err
 			},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"saga", "empty name"},
+			wantContains: []string{`saga ""`, "empty name"},
 		},
 		{
 			name: "[Fail] When: the saga has no steps ; Should: reject it",
@@ -187,6 +191,8 @@ func Test_WithJournal(t *testing.T) {
 
 	journal := newMemoryJournal()
 
+	var nilJournal *pointerJournal
+
 	tests := []struct {
 		name        string
 		opts        []Option
@@ -203,6 +209,10 @@ func Test_WithJournal(t *testing.T) {
 		{
 			name: "[Fail] When: the journal is nil ; Should: reject it",
 			opts: []Option{WithJournal(nil)}, wantErr: ErrInvalidStep,
+		},
+		{
+			name: "[Fail] When: the journal holds a nil pointer ; Should: reject it",
+			opts: []Option{WithJournal(nilJournal)}, wantErr: ErrInvalidStep,
 		},
 	}
 

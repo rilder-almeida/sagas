@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 )
 
@@ -63,10 +64,10 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 		opt(d)
 	}
 
-	errs := sagaProblems(name, d, nilOptions)
+	errs := checkSaga(name, d, nilOptions)
 
 	for i := range d.steps {
-		errs = append(errs, stepProblems[S](&d.steps[i])...)
+		errs = append(errs, checkStep[S](&d.steps[i])...)
 	}
 
 	if err := checkState(reflect.TypeFor[S]()); err != nil {
@@ -104,7 +105,7 @@ func build[S any](name string, d *definition) *Saga[S] {
 	return s
 }
 
-func sagaProblems(name string, d *definition, nilOptions int) []error {
+func checkSaga(name string, d *definition, nilOptions int) []error {
 	var rules []string
 
 	if name == "" {
@@ -115,7 +116,7 @@ func sagaProblems(name string, d *definition, nilOptions int) []error {
 		rules = append(rules, "saga has no steps")
 	}
 
-	if d.given["WithJournal"] > 0 && d.journal == nil {
+	if d.given["WithJournal"] > 0 && isNilValue(d.journal) {
 		rules = append(rules, "WithJournal journal is nil")
 	}
 
@@ -131,7 +132,7 @@ func sagaProblems(name string, d *definition, nilOptions int) []error {
 		}
 	}
 
-	rules = append(rules, givenProblems(d.given, nilOptions, "Option")...)
+	rules = append(rules, checkRepeats(d.given, nilOptions, "Option")...)
 
 	errs := make([]error, 0, len(rules))
 	for _, rule := range rules {
@@ -164,4 +165,18 @@ func WithRecoveryTimeout(t time.Duration) Option {
 		d.recovery = t
 		d.given["WithRecoveryTimeout"]++
 	}
+}
+
+func nilableKinds() []reflect.Kind {
+	return []reflect.Kind{reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan}
+}
+
+func isNilValue(v any) bool {
+	if v == nil {
+		return true
+	}
+
+	rv := reflect.ValueOf(v)
+
+	return slices.Contains(nilableKinds(), rv.Kind()) && rv.IsNil()
 }
