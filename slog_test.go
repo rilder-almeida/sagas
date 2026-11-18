@@ -14,17 +14,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func decodeRecords(tb testing.TB, out *bytes.Buffer) []map[string]any {
+	tb.Helper()
+
+	var records []map[string]any
+
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		var rec map[string]any
+
+		require.NoError(tb, json.Unmarshal([]byte(line), &rec))
+
+		records = append(records, rec)
+	}
+
+	return records
+}
+
+func requireLastErr(tb testing.TB, got error, results []error) {
+	tb.Helper()
+
+	last := results[len(results)-1]
+	if last == nil {
+		require.NoError(tb, got)
+
+		return
+	}
+
+	require.ErrorIs(tb, got, last)
+}
+
 func Test_Slog(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
+		direct     bool
 		phase      Phase
 		policy     RetryPolicy
 		results    []error
 		sleep      time.Duration
 		wantLevels []string
 	}{
+		{
+			name:       "[Fail] When: called outside a pipeline and fails ; Should: return the error and log no step",
+			direct:     true,
+			results:    []error{errCall},
+			wantLevels: []string{"WARN"},
+		},
 		{
 			name:       "[Success] When: the call succeeds ; Should: log one info record with every attribute",
 			phase:      PhaseAction,
@@ -60,16 +96,10 @@ func Test_Slog(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var out bytes.Buffer
 
-				spec := &callSpec{
-					saga:       "saga-1",
-					step:       "step-1",
-					phase:      tt.phase,
-					retry:      tt.policy,
-					middleware: []Middleware{Slog(slog.New(slog.NewJSONHandler(&out, nil)))},
-				}
+				logger := slog.New(slog.NewJSONHandler(&out, nil))
 
 				attempt := 0
-				call := func(context.Context, *pipeState) error {
+				run := func(context.Context) error {
 					time.Sleep(tt.sleep)
 
 					err := tt.results[attempt]
@@ -78,21 +108,38 @@ func Test_Slog(t *testing.T) {
 					return err
 				}
 
-				pipeline(spec, call)(t.Context(), "exec-1", baseOf(t, pipeState{}))
+				var gotErr error
 
-				lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-				require.Len(t, lines, len(tt.results))
+				wantSaga, wantExecution, wantStep, firstAttempt := "saga-1", "exec-1", "step-1", 1
 
-				for i, line := range lines {
-					var got map[string]any
-					require.NoError(t, json.Unmarshal([]byte(line), &got))
+				if tt.direct {
+					wantSaga, wantExecution, wantStep, firstAttempt = "", "", "", 0
+					gotErr = Slog(logger)(run)(t.Context())
+				} else {
+					spec := &callSpec{
+						saga:       wantSaga,
+						step:       wantStep,
+						phase:      tt.phase,
+						retry:      tt.policy,
+						middleware: []Middleware{Slog(logger)},
+					}
+					call := func(ctx context.Context, _ *pipeState) error { return run(ctx) }
 
+					gotErr = pipeline(spec, call)(t.Context(), wantExecution, baseOf(t, pipeState{})).err
+				}
+
+				requireLastErr(t, gotErr, tt.results)
+
+				records := decodeRecords(t, &out)
+				require.Len(t, records, len(tt.results))
+
+				for i, got := range records {
 					assert.Equal(t, tt.wantLevels[i], got["level"])
-					assert.Equal(t, "saga-1", got["saga"])
-					assert.Equal(t, "exec-1", got["execution"])
-					assert.Equal(t, "step-1", got["step"])
+					assert.Equal(t, wantSaga, got["saga"])
+					assert.Equal(t, wantExecution, got["execution"])
+					assert.Equal(t, wantStep, got["step"])
 					assert.Equal(t, string(tt.phase), got["phase"])
-					assert.InDelta(t, float64(i+1), got["attempt"], 0)
+					assert.InDelta(t, float64(firstAttempt+i), got["attempt"], 0)
 					assert.InDelta(t, float64(tt.sleep), got["duration"], 0)
 
 					wantKeys := 9
