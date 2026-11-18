@@ -135,25 +135,43 @@ func journalEvent(execution string, seq int) Event {
 	}
 }
 
-func withEvent(e *Event, change func(*Event)) Event {
+func withEvent(e *Event, change func(*Event)) *Event {
 	out := *e
 	out.Changed = slices.Clone(out.Changed)
 	out.Steps = slices.Clone(out.Steps)
 	change(&out)
 
-	return out
+	return &out
 }
 
-func scribble(events ...Event) {
-	for i := range events {
-		e := &events[i]
-		for k := range e.Changed {
-			e.Changed[k] = "scribbled"
-		}
+func cloneEvent(e *Event) *Event {
+	if e == nil {
+		return nil
+	}
 
-		for k := range e.Steps {
-			e.Steps[k].Name = "scribbled"
-		}
+	return withEvent(e, func(*Event) {})
+}
+
+func scribble(events []Event) {
+	for i := range events {
+		scribbleEvent(&events[i])
+	}
+}
+
+func scribbleEvent(e *Event) {
+	if e == nil {
+		return
+	}
+
+	e.Step = "scribbled"
+	e.Seq = 99
+
+	for k := range e.Changed {
+		e.Changed[k] = "scribbled"
+	}
+
+	for k := range e.Steps {
+		e.Steps[k].Name = "scribbled"
 	}
 }
 
@@ -162,91 +180,119 @@ func Test_memoryJournal_Append(t *testing.T) {
 
 	now := time.Now()
 	e1, e2, e3 := journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)
+	e5, e0, eNeg, b1 := journalEvent("a", 5), journalEvent("a", 0), journalEvent("a", -1), journalEvent("b", 1)
+	c1 := journalEvent("c", 1)
 	stamped := withEvent(&e1, func(e *Event) { e.Time = now })
 
 	tests := []struct {
-		name    string
-		prior   []Event
-		event   Event
-		wantErr error
-		wantMsg string
-		want    []Event
+		name      string
+		prior     []Event
+		event     *Event
+		execution string
+		wantErr   error
+		wantMsg   string
+		want      []Event
 	}{
 		{
-			name:  "[Success] When: the first event of a new execution ; Should: write it",
-			event: e1,
-			want:  []Event{e1},
+			name:      "[Success] When: the first event of a new execution ; Should: write it",
+			event:     &e1,
+			execution: "a",
+			want:      []Event{e1},
 		},
 		{
-			name:  "[Success] When: the next Seq ; Should: write it after the last event",
-			prior: []Event{e1},
-			event: e2,
-			want:  []Event{e1, e2},
+			name:      "[Success] When: the next Seq ; Should: write it after the last event",
+			prior:     []Event{e1},
+			event:     &e2,
+			execution: "a",
+			want:      []Event{e1, e2},
 		},
 		{
-			name:    "[Fail] When: Seq 5 after Seq 1 to 3 ; Should: return ErrConcurrentWriter and write nothing",
-			prior:   []Event{e1, e2, e3},
-			event:   journalEvent("a", 5),
-			wantErr: ErrConcurrentWriter,
-			wantMsg: `sagas: concurrent writer: execution "a" seq 5`,
-			want:    []Event{e1, e2, e3},
+			name:      "[Success] When: the caller changes a scalar and a slice after Append ; Should: keep a copy",
+			event:     &c1,
+			execution: "c",
+			want:      []Event{c1},
 		},
 		{
-			name:    "[Fail] When: Seq 0 on an empty execution ; Should: return errInvalidSeq and write nothing",
-			event:   journalEvent("a", 0),
-			wantErr: errInvalidSeq,
-			wantMsg: `sagas: invalid event sequence: execution "a" seq 0`,
-			want:    []Event{},
+			name:      "[Fail] When: Seq 5 after Seq 1 to 3 ; Should: return ErrConcurrentWriter and write nothing",
+			prior:     []Event{e1, e2, e3},
+			event:     &e5,
+			execution: "a",
+			wantErr:   ErrConcurrentWriter,
+			wantMsg:   `sagas: concurrent writer: execution "a" seq 5`,
+			want:      []Event{e1, e2, e3},
 		},
 		{
-			name:    "[Fail] When: Seq -1 after Seq 1 ; Should: return errInvalidSeq and write nothing",
-			prior:   []Event{e1},
-			event:   journalEvent("a", -1),
-			wantErr: errInvalidSeq,
-			wantMsg: `sagas: invalid event sequence: execution "a" seq -1`,
-			want:    []Event{e1},
+			name:      "[Fail] When: Seq 0 on an empty execution ; Should: return errInvalidEvent and write nothing",
+			event:     &e0,
+			execution: "a",
+			wantErr:   errInvalidEvent,
+			wantMsg:   `sagas: invalid event: execution "a" seq 0`,
+			want:      []Event{},
 		},
 		{
-			name:  "[Success] When: an equal resend, new slices, monotonic-only Time ; Should: return nil, no write",
-			prior: []Event{stamped},
-			event: withEvent(&stamped, func(e *Event) { e.Time = now.Round(0) }),
-			want:  []Event{stamped},
+			name:      "[Fail] When: Seq -1 after Seq 1 ; Should: return errInvalidEvent and write nothing",
+			prior:     []Event{e1},
+			event:     &eNeg,
+			execution: "a",
+			wantErr:   errInvalidEvent,
+			wantMsg:   `sagas: invalid event: execution "a" seq -1`,
+			want:      []Event{e1},
 		},
 		{
-			name:  "[Success] When: an equal resend of an earlier Seq ; Should: return nil, write nothing",
-			prior: []Event{e1, e2, e3},
-			event: withEvent(&e2, func(*Event) {}),
-			want:  []Event{e1, e2, e3},
+			name:      "[Fail] When: a nil event after Seq 1 ; Should: return errInvalidEvent and write nothing",
+			prior:     []Event{e1},
+			execution: "a",
+			wantErr:   errInvalidEvent,
+			wantMsg:   `sagas: invalid event: nil event`,
+			want:      []Event{e1},
 		},
 		{
-			name:    "[Fail] When: the same Seq and Writer with another Kind ; Should: return ErrConcurrentWriter",
-			prior:   []Event{e1, e2},
-			event:   withEvent(&e2, func(e *Event) { e.Kind = EventStepFailed }),
-			wantErr: ErrConcurrentWriter,
-			wantMsg: `sagas: concurrent writer: execution "a" seq 2`,
-			want:    []Event{e1, e2},
+			name:      "[Success] When: an equal resend, new slices, monotonic-only Time ; Should: nil, no write",
+			prior:     []Event{*stamped},
+			event:     withEvent(stamped, func(e *Event) { e.Time = now.Round(0) }),
+			execution: "a",
+			want:      []Event{*stamped},
 		},
 		{
-			name:    "[Fail] When: another writer appends Seq 1 of a taken execution ; Should: ErrExecutionExists",
-			prior:   []Event{e1},
-			event:   withEvent(&e1, func(e *Event) { e.Writer = "w2" }),
-			wantErr: ErrExecutionExists,
-			wantMsg: `sagas: execution exists: execution "a" seq 1`,
-			want:    []Event{e1},
+			name:      "[Success] When: an equal resend of an earlier Seq ; Should: return nil, write nothing",
+			prior:     []Event{e1, e2, e3},
+			event:     withEvent(&e2, func(*Event) {}),
+			execution: "a",
+			want:      []Event{e1, e2, e3},
 		},
 		{
-			name:    "[Fail] When: another writer appends a taken later Seq ; Should: return ErrConcurrentWriter",
-			prior:   []Event{e1, e2},
-			event:   withEvent(&e2, func(e *Event) { e.Writer = "w2" }),
-			wantErr: ErrConcurrentWriter,
-			wantMsg: `sagas: concurrent writer: execution "a" seq 2`,
-			want:    []Event{e1, e2},
+			name:      "[Fail] When: the same Seq and Writer with another Kind ; Should: return ErrConcurrentWriter",
+			prior:     []Event{e1, e2},
+			event:     withEvent(&e2, func(e *Event) { e.Kind = EventStepFailed }),
+			execution: "a",
+			wantErr:   ErrConcurrentWriter,
+			wantMsg:   `sagas: concurrent writer: execution "a" seq 2`,
+			want:      []Event{e1, e2},
 		},
 		{
-			name:  "[Success] When: Seq 1 of another execution ; Should: write it apart from the first execution",
-			prior: []Event{e1, e2},
-			event: journalEvent("b", 1),
-			want:  []Event{journalEvent("b", 1)},
+			name:      "[Fail] When: another writer appends Seq 1 of a taken execution ; Should: ErrExecutionExists",
+			prior:     []Event{e1},
+			event:     withEvent(&e1, func(e *Event) { e.Writer = "w2" }),
+			execution: "a",
+			wantErr:   ErrExecutionExists,
+			wantMsg:   `sagas: execution exists: execution "a" seq 1`,
+			want:      []Event{e1},
+		},
+		{
+			name:      "[Fail] When: another writer appends a taken later Seq ; Should: return ErrConcurrentWriter",
+			prior:     []Event{e1, e2},
+			event:     withEvent(&e2, func(e *Event) { e.Writer = "w2" }),
+			execution: "a",
+			wantErr:   ErrConcurrentWriter,
+			wantMsg:   `sagas: concurrent writer: execution "a" seq 2`,
+			want:      []Event{e1, e2},
+		},
+		{
+			name:      "[Success] When: Seq 1 of another execution ; Should: write it apart from the first execution",
+			prior:     []Event{e1, e2},
+			event:     &b1,
+			execution: "b",
+			want:      []Event{journalEvent("b", 1)},
 		},
 	}
 
@@ -255,19 +301,19 @@ func Test_memoryJournal_Append(t *testing.T) {
 			t.Parallel()
 
 			j := newMemoryJournal()
-			for _, e := range tt.prior {
-				require.NoError(t, j.Append(t.Context(), e))
+			for i := range tt.prior {
+				require.NoError(t, j.Append(t.Context(), cloneEvent(&tt.prior[i])))
 			}
 
-			in := withEvent(&tt.event, func(*Event) {})
+			in := cloneEvent(tt.event)
 			err := j.Append(t.Context(), in)
 
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantMsg, errText(err))
 
-			scribble(in)
-			scribble(j.events(tt.event.Execution)...)
-			assert.Equal(t, tt.want, j.events(tt.event.Execution))
+			scribbleEvent(in)
+			scribble(j.events(tt.execution))
+			assert.Equal(t, tt.want, j.events(tt.execution))
 		})
 	}
 }
@@ -280,14 +326,14 @@ func Test_sameEvent(t *testing.T) {
 
 	tests := []struct {
 		name string
-		a    Event
-		b    Event
+		a    *Event
+		b    *Event
 		want bool
 	}{
-		{name: "[Success] When: the same event ; Should: return true", a: base, b: base, want: true},
+		{name: "[Success] When: the same event ; Should: return true", a: &base, b: &base, want: true},
 		{
 			name: "[Success] When: equal fields in new slices ; Should: return true",
-			a:    base, b: withEvent(&base, func(*Event) {}), want: true,
+			a:    &base, b: withEvent(&base, func(*Event) {}), want: true,
 		},
 		{
 			name: "[Success] When: Time differs only in its monotonic reading ; Should: return true",
@@ -297,7 +343,7 @@ func Test_sameEvent(t *testing.T) {
 		},
 		{
 			name: "[Success] When: the same instant in another location ; Should: return true",
-			a:    base,
+			a:    &base,
 			b:    withEvent(&base, func(e *Event) { e.Time = e.Time.In(time.FixedZone("x", 3600)) }),
 			want: true,
 		},
@@ -309,59 +355,59 @@ func Test_sameEvent(t *testing.T) {
 		},
 		{
 			name: "[Fail] When: Saga differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Saga = "other" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Saga = "other" }),
 		},
 		{
 			name: "[Fail] When: Execution differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Execution = "other" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Execution = "other" }),
 		},
 		{
 			name: "[Fail] When: Writer differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Writer = "w2" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Writer = "w2" }),
 		},
 		{
 			name: "[Fail] When: Seq differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Seq = 2 }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Seq = 2 }),
 		},
 		{
 			name: "[Fail] When: Kind differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Kind = EventStepFailed }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Kind = EventStepFailed }),
 		},
 		{
 			name: "[Fail] When: Step differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Step = "charge" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Step = "charge" }),
 		},
 		{
 			name: "[Fail] When: Attempt differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Attempt = 2 }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Attempt = 2 }),
 		},
 		{
 			name: "[Fail] When: Err differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Err = "boom" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err = "boom" }),
 		},
 		{
 			name: "[Fail] When: a Changed name differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Changed[0] = "Total" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Changed[0] = "Total" }),
 		},
 		{
 			name: "[Fail] When: Changed has one more name ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Changed = append(e.Changed, "Total") }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Changed = append(e.Changed, "Total") }),
 		},
 		{
 			name: "[Fail] When: a Steps name differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Steps[0].Name = "charge" }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Steps[0].Name = "charge" }),
 		},
 		{
 			name: "[Fail] When: a Steps zone differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Steps[0].Zone = ZonePivot }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Steps[0].Zone = ZonePivot }),
 		},
 		{
 			name: "[Fail] When: Status differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Status = StatusCompleted }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Status = StatusCompleted }),
 		},
 		{
 			name: "[Fail] When: Time differs ; Should: return false",
-			a:    base, b: withEvent(&base, func(e *Event) { e.Time = e.Time.Add(time.Nanosecond) }),
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Time = e.Time.Add(time.Nanosecond) }),
 		},
 	}
 
@@ -369,7 +415,7 @@ func Test_sameEvent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, sameEvent(&tt.a, &tt.b))
+			assert.Equal(t, tt.want, sameEvent(tt.a, tt.b))
 		})
 	}
 }
@@ -433,7 +479,7 @@ func raceExecution(t *testing.T, j *memoryJournal, execution string, results [][
 			wg.Go(func() {
 				e := journalEvent(execution, i+1)
 				e.Writer = "w" + strconv.Itoa(w)
-				results[i][w] = j.Append(t.Context(), e)
+				results[i][w] = j.Append(t.Context(), &e)
 			})
 		}
 
@@ -476,7 +522,7 @@ func Benchmark_memoryJournal_Append(b *testing.B) {
 
 	for b.Loop() {
 		e.Seq++
-		if err := j.Append(b.Context(), e); err != nil {
+		if err := j.Append(b.Context(), &e); err != nil {
 			b.Fatal(err)
 		}
 	}

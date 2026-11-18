@@ -18,15 +18,15 @@ var (
 	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
 	ErrConcurrentWriter = errors.New("sagas: concurrent writer")
 
-	errInvalidSeq = errors.New("sagas: invalid event sequence")
+	errInvalidEvent = errors.New("sagas: invalid event")
 )
 
-// Journal records events append only and never delivers work, removes or marks an event. Append writes an event
-// only when its Seq is its execution's last Seq plus one; an equal resend from the same Writer (slices by content,
-// Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected, wrapping
-// ErrExecutionExists at Seq 1 and ErrConcurrentWriter after it; a Seq below 1 is an invalid event with no sentinel.
+// Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of e,
+// never e or its slices, only when its Seq is its execution's last Seq plus one; an equal resend from the same Writer
+// (slices by content, Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected,
+// wrapping ErrExecutionExists at Seq 1 and ErrConcurrentWriter later; a nil e or a Seq below 1 is an invalid event.
 type Journal interface {
-	Append(ctx context.Context, e Event) error
+	Append(ctx context.Context, e *Event) error
 }
 
 // Event is one record of an execution, numbered by Seq from 1 and tagged with the Writer token of its run.
@@ -131,9 +131,13 @@ func newMemoryJournal() *memoryJournal {
 	return &memoryJournal{streams: map[string][]Event{}}
 }
 
-func (j *memoryJournal) Append(_ context.Context, e Event) error {
+func (j *memoryJournal) Append(_ context.Context, e *Event) error {
+	if e == nil {
+		return fmt.Errorf("%w: nil event", errInvalidEvent)
+	}
+
 	if e.Seq < 1 {
-		return fmt.Errorf("%w: execution %q seq %d", errInvalidSeq, e.Execution, e.Seq)
+		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
 	}
 
 	j.mu.Lock()
@@ -141,13 +145,14 @@ func (j *memoryJournal) Append(_ context.Context, e Event) error {
 
 	stream := j.streams[e.Execution]
 	if e.Seq == len(stream)+1 {
-		cloneSlices(&e)
-		j.streams[e.Execution] = append(stream, e)
+		stored := *e
+		cloneSlices(&stored)
+		j.streams[e.Execution] = append(stream, stored)
 
 		return nil
 	}
 
-	if e.Seq <= len(stream) && sameEvent(&stream[e.Seq-1], &e) {
+	if e.Seq <= len(stream) && sameEvent(&stream[e.Seq-1], e) {
 		return nil
 	}
 
