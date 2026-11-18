@@ -600,6 +600,31 @@ func pipelineLastCallFailsRow() pipelineRow {
 	}
 }
 
+func pipelineLaterAttemptSkipRow() pipelineRow {
+	spec := actionSpec()
+	spec.retry.Attempts = 3
+
+	return pipelineRow{
+		name: "[Fail] When: middleware runs next on attempt 1 only ; Should: fail on attempt 2 with ErrCallNotRun",
+		spec: spec,
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					if attemptOf(ctx) == 1 {
+						return swallow(next(ctx))
+					}
+
+					return nil
+				}
+			}}
+		},
+		call:         failWith(errCall),
+		wantKind:     outcomeFailure,
+		wantAttempts: 2,
+		wantErr:      ErrCallNotRun,
+	}
+}
+
 func pipelineLostContextRow() pipelineRow {
 	return pipelineRow{
 		name: "[Fail] When: a middleware passes on a context without the call state ; " +
@@ -727,7 +752,7 @@ func Test_requireRan(t *testing.T) {
 
 			ctx := t.Context()
 			if !tt.noState {
-				ctx = context.WithValue(ctx, callStateKey{}, &callState[pipeState]{base: baseOf(t, pipeState{})})
+				ctx = withCallState(ctx, &callState[pipeState]{base: baseOf(t, pipeState{})})
 			}
 
 			reached := false
@@ -767,6 +792,7 @@ func Test_pipeline(t *testing.T) {
 		pipelineSecondCallWinsRow(),
 		pipelineLastCallFailsRow(),
 		pipelineLostContextRow(),
+		pipelineLaterAttemptSkipRow(),
 	}
 
 	for _, tt := range tests {

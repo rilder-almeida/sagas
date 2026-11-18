@@ -97,6 +97,10 @@ func timeout(d time.Duration) Middleware {
 	}
 }
 
+func withCallState[S any](ctx context.Context, st *callState[S]) context.Context {
+	return context.WithValue(ctx, callStateKey{}, st)
+}
+
 func stateFrom[S any](ctx context.Context) (*callState[S], bool) {
 	st, ok := ctx.Value(callStateKey{}).(*callState[S])
 
@@ -165,7 +169,7 @@ func pipeline[S any](spec *callSpec, call func(context.Context, *S) error) callF
 		meta := &callMeta{execution: execution}
 		st := &callState[S]{base: base}
 
-		err := chain(context.WithValue(withMeta(ctx, meta), callStateKey{}, st))
+		err := chain(withCallState(withMeta(ctx, meta), st))
 
 		out := outcome[S]{kind: classify(err), attempts: meta.attempt, err: err}
 		if err == nil {
