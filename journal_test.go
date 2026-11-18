@@ -1,7 +1,6 @@
 package sagas
 
 import (
-	"context"
 	"slices"
 	"strconv"
 	"sync"
@@ -145,6 +144,12 @@ func withEvent(e *Event, change func(*Event)) *Event {
 	return &out
 }
 
+func eventAt(execution string, seq int) *Event {
+	e := journalEvent(execution, seq)
+
+	return &e
+}
+
 func scribble(events []Event) {
 	for i := range events {
 		scribbleEvent(&events[i])
@@ -152,6 +157,10 @@ func scribble(events []Event) {
 }
 
 func scribbleEvent(e *Event) {
+	if e == nil {
+		return
+	}
+
 	e.Step = "scribbled"
 	e.Seq = 99
 
@@ -164,105 +173,13 @@ func scribbleEvent(e *Event) {
 	}
 }
 
-type readableJournal interface {
-	Journal
-	events(execution string) []Event
-}
-
-type aliasingJournal struct {
-	stored []*Event
-}
-
-func (j *aliasingJournal) Append(_ context.Context, e *Event) error {
-	j.stored = append(j.stored, e)
-
-	return nil
-}
-
-func (j *aliasingJournal) events(_ string) []Event {
-	out := make([]Event, len(j.stored))
-	for i, e := range j.stored {
-		out[i] = *e
-	}
-
-	return out
-}
-
-type shallowJournal struct {
-	stored []Event
-}
-
-func (j *shallowJournal) Append(_ context.Context, e *Event) error {
-	j.stored = append(j.stored, *e)
-
-	return nil
-}
-
-func (j *shallowJournal) events(_ string) []Event {
-	return j.stored
-}
-
-type leak struct {
-	scalar bool
-	slice  bool
-}
-
-func callerChangeLeaks(t *testing.T, j readableJournal) leak {
-	t.Helper()
-
-	e := journalEvent("leak", 1)
-	require.NoError(t, j.Append(t.Context(), &e))
-	scribbleEvent(&e)
-
-	stored := j.events("leak")
-	require.Len(t, stored, 1)
-
-	return leak{scalar: stored[0].Step == e.Step, slice: stored[0].Changed[0] == e.Changed[0]}
-}
-
-func Test_memoryJournal_Append_callerChange(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		journal readableJournal
-		want    leak
-	}{
-		{
-			name:    "[Success] When: memoryJournal and the caller changes the event ; Should: report no leak",
-			journal: newMemoryJournal(),
-			want:    leak{},
-		},
-		{
-			name:    "[Fail] When: a journal keeps the caller's pointer ; Should: report a scalar and a slice leak",
-			journal: &aliasingJournal{},
-			want:    leak{scalar: true, slice: true},
-		},
-		{
-			name:    "[Fail] When: a journal copies the event but shares its slices ; Should: report a slice leak only",
-			journal: &shallowJournal{},
-			want:    leak{slice: true},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, callerChangeLeaks(t, tt.journal))
-		})
-	}
-}
-
 func Test_memoryJournal_Append(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	e1, e2, e3 := journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)
-	e5, e0, eNeg, b1 := journalEvent("a", 5), journalEvent("a", 0), journalEvent("a", -1), journalEvent("b", 1)
-	c1 := journalEvent("c", 1)
-	c1.Changed, c1.Steps = nil, nil
-	stamped := withEvent(&e1, func(e *Event) { e.Time = now })
+	noSlices := func(e *Event) { e.Changed, e.Steps = nil, nil }
+	stamp := func(e *Event) { e.Time = now }
+	stamped := func() Event { return *withEvent(eventAt("a", 1), stamp) }
 
 	tests := []struct {
 		name    string
@@ -274,91 +191,94 @@ func Test_memoryJournal_Append(t *testing.T) {
 	}{
 		{
 			name:  "[Success] When: the first event of a new execution ; Should: write it",
-			event: &e1,
-			want:  map[string][]Event{"a": {e1}},
+			event: eventAt("a", 1),
+			want:  map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
 		{
 			name:  "[Success] When: the next Seq ; Should: write it after the last event",
-			prior: []Event{e1},
-			event: &e2,
-			want:  map[string][]Event{"a": {e1, e2}},
+			prior: []Event{journalEvent("a", 1)},
+			event: eventAt("a", 2),
+			want:  map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2)}},
 		},
 		{
 			name:  "[Success] When: the first event has nil Changed and Steps ; Should: store them as nil",
-			event: &c1,
-			want:  map[string][]Event{"c": {c1}},
+			event: withEvent(eventAt("c", 1), noSlices),
+			want:  map[string][]Event{"c": {*withEvent(eventAt("c", 1), noSlices)}},
 		},
 		{
 			name:    "[Fail] When: Seq 5 after Seq 1 to 3 ; Should: return ErrConcurrentWriter and write nothing",
-			prior:   []Event{e1, e2, e3},
-			event:   &e5,
+			prior:   []Event{journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)},
+			event:   eventAt("a", 5),
 			wantErr: ErrConcurrentWriter,
 			wantMsg: `sagas: concurrent writer: execution "a" seq 5`,
-			want:    map[string][]Event{"a": {e1, e2, e3}},
+			want:    map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)}},
 		},
 		{
 			name:    "[Fail] When: Seq 0 on an empty execution ; Should: return errInvalidEvent and write nothing",
-			event:   &e0,
+			event:   eventAt("a", 0),
 			wantErr: errInvalidEvent,
 			wantMsg: `sagas: invalid event: execution "a" seq 0`,
 			want:    map[string][]Event{"a": {}},
 		},
 		{
 			name:    "[Fail] When: Seq -1 after Seq 1 ; Should: return errInvalidEvent and write nothing",
-			prior:   []Event{e1},
-			event:   &eNeg,
+			prior:   []Event{journalEvent("a", 1)},
+			event:   eventAt("a", -1),
 			wantErr: errInvalidEvent,
 			wantMsg: `sagas: invalid event: execution "a" seq -1`,
-			want:    map[string][]Event{"a": {e1}},
+			want:    map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
 		{
 			name:    "[Fail] When: a nil event after Seq 1 ; Should: return errInvalidEvent and write nothing",
-			prior:   []Event{e1},
+			prior:   []Event{journalEvent("a", 1)},
 			wantErr: errInvalidEvent,
 			wantMsg: `sagas: invalid event: nil event`,
-			want:    map[string][]Event{"a": {e1}},
+			want:    map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
 		{
 			name:  "[Success] When: an equal resend, new slices, monotonic-only Time ; Should: nil, no write",
-			prior: []Event{*stamped},
-			event: withEvent(stamped, func(e *Event) { e.Time = now.Round(0) }),
-			want:  map[string][]Event{"a": {*stamped}},
+			prior: []Event{stamped()},
+			event: withEvent(eventAt("a", 1), func(e *Event) { e.Time = now.Round(0) }),
+			want:  map[string][]Event{"a": {stamped()}},
 		},
 		{
 			name:  "[Success] When: an equal resend of an earlier Seq ; Should: return nil, write nothing",
-			prior: []Event{e1, e2, e3},
-			event: withEvent(&e2, func(*Event) {}),
-			want:  map[string][]Event{"a": {e1, e2, e3}},
+			prior: []Event{journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)},
+			event: eventAt("a", 2),
+			want:  map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)}},
 		},
 		{
 			name:    "[Fail] When: the same Seq and Writer with another Kind ; Should: return ErrConcurrentWriter",
-			prior:   []Event{e1, e2},
-			event:   withEvent(&e2, func(e *Event) { e.Kind = EventStepFailed }),
+			prior:   []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			event:   withEvent(eventAt("a", 2), func(e *Event) { e.Kind = EventStepFailed }),
 			wantErr: ErrConcurrentWriter,
 			wantMsg: `sagas: concurrent writer: execution "a" seq 2`,
-			want:    map[string][]Event{"a": {e1, e2}},
+			want:    map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2)}},
 		},
 		{
 			name:    "[Fail] When: another writer appends Seq 1 of a taken execution ; Should: ErrExecutionExists",
-			prior:   []Event{e1},
-			event:   withEvent(&e1, func(e *Event) { e.Writer = "w2" }),
+			prior:   []Event{journalEvent("a", 1)},
+			event:   withEvent(eventAt("a", 1), func(e *Event) { e.Writer = "w2" }),
 			wantErr: ErrExecutionExists,
 			wantMsg: `sagas: execution exists: execution "a" seq 1`,
-			want:    map[string][]Event{"a": {e1}},
+			want:    map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
 		{
 			name:    "[Fail] When: another writer appends a taken later Seq ; Should: return ErrConcurrentWriter",
-			prior:   []Event{e1, e2},
-			event:   withEvent(&e2, func(e *Event) { e.Writer = "w2" }),
+			prior:   []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			event:   withEvent(eventAt("a", 2), func(e *Event) { e.Writer = "w2" }),
 			wantErr: ErrConcurrentWriter,
 			wantMsg: `sagas: concurrent writer: execution "a" seq 2`,
-			want:    map[string][]Event{"a": {e1, e2}},
+			want:    map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2)}},
 		},
 		{
 			name:  "[Success] When: Seq 1 of another execution ; Should: write it and leave the first one unchanged",
-			prior: []Event{e1, e2},
-			event: &b1,
-			want:  map[string][]Event{"a": {e1, e2}, "b": {b1}},
+			prior: []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			event: eventAt("b", 1),
+			want: map[string][]Event{
+				"a": {journalEvent("a", 1), journalEvent("a", 2)},
+				"b": {journalEvent("b", 1)},
+			},
 		},
 	}
 
@@ -372,6 +292,7 @@ func Test_memoryJournal_Append(t *testing.T) {
 			}
 
 			err := j.Append(t.Context(), tt.event)
+			scribbleEvent(tt.event)
 
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantMsg, errText(err))
@@ -380,8 +301,6 @@ func Test_memoryJournal_Append(t *testing.T) {
 				scribble(j.events(execution))
 				assert.Equal(t, want, j.events(execution), execution)
 			}
-
-			assert.Equal(t, leak{}, callerChangeLeaks(t, j))
 		})
 	}
 }
