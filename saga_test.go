@@ -24,11 +24,47 @@ const (
 	sagaTrip = `saga "trip"`
 	quotedA  = `"a"`
 	noReach  = "neither before nor after"
+
+	hotelBooked = "booked"
+	hotelUndone = "undone"
 )
+
+var errAlwaysFails = errors.New("sagas: test: the action always fails")
 
 var errNilSaga = errors.New("sagas: test: New returned a nil saga without an error")
 
 func okAction(context.Context, *tripState) error { return nil }
+
+func bookHotel(_ context.Context, s *tripState) error {
+	s.Hotel = hotelBooked
+
+	return nil
+}
+
+func alwaysFails(context.Context, *tripState) error { return errAlwaysFails }
+
+func twoSecondCall(ctx context.Context, _ *tripState) error {
+	select {
+	case <-time.After(2 * time.Second):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func callOnce(tb testing.TB, call callFunc[tripState]) outcome[tripState] {
+	tb.Helper()
+
+	return call(context.Background(), "exec-1", baseOf(tb, tripState{}))
+}
+
+func hotelOf(tb testing.TB, out outcome[tripState]) string {
+	tb.Helper()
+
+	require.NotNil(tb, out.state)
+
+	return out.state.Hotel
+}
 
 func okPredicate(*tripState) bool { return true }
 
@@ -417,22 +453,43 @@ func Test_WithJournal(t *testing.T) {
 func Test_WithMiddleware(t *testing.T) {
 	t.Parallel()
 
+	both := []string{"first>", "second>", "<second", "<first", "first>", "second>", "<second", "<first"}
+
 	tests := []struct {
-		name    string
-		opts    []Option
-		wantErr error
+		name      string
+		setup     func(r *recorder) (opts []Option, tamper func())
+		wantTrace []string
+		wantErr   error
 	}{
 		{
-			name: "[Success] When: several middlewares are given in one call ; Should: accept them",
-			opts: []Option{WithMiddleware(okMiddleware, okMiddleware2)},
+			name: "[Success] When: two middlewares are given in one call ; Should: wrap both phases in order",
+			setup: func(r *recorder) ([]Option, func()) {
+				return []Option{WithMiddleware(tagged(r, "first"), tagged(r, "second"))}, func() {}
+			},
+			wantTrace: both,
+		},
+		{
+			name: "[Success] When: the caller changes its slice after New ; Should: run the original ones",
+			setup: func(r *recorder) ([]Option, func()) {
+				mws := []Middleware{tagged(r, "first"), tagged(r, "second")}
+
+				return []Option{WithMiddleware(mws...)}, func() { mws[0], mws[1] = okMiddleware, okMiddleware2 }
+			},
+			wantTrace: both,
 		},
 		{
 			name: "[Fail] When: an entry is nil ; Should: reject it",
-			opts: []Option{WithMiddleware(nil)}, wantErr: ErrInvalidStep,
+			setup: func(*recorder) ([]Option, func()) {
+				return []Option{WithMiddleware(nil)}, func() {}
+			},
+			wantErr: ErrInvalidStep,
 		},
 		{
 			name: "[Fail] When: WithMiddleware is called twice ; Should: reject it",
-			opts: twice(WithMiddleware(okMiddleware)), wantErr: ErrInvalidStep,
+			setup: func(*recorder) ([]Option, func()) {
+				return twice(WithMiddleware(okMiddleware)), func() {}
+			},
+			wantErr: ErrInvalidStep,
 		},
 	}
 
@@ -440,7 +497,11 @@ func Test_WithMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := buildTrip(append([]Option{Step("a", okAction)}, tt.opts...)...)
+			rec := &recorder{}
+			opts, tamper := tt.setup(rec)
+
+			s, err := New[tripState]("trip",
+				append([]Option{Step("a", okAction, Compensate(okAction))}, opts...)...)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
 
@@ -448,6 +509,11 @@ func Test_WithMiddleware(t *testing.T) {
 			}
 
 			require.NoError(t, err)
+			tamper()
+
+			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
+			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)
+			assert.Equal(t, tt.wantTrace, rec.snapshot())
 		})
 	}
 }

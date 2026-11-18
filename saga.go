@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -44,14 +45,16 @@ type Saga[S any] struct {
 }
 
 type stepNode[S any] struct {
-	name     string
-	pred     func(*S) bool
-	retry    RetryPolicy
-	timeout  time.Duration
-	policy   CompensationFailurePolicy
-	parents  []int
-	children []int
-	zone     Zone
+	name         string
+	pred         func(*S) bool
+	retry        RetryPolicy
+	timeout      time.Duration
+	policy       CompensationFailurePolicy
+	parents      []int
+	children     []int
+	zone         Zone
+	action       callFunc[S]
+	compensation callFunc[S]
 }
 
 // New builds the saga called name from its options. It returns every problem of the definition, joined.
@@ -86,10 +89,10 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 		return nil, err
 	}
 
-	return build[S](name, d, &g), nil
+	return build[S](name, d, &g)
 }
 
-func build[S any](name string, d *definition, g *graph) *Saga[S] {
+func build[S any](name string, d *definition, g *graph) (*Saga[S], error) {
 	s := &Saga[S]{
 		name: name, journal: d.journal, recovery: d.recovery, order: g.order,
 		pivot: g.pivot,
@@ -111,6 +114,10 @@ func build[S any](name string, d *definition, g *graph) *Saga[S] {
 			n.pred = pred
 		}
 
+		if err := n.buildCalls(name, sd, d.middleware); err != nil {
+			return nil, err
+		}
+
 		s.steps = append(s.steps, n)
 	}
 
@@ -121,7 +128,34 @@ func build[S any](name string, d *definition, g *graph) *Saga[S] {
 		s.steps[i].zone = zoned[i]
 	}
 
-	return s
+	return s, nil
+}
+
+func (n *stepNode[S]) buildCalls(saga string, sd *stepDef, middleware []Middleware) error {
+	spec := callSpec{
+		saga: saga, step: sd.name, phase: PhaseAction, retry: sd.retry, timeout: sd.timeout, middleware: middleware,
+	}
+
+	do, ok := sd.do.(func(context.Context, *S) error)
+	if !ok {
+		return fmt.Errorf("%w: step %q: action is for another state type", ErrInvalidStep, sd.name)
+	}
+
+	n.action = pipeline(&spec, do)
+
+	if sd.undo == nil {
+		return nil
+	}
+
+	undo, ok := sd.undo.(func(context.Context, *S) error)
+	if !ok {
+		return fmt.Errorf("%w: step %q: Compensate is for another state type", ErrInvalidStep, sd.name)
+	}
+
+	spec.phase = PhaseCompensation
+	n.compensation = pipeline(&spec, undo)
+
+	return nil
 }
 
 func checkSaga(name string, d *definition, nilOptions int) []error {

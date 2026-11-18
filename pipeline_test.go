@@ -219,7 +219,7 @@ func (r *recorder) snapshot() []string {
 	return slices.Clone(r.trace)
 }
 
-func baseOf(tb testing.TB, s pipeState) snapshot[pipeState] {
+func baseOf[S any](tb testing.TB, s S) snapshot[S] {
 	tb.Helper()
 
 	st, err := newStore(s)

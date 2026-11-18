@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -16,15 +17,23 @@ func Test_Step(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		steps     []Option
-		wantNames []string
-		wantErr   error
+		name       string
+		steps      []Option
+		wantNames  []string
+		wantHotels []string
+		wantErr    error
 	}{
 		{
-			name:      "[Success] When: two steps are declared ; Should: keep declaration order",
-			steps:     []Option{Step("hotel", okAction), Step("flight", okAction)},
-			wantNames: []string{"hotel", "flight"},
+			name:       "[Success] When: two steps are declared ; Should: keep declaration order",
+			steps:      []Option{Step("hotel", okAction), Step("flight", okAction)},
+			wantNames:  []string{"hotel", "flight"},
+			wantHotels: []string{"", ""},
+		},
+		{
+			name:       "[Success] When: the action writes the state ; Should: carry the written state in the outcome",
+			steps:      []Option{Step("hotel", bookHotel)},
+			wantNames:  []string{"hotel"},
+			wantHotels: []string{hotelBooked},
 		},
 		{
 			name:    "[Fail] When: the name is empty ; Should: reject it",
@@ -52,11 +61,15 @@ func Test_Step(t *testing.T) {
 			require.NoError(t, err)
 
 			got := make([]string, 0, len(s.steps))
+			hotels := make([]string, 0, len(s.steps))
+
 			for _, n := range s.steps {
 				got = append(got, n.name)
+				hotels = append(hotels, hotelOf(t, callOnce(t, n.action)))
 			}
 
 			assert.Equal(t, tt.wantNames, got)
+			assert.Equal(t, tt.wantHotels, hotels)
 		})
 	}
 }
@@ -213,18 +226,28 @@ func Test_Pivot(t *testing.T) {
 func Test_Compensate(t *testing.T) {
 	t.Parallel()
 
-	undo := func(context.Context, *tripState) error { return nil }
+	undo := func(_ context.Context, s *tripState) error {
+		s.Hotel = hotelUndone
+
+		return nil
+	}
 
 	tests := []struct {
-		name       string
-		opts       []StepOption
-		wantPolicy CompensationFailurePolicy
-		wantErr    error
+		name        string
+		opts        []StepOption
+		wantPolicy  CompensationFailurePolicy
+		wantUndo    bool
+		wantUndoing string
+		wantErr     error
 	}{
 		{
-			name:       "[Success] When: a compensation is given ; Should: allow a failure policy on the step",
+			name:       "[Success] When: a compensation is given ; Should: run it and keep the policy",
 			opts:       []StepOption{Compensate(undo), OnCompensationFailure(CompensationHalt)},
-			wantPolicy: CompensationHalt,
+			wantPolicy: CompensationHalt, wantUndo: true, wantUndoing: hotelUndone,
+		},
+		{
+			name:       "[Success] When: no compensation is given ; Should: store no compensation",
+			wantPolicy: CompensationBlock,
 		},
 		{
 			name:    "[Fail] When: the function is for another state type ; Should: reject it",
@@ -256,6 +279,11 @@ func Test_Compensate(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantPolicy, s.steps[0].policy)
+			assert.Equal(t, tt.wantUndo, s.steps[0].compensation != nil)
+
+			if s.steps[0].compensation != nil {
+				assert.Equal(t, tt.wantUndoing, hotelOf(t, callOnce(t, s.steps[0].compensation)))
+			}
 		})
 	}
 }
@@ -326,17 +354,22 @@ func Test_Timeout(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		opts    []StepOption
-		want    time.Duration
-		wantErr error
+		name          string
+		opts          []StepOption
+		want          time.Duration
+		wantActionErr error
+		wantErr       error
 	}{
 		{
-			name: "[Success] When: a timeout is given ; Should: store it",
-			opts: []StepOption{Timeout(time.Second)}, want: time.Second,
+			name: "[Success] When: a timeout shorter than the action is given ; Should: end it with DeadlineExceeded",
+			opts: []StepOption{Timeout(time.Second)}, want: time.Second, wantActionErr: context.DeadlineExceeded,
 		},
 		{
-			name: "[Success] When: the option is absent ; Should: store zero",
+			name: "[Success] When: a timeout longer than the action is given ; Should: let the action finish",
+			opts: []StepOption{Timeout(time.Minute)}, want: time.Minute,
+		},
+		{
+			name: "[Success] When: the option is absent ; Should: store zero and let the action finish",
 		},
 		{
 			name:    "[Fail] When: the timeout is negative ; Should: reject it",
@@ -354,15 +387,27 @@ func Test_Timeout(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := oneStep(tt.opts...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
+			synctest.Test(t, func(t *testing.T) {
+				s, err := New[tripState]("trip",
+					Step("a", twoSecondCall, append([]StepOption{Compensate(twoSecondCall)}, tt.opts...)...))
+				if tt.wantErr != nil {
+					require.ErrorIs(t, err, tt.wantErr)
 
-				return
-			}
+					return
+				}
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, s.steps[0].timeout)
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, s.steps[0].timeout)
+
+				action := callOnce(t, s.steps[0].action)
+				if tt.wantActionErr == nil {
+					assert.Equal(t, outcomeSuccess, action.kind)
+				} else {
+					require.ErrorIs(t, action.err, tt.wantActionErr)
+				}
+
+				assert.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)
+			})
 		})
 	}
 }
@@ -373,21 +418,32 @@ func Test_Retry(t *testing.T) {
 	given := RetryPolicy{Attempts: 5, Initial: time.Second, Max: time.Minute, Multiplier: 1.5, NoJitter: true}
 
 	tests := []struct {
-		name    string
-		opts    []StepOption
-		want    RetryPolicy
-		wantErr error
+		name         string
+		opts         []StepOption
+		want         RetryPolicy
+		wantAttempts int
+		wantErr      error
 	}{
 		{
 			name: "[Success] When: a policy is given ; Should: store it as given",
-			opts: []StepOption{Retry(given)}, want: given,
+			opts: []StepOption{Retry(given)}, want: given, wantAttempts: 5,
 		},
 		{
-			name: "[Success] When: the option is absent ; Should: store the zero policy",
+			name:         "[Success] When: the option is absent ; Should: store zero and make the default attempts",
+			wantAttempts: DefaultAttempts,
+		},
+		{
+			name: "[Success] When: two attempts are given ; Should: stop an always failing action after two",
+			opts: []StepOption{Retry(RetryPolicy{Attempts: 2})}, want: RetryPolicy{Attempts: 2}, wantAttempts: 2,
+		},
+		{
+			name: "[Success] When: the zero policy is given ; Should: make the default attempts",
+			opts: []StepOption{Retry(RetryPolicy{})}, wantAttempts: DefaultAttempts,
 		},
 		{
 			name: "[Success] When: the multiplier is exactly one ; Should: accept it",
 			opts: []StepOption{Retry(RetryPolicy{Multiplier: 1})}, want: RetryPolicy{Multiplier: 1},
+			wantAttempts: DefaultAttempts,
 		},
 		{
 			name:    "[Fail] When: Attempts is negative ; Should: reject it",
@@ -410,15 +466,18 @@ func Test_Retry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := oneStep(tt.opts...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
+			synctest.Test(t, func(t *testing.T) {
+				s, err := New[tripState]("trip", Step("a", alwaysFails, tt.opts...))
+				if tt.wantErr != nil {
+					require.ErrorIs(t, err, tt.wantErr)
 
-				return
-			}
+					return
+				}
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, s.steps[0].retry)
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, s.steps[0].retry)
+				assert.Equal(t, tt.wantAttempts, callOnce(t, s.steps[0].action).attempts)
+			})
 		})
 	}
 }
