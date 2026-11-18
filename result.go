@@ -120,7 +120,7 @@ func (r Result) Pending() []string {
 		}
 	}
 
-	steps := foldSteps(r.events)
+	steps := foldStepsSharingChanged(r.events)
 	pivot := StepNotStarted
 
 	for i, z := range zones {
@@ -162,7 +162,11 @@ func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
 
 func buildResult(events []Event) Result {
 	r := Result{events: copyEvents(events)}
-	r.Steps = foldSteps(r.events)
+	r.Steps = foldStepsSharingChanged(r.events)
+
+	for k := range r.Steps {
+		r.Steps[k].Changed = slices.Clone(r.Steps[k].Changed)
+	}
 
 	for i := range r.events {
 		if r.events[i].Kind == EventSagaStarted {
@@ -177,7 +181,7 @@ func buildResult(events []Event) Result {
 	return r
 }
 
-func foldSteps(events []Event) []StepResult {
+func foldStepsSharingChanged(events []Event) []StepResult {
 	var steps []StepResult
 
 	for i := range events {
@@ -217,8 +221,7 @@ func applyEvent(s *StepResult, e *Event) {
 
 		return
 	case EventStepSucceeded, EventStepFailed, EventStepUnknown:
-		s.Status, s.Attempts, s.Err, s.End = statuses[e.Kind], e.Attempt, e.Err, e.Time
-		s.Changed = slices.Clone(e.Changed)
+		s.Status, s.Attempts, s.Err, s.Changed, s.End = statuses[e.Kind], e.Attempt, e.Err, e.Changed, e.Time
 
 		return
 	case EventStepSkipped:

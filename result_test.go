@@ -663,9 +663,7 @@ func Test_Result_Events(t *testing.T) {
 	}
 }
 
-func Benchmark_buildResult(b *testing.B) {
-	const steps = 20
-
+func benchEvents(steps int) []Event {
 	started := Event{Kind: EventSagaStarted, Execution: "x1", Seq: 1, Steps: make([]StepZone, steps)}
 	events := make([]Event, 1, 2*steps+2)
 	events[0] = started
@@ -688,9 +686,21 @@ func Benchmark_buildResult(b *testing.B) {
 
 	started.Steps[steps/2].Zone = ZonePivot
 
-	events = append(events, Event{Kind: EventSagaFinished, Seq: len(events) + 1, Status: StatusCompleted})
+	return append(events, Event{Kind: EventSagaFinished, Seq: len(events) + 1, Status: StatusCompleted})
+}
+
+func Benchmark_buildResult(b *testing.B) {
+	events := benchEvents(20)
 
 	for b.Loop() {
 		buildResult(events)
+	}
+}
+
+func Benchmark_Result_Pending(b *testing.B) {
+	r := buildResult(benchEvents(20))
+
+	for b.Loop() {
+		r.Pending()
 	}
 }
