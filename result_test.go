@@ -352,7 +352,7 @@ func Test_buildResult(t *testing.T) {
 	}
 }
 
-func Test_applyEvent(t *testing.T) {
+func Test_applyEventSharingChanged(t *testing.T) {
 	t.Parallel()
 
 	at := func(seq int) time.Time { return journalEvent("", seq).Time }
@@ -459,7 +459,7 @@ func Test_applyEvent(t *testing.T) {
 			t.Parallel()
 
 			got := prior()
-			applyEvent(&got, &tt.event)
+			applyEventSharingChanged(&got, &tt.event)
 
 			assert.Equal(t, tt.want, got)
 		})
@@ -574,6 +574,26 @@ func Test_Result_Pending(t *testing.T) {
 				Event{Kind: EventStepStarted, Step: payStep},
 			),
 			want: []string{payStep},
+		},
+		{
+			name: "[Fail] When: a compensable step loses its outcome and is never compensated ; Should: list it",
+			events: runEvents(
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepStarted, Step: bookStep},
+				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+			),
+			want: []string{bookStep},
+		},
+		{
+			name: "[Success] When: a compensable step ends unknown and is compensated ; Should: list nothing",
+			events: runEvents(
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepUnknown, Step: bookStep},
+				Event{Kind: EventCompensationSucceeded, Step: bookStep},
+				Event{Kind: EventCompensationSucceeded, Step: holdStep},
+				Event{Kind: EventSagaFinished, Status: StatusCompensated},
+			),
+			want: nil,
 		},
 		{
 			name: "[Fail] When: a compensation starts and its outcome is lost ; Should: list its step",

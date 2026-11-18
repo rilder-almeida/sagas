@@ -108,9 +108,9 @@ type Result struct {
 	events    []Event
 }
 
-// Pending lists, in step order and from the run's events alone, every step that still needs action: a compensation that
-// failed, was blocked or was halted; an unknown pivot; and, only once the pivot succeeded, a forward-only step that
-// failed, ended unknown or did not start.
+// Pending lists, in step order and from the events alone, every step that needs action: an unknown step; a failed,
+// blocked or halted compensation; and, once the pivot succeeded, a forward-only step that failed or did not start.
+// During a journal outage, the error Run returns is the complete list: the journal holds only what it recorded.
 func (r Result) Pending() []string {
 	var zones []StepZone
 
@@ -147,10 +147,8 @@ func (r Result) Events() []Event {
 
 func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
 	switch status {
-	case StepCompensationFailed, StepBlocked, StepHalted:
+	case StepUnknown, StepCompensationFailed, StepBlocked, StepHalted:
 		return true
-	case StepUnknown:
-		return zone == ZonePivot || zone == ZoneForwardOnly && pivot == StepSucceeded
 	case StepFailed, StepNotStarted:
 		return zone == ZoneForwardOnly && pivot == StepSucceeded
 	case StepSucceeded, StepSkipped, StepCompensated:
@@ -196,14 +194,14 @@ func foldStepsSharingChanged(events []Event) []StepResult {
 		}
 
 		if k := slices.IndexFunc(steps, func(s StepResult) bool { return s.Name == e.Step }); k >= 0 {
-			applyEvent(&steps[k], e)
+			applyEventSharingChanged(&steps[k], e)
 		}
 	}
 
 	return steps
 }
 
-func applyEvent(s *StepResult, e *Event) {
+func applyEventSharingChanged(s *StepResult, e *Event) {
 	statuses := [...]StepStatus{
 		EventStepSucceeded:         StepSucceeded,
 		EventStepFailed:            StepFailed,
