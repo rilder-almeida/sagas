@@ -52,7 +52,7 @@ func wantSteps(reached ...StepResult) []StepResult {
 	steps := make([]StepResult, len(zones))
 
 	for i := range zones {
-		steps[i].Name, steps[i].Status = zones[i].Name, StepNotStarted
+		steps[i].Name, steps[i].Status = zones[i].Name, "not-started"
 	}
 
 	for i := range reached {
@@ -76,18 +76,6 @@ func literalEvents(tail ...Event) []Event {
 	return runEventsFrom(append([]Event{{Kind: "saga-started", Steps: steps}}, tail...))
 }
 
-func wantLiteralSteps(reached ...StepResult) []StepResult {
-	steps := wantSteps(reached...)
-
-	for i := range steps {
-		if steps[i].Status == StepNotStarted {
-			steps[i].Status = "not-started"
-		}
-	}
-
-	return steps
-}
-
 type buildResultRow struct {
 	name   string
 	events []Event
@@ -99,6 +87,8 @@ func finished(status Status) Event {
 }
 
 func storedTextRows() []buildResultRow {
+	const compensationFailed = "compensation-failed"
+
 	return []buildResultRow{
 		{
 			name: "[Success] When: the stored texts say a run completed ; Should: report completed and succeeded",
@@ -107,7 +97,7 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "step-succeeded", Step: holdStep},
 				finished(StatusCompleted),
 			),
-			want: Result{Execution: "x1", Status: "completed", Steps: wantLiteralSteps(
+			want: Result{Execution: "x1", Status: "completed", Steps: wantSteps(
 				StepResult{Name: holdStep, Status: "succeeded", Start: eventTime(2), End: eventTime(3)},
 			)},
 		},
@@ -120,7 +110,7 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "compensation-succeeded", Step: holdStep},
 				finished(StatusCompensated),
 			),
-			want: Result{Execution: "x1", Status: "compensated", Steps: wantLiteralSteps(
+			want: Result{Execution: "x1", Status: "compensated", Steps: wantSteps(
 				StepResult{Name: holdStep, Status: "compensated", End: eventTime(5)},
 				StepResult{Name: bookStep, Status: "failed", End: eventTime(3)},
 			)},
@@ -132,9 +122,18 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "compensation-halted", Step: holdStep},
 				finished(StatusCompensationFailed),
 			),
-			want: Result{Execution: "x1", Status: "compensation-failed", Steps: wantLiteralSteps(
+			want: Result{Execution: "x1", Status: compensationFailed, Steps: wantSteps(
 				StepResult{Name: holdStep, Status: "halted", End: eventTime(3)},
-				StepResult{Name: bookStep, Status: "compensation-failed", End: eventTime(2)},
+				StepResult{Name: bookStep, Status: compensationFailed, End: eventTime(2)},
+			)},
+		},
+		{
+			name: "[Fail] When: a stored compensation starts last ; Should: report the step compensation-failed",
+			events: literalEvents(
+				Event{Kind: "compensation-started", Step: holdStep},
+			),
+			want: Result{Execution: "x1", Status: "unfinished", Steps: wantSteps(
+				StepResult{Name: holdStep, Status: compensationFailed},
 			)},
 		},
 		{
@@ -145,7 +144,7 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "compensation-blocked", Step: bookStep},
 				finished(StatusIncomplete),
 			),
-			want: Result{Execution: "x1", Status: "incomplete", Steps: wantLiteralSteps(
+			want: Result{Execution: "x1", Status: "incomplete", Steps: wantSteps(
 				StepResult{Name: bookStep, Status: "blocked", End: eventTime(4)},
 				StepResult{Name: payStep, Status: "unknown", End: eventTime(2)},
 				StepResult{Name: shipStep, Status: "skipped"},
@@ -154,7 +153,7 @@ func storedTextRows() []buildResultRow {
 		{
 			name:   "[Fail] When: the stored texts hold only saga-started ; Should: report unfinished and not-started",
 			events: literalEvents(),
-			want:   Result{Execution: "x1", Status: "unfinished", Steps: wantLiteralSteps()},
+			want:   Result{Execution: "x1", Status: "unfinished", Steps: wantSteps()},
 		},
 	}
 }
