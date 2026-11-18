@@ -294,11 +294,34 @@ func Test_buildResult(t *testing.T) {
 			name: "[Fail] When: the stream has no saga-finished event ; Should: report the run unfinished",
 			events: runEvents(
 				Event{Kind: EventStepSucceeded, Step: holdStep},
-				Event{Kind: EventStepStarted, Step: bookStep},
+				Event{Kind: EventStepSucceeded, Step: bookStep},
 			),
 			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps(
 				StepResult{Name: holdStep, Status: StepSucceeded, End: at(2)},
-				StepResult{Name: bookStep, Start: at(3)},
+				StepResult{Name: bookStep, Status: StepSucceeded, End: at(3)},
+			)},
+		},
+		{
+			name: "[Fail] When: the pivot starts and its outcome is lost ; Should: report it unknown",
+			events: runEvents(
+				Event{Kind: EventStepSucceeded, Step: bookStep},
+				Event{Kind: EventStepStarted, Step: payStep},
+			),
+			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps(
+				StepResult{Name: bookStep, Status: StepSucceeded, End: at(2)},
+				StepResult{Name: payStep, Status: StepUnknown, Start: at(3)},
+			)},
+		},
+		{
+			name: "[Fail] When: a compensation starts and its outcome is lost ; Should: report it failed",
+			events: runEvents(
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepFailed, Step: bookStep},
+				Event{Kind: EventCompensationStarted, Step: holdStep},
+			),
+			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps(
+				StepResult{Name: holdStep, Status: StepCompensationFailed, End: at(2)},
+				StepResult{Name: bookStep, Status: StepFailed, End: at(3)},
 			)},
 		},
 		{
@@ -352,9 +375,9 @@ func Test_applyEvent(t *testing.T) {
 		want  StepResult
 	}{
 		{
-			name:  "[Success] When: the step starts ; Should: set only Start",
+			name:  "[Success] When: the step starts ; Should: set Start and the status unknown until an outcome",
 			event: Event{Kind: EventStepStarted, Attempt: 9, Err: "x", Time: at(9)},
-			want:  with(func(s *StepResult) { s.Start = at(9) }),
+			want:  with(func(s *StepResult) { s.Status, s.Start = StepUnknown, at(9) }),
 		},
 		{
 			name: "[Success] When: the step succeeds ; Should: set status, attempts, error, changed fields and End",
@@ -410,9 +433,9 @@ func Test_applyEvent(t *testing.T) {
 			want:  with(func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepHalted, "", at(9) }),
 		},
 		{
-			name:  "[Success] When: the compensation starts ; Should: change nothing",
+			name:  "[Success] When: the compensation starts ; Should: set only the status failed until an outcome",
 			event: Event{Kind: EventCompensationStarted, Attempt: 9, Err: "x", Time: at(9)},
-			want:  prior(),
+			want:  with(func(s *StepResult) { s.Status = StepCompensationFailed }),
 		},
 		{
 			name:  "[Fail] When: the event is a saga event ; Should: change nothing",
@@ -449,7 +472,6 @@ func Test_Result_Pending(t *testing.T) {
 	tests := []struct {
 		name   string
 		events []Event
-		drop   int
 		want   []string
 	}{
 		{
@@ -546,13 +568,21 @@ func Test_Result_Pending(t *testing.T) {
 			want: []string{notifyStep, archiveStep},
 		},
 		{
-			name: "[Fail] When: the caller drops the last steps of the Result ; Should: list only the steps left",
+			name: "[Fail] When: the pivot starts and its outcome is lost ; Should: list only the pivot",
 			events: runEvents(
-				Event{Kind: EventStepSucceeded, Step: payStep},
-				Event{Kind: EventStepFailed, Step: shipStep},
+				Event{Kind: EventStepSucceeded, Step: bookStep},
+				Event{Kind: EventStepStarted, Step: payStep},
 			),
-			drop: 2,
-			want: []string{shipStep},
+			want: []string{payStep},
+		},
+		{
+			name: "[Fail] When: a compensation starts and its outcome is lost ; Should: list its step",
+			events: runEvents(
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepFailed, Step: bookStep},
+				Event{Kind: EventCompensationStarted, Step: holdStep},
+			),
+			want: []string{holdStep},
 		},
 		{
 			name:   "[Success] When: the stream is empty ; Should: list nothing",
@@ -566,7 +596,7 @@ func Test_Result_Pending(t *testing.T) {
 			t.Parallel()
 
 			r := buildResult(tt.events)
-			r.Steps = r.Steps[:len(r.Steps)-tt.drop]
+			slices.Reverse(r.Steps)
 
 			assert.Equal(t, tt.want, r.Pending())
 		})

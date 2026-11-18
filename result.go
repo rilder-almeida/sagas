@@ -108,34 +108,32 @@ type Result struct {
 	events    []Event
 }
 
-// Pending lists, in step order, every step that still needs action: a compensation that failed, was blocked or was
-// halted; an unknown pivot; and, only once the pivot succeeded, a forward-only step that failed, ended unknown or did
-// not start.
+// Pending lists, in step order and from the run's events alone, every step that still needs action: a compensation that
+// failed, was blocked or was halted; an unknown pivot; and, only once the pivot succeeded, a forward-only step that
+// failed, ended unknown or did not start.
 func (r Result) Pending() []string {
 	var zones []StepZone
 
 	for i := range r.events {
 		if r.events[i].Kind == EventSagaStarted {
 			zones = r.events[i].Steps
-
-			break
 		}
 	}
 
-	zones = zones[:min(len(zones), len(r.Steps))]
+	steps := foldSteps(r.events)
 	pivot := StepNotStarted
 
 	for i, z := range zones {
 		if z.Zone == ZonePivot {
-			pivot = r.Steps[i].Status
+			pivot = steps[i].Status
 		}
 	}
 
 	var pending []string
 
 	for i, z := range zones {
-		if owed(r.Steps[i].Status, z.Zone, pivot) {
-			pending = append(pending, r.Steps[i].Name)
+		if owed(steps[i].Status, z.Zone, pivot) {
+			pending = append(pending, steps[i].Name)
 		}
 	}
 
@@ -164,29 +162,41 @@ func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
 
 func buildResult(events []Event) Result {
 	r := Result{events: copyEvents(events)}
+	r.Steps = foldSteps(r.events)
 
 	for i := range r.events {
-		e := &r.events[i]
-
-		if e.Kind == EventSagaStarted {
-			r.Execution = e.Execution
-			r.Steps = make([]StepResult, len(e.Steps))
-
-			for k := range e.Steps {
-				r.Steps[k].Name = e.Steps[k].Name
-			}
+		if r.events[i].Kind == EventSagaStarted {
+			r.Execution = r.events[i].Execution
 		}
 
-		if e.Kind == EventSagaFinished {
-			r.Status = e.Status
-		}
-
-		if k := slices.IndexFunc(r.Steps, func(s StepResult) bool { return s.Name == e.Step }); k >= 0 {
-			applyEvent(&r.Steps[k], e)
+		if r.events[i].Kind == EventSagaFinished {
+			r.Status = r.events[i].Status
 		}
 	}
 
 	return r
+}
+
+func foldSteps(events []Event) []StepResult {
+	var steps []StepResult
+
+	for i := range events {
+		e := &events[i]
+
+		if e.Kind == EventSagaStarted {
+			steps = make([]StepResult, len(e.Steps))
+
+			for k := range e.Steps {
+				steps[k].Name = e.Steps[k].Name
+			}
+		}
+
+		if k := slices.IndexFunc(steps, func(s StepResult) bool { return s.Name == e.Step }); k >= 0 {
+			applyEvent(&steps[k], e)
+		}
+	}
+
+	return steps
 }
 
 func applyEvent(s *StepResult, e *Event) {
@@ -203,7 +213,7 @@ func applyEvent(s *StepResult, e *Event) {
 
 	switch e.Kind {
 	case EventStepStarted:
-		s.Start = e.Time
+		s.Status, s.Start = StepUnknown, e.Time
 
 		return
 	case EventStepSucceeded, EventStepFailed, EventStepUnknown:
@@ -219,7 +229,11 @@ func applyEvent(s *StepResult, e *Event) {
 		s.Status, s.CompensationErr, s.End = statuses[e.Kind], e.Err, e.Time
 
 		return
-	case EventInvalid, EventSagaStarted, EventCompensationStarted, EventSagaFinished:
+	case EventCompensationStarted:
+		s.Status = StepCompensationFailed
+
+		return
+	case EventInvalid, EventSagaStarted, EventSagaFinished:
 		return
 	}
 }
