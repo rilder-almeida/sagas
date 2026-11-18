@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -30,18 +31,6 @@ func decodeRecords(tb testing.TB, out *bytes.Buffer) []map[string]any {
 	return records
 }
 
-func requireErrorText(tb testing.TB, err error, want string) {
-	tb.Helper()
-
-	if want == "" {
-		require.NoError(tb, err)
-
-		return
-	}
-
-	require.ErrorContains(tb, err, want)
-}
-
 func assertErrorAttr(tb testing.TB, rec map[string]any, want string) {
 	tb.Helper()
 
@@ -57,55 +46,46 @@ func assertErrorAttr(tb testing.TB, rec map[string]any, want string) {
 	assert.Contains(tb, rec["error"], want)
 }
 
+type slogAttempt struct {
+	err       error
+	wantLevel string
+	wantText  string
+}
+
 func Test_Slog(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		phase      Phase
-		policy     RetryPolicy
-		results    []error
-		panicValue any
-		sleep      time.Duration
-		wantLevels []string
-		wantErrors []string
+		name     string
+		phase    Phase
+		policy   RetryPolicy
+		sleep    time.Duration
+		attempts []slogAttempt
 	}{
 		{
-			name:       "[Success] When: the call succeeds ; Should: log one info record with every attribute",
-			phase:      PhaseAction,
-			results:    []error{nil},
-			wantLevels: []string{"INFO"},
-			wantErrors: []string{""},
+			name:     "[Success] When: the call succeeds ; Should: log one info record with every attribute",
+			phase:    PhaseAction,
+			attempts: []slogAttempt{{wantLevel: "INFO"}},
 		},
 		{
-			name:       "[Fail] When: the call fails ; Should: log one warn record with the error",
-			phase:      PhaseAction,
-			results:    []error{Permanent(errCall)},
-			wantLevels: []string{"WARN"},
-			wantErrors: []string{"call failed"},
+			name:     "[Fail] When: the call fails ; Should: log one warn record with the error",
+			phase:    PhaseAction,
+			attempts: []slogAttempt{{err: Permanent(errCall), wantLevel: "WARN", wantText: "call failed"}},
 		},
 		{
-			name:       "[Success] When: the first attempt fails ; Should: log attempts 1 and 2",
-			phase:      PhaseCompensation,
-			policy:     RetryPolicy{Attempts: 2, Initial: time.Millisecond, NoJitter: true},
-			results:    []error{errCall, nil},
-			wantLevels: []string{"WARN", "INFO"},
-			wantErrors: []string{"call failed", ""},
+			name:   "[Success] When: the first attempt fails ; Should: log attempts 1 and 2",
+			phase:  PhaseCompensation,
+			policy: RetryPolicy{Attempts: 2, Initial: time.Millisecond, NoJitter: true},
+			attempts: []slogAttempt{
+				{err: errCall, wantLevel: "WARN", wantText: "call failed"},
+				{wantLevel: "INFO"},
+			},
 		},
 		{
-			name:       "[Success] When: the call sleeps three seconds ; Should: log a duration of three seconds",
-			phase:      PhaseAction,
-			results:    []error{nil},
-			sleep:      3 * time.Second,
-			wantLevels: []string{"INFO"},
-			wantErrors: []string{""},
-		},
-		{
-			name:       "[Fail] When: the call panics ; Should: log one warn record with the panic value",
-			phase:      PhaseAction,
-			panicValue: "bad call",
-			wantLevels: []string{"WARN"},
-			wantErrors: []string{"sagas: panic: bad call"},
+			name:     "[Success] When: the call sleeps three seconds ; Should: log a duration of three seconds",
+			phase:    PhaseAction,
+			sleep:    3 * time.Second,
+			attempts: []slogAttempt{{wantLevel: "INFO"}},
 		},
 	}
 
@@ -128,11 +108,7 @@ func Test_Slog(t *testing.T) {
 				call := func(context.Context, *pipeState) error {
 					time.Sleep(tt.sleep)
 
-					if tt.panicValue != nil {
-						panic(tt.panicValue)
-					}
-
-					err := tt.results[attempt]
+					err := tt.attempts[attempt].err
 					attempt++
 
 					return err
@@ -140,25 +116,61 @@ func Test_Slog(t *testing.T) {
 
 				got := pipeline(spec, call)(t.Context(), "exec-1", baseOf(t, pipeState{}))
 
-				requireErrorText(t, got.err, tt.wantErrors[len(tt.wantErrors)-1])
+				if last := tt.attempts[len(tt.attempts)-1].err; last == nil {
+					require.NoError(t, got.err)
+				} else {
+					require.ErrorIs(t, got.err, last)
+				}
 
 				records := decodeRecords(t, &out)
-				require.Len(t, records, len(tt.wantLevels))
+				require.Len(t, records, len(tt.attempts))
 
 				for i, rec := range records {
-					assert.Equal(t, tt.wantLevels[i], rec["level"])
+					assert.Equal(t, tt.attempts[i].wantLevel, rec["level"])
 					assert.Equal(t, "saga-1", rec["saga"])
 					assert.Equal(t, "exec-1", rec["execution"])
 					assert.Equal(t, "step-1", rec["step"])
 					assert.Equal(t, string(tt.phase), rec["phase"])
 					assert.InDelta(t, float64(i+1), rec["attempt"], 0)
 					assert.InDelta(t, float64(tt.sleep), rec["duration"], 0)
-
-					assertErrorAttr(t, rec, tt.wantErrors[i])
+					assertErrorAttr(t, rec, tt.attempts[i].wantText)
 				}
 			})
 		})
 	}
+}
+
+func Test_Slog_panic(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+
+	spec := &callSpec{
+		saga:       "saga-1",
+		step:       "step-1",
+		phase:      PhaseAction,
+		retry:      RetryPolicy{Attempts: 1},
+		middleware: []Middleware{Slog(slog.New(slog.NewJSONHandler(&out, nil)))},
+	}
+	call := func(context.Context, *pipeState) error { panic("bad call") }
+
+	got := pipeline(spec, call)(t.Context(), "exec-1", baseOf(t, pipeState{}))
+
+	panicked, ok := errors.AsType[*PanicError](got.err)
+	require.True(t, ok)
+	assert.Equal(t, "bad call", panicked.Value)
+
+	records := decodeRecords(t, &out)
+	require.Len(t, records, 1)
+
+	want := map[string]any{
+		"level": "WARN", "saga": "saga-1", "execution": "exec-1", "step": "step-1", "phase": "action", "attempt": 1.0,
+	}
+	for key, value := range want {
+		assert.Equal(t, value, records[0][key], key)
+	}
+
+	assertErrorAttr(t, records[0], "sagas: panic: bad call")
 }
 
 func Test_Slog_direct(t *testing.T) {
