@@ -3,7 +3,6 @@ package sagas
 import (
 	"errors"
 	"slices"
-	"strconv"
 	"time"
 )
 
@@ -17,77 +16,33 @@ var (
 	ErrIncomplete = errors.New("sagas: incomplete")
 )
 
-// Status is the outcome of a run.
-type Status int
+// Status is the outcome of a run. The empty string means not set.
+type Status string
 
-// Status values; StatusUnfinished is the zero value, for a run with no saga-finished event.
+// Status values.
 const (
-	StatusUnfinished Status = iota
-	StatusCompleted
-	StatusCompensated
-	StatusCompensationFailed
-	StatusIncomplete
+	StatusUnfinished         Status = "unfinished"
+	StatusCompleted          Status = "completed"
+	StatusCompensated        Status = "compensated"
+	StatusCompensationFailed Status = "compensation-failed"
+	StatusIncomplete         Status = "incomplete"
 )
 
-// StepStatus is where one step of a run ended.
-type StepStatus int
+// StepStatus is where one step of a run ended. The empty string means not set.
+type StepStatus string
 
-// StepStatus values; StepNotStarted is the zero value.
+// StepStatus values.
 const (
-	StepNotStarted StepStatus = iota
-	StepSucceeded
-	StepFailed
-	StepUnknown
-	StepSkipped
-	StepCompensated
-	StepCompensationFailed
-	StepBlocked
-	StepHalted
+	StepNotStarted         StepStatus = "not-started"
+	StepSucceeded          StepStatus = "succeeded"
+	StepFailed             StepStatus = "failed"
+	StepUnknown            StepStatus = "unknown"
+	StepSkipped            StepStatus = "skipped"
+	StepCompensated        StepStatus = "compensated"
+	StepCompensationFailed StepStatus = "compensation-failed"
+	StepBlocked            StepStatus = "blocked"
+	StepHalted             StepStatus = "halted"
 )
-
-// String returns the status in words, or Status(n) for an unknown value.
-func (s Status) String() string {
-	switch s {
-	case StatusUnfinished:
-		return "unfinished"
-	case StatusCompleted:
-		return "completed"
-	case StatusCompensated:
-		return "compensated"
-	case StatusCompensationFailed:
-		return "compensation failed"
-	case StatusIncomplete:
-		return "incomplete"
-	}
-
-	return "Status(" + strconv.Itoa(int(s)) + ")"
-}
-
-// String returns the step status in words, or StepStatus(n) for an unknown value.
-func (s StepStatus) String() string {
-	switch s {
-	case StepNotStarted:
-		return "not started"
-	case StepSucceeded:
-		return "succeeded"
-	case StepFailed:
-		return "failed"
-	case StepUnknown:
-		return "unknown"
-	case StepSkipped:
-		return "skipped"
-	case StepCompensated:
-		return "compensated"
-	case StepCompensationFailed:
-		return "compensation failed"
-	case StepBlocked:
-		return "blocked"
-	case StepHalted:
-		return "halted"
-	}
-
-	return "StepStatus(" + strconv.Itoa(int(s)) + ")"
-}
 
 // StepResult is where one step of a run ended, with its attempts, errors, committed fields and times.
 type StepResult struct {
@@ -113,7 +68,7 @@ type Result struct {
 // Pending lists, in step order and from the events alone, every step that needs action: an unknown step; a failed,
 // blocked or halted compensation; and, once the pivot succeeded, a forward-only step that failed or did not start.
 // During a journal outage, the error Run returns is the complete list: the journal holds only what it recorded.
-func (r Result) Pending() []string {
+func (r *Result) Pending() []string {
 	var zones []StepZone
 
 	for i := range r.events {
@@ -143,7 +98,7 @@ func (r Result) Pending() []string {
 }
 
 // Events returns a copy of the run's events that the caller may change freely.
-func (r Result) Events() []Event {
+func (r *Result) Events() []Event {
 	return copyEvents(r.events)
 }
 
@@ -161,7 +116,7 @@ func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
 }
 
 func buildResult(events []Event) Result {
-	r := Result{events: copyEvents(events)}
+	r := Result{Status: StatusUnfinished, events: copyEvents(events)}
 	r.Steps = foldStepsSharingChanged(r.events)
 
 	for k := range r.Steps {
@@ -191,7 +146,7 @@ func foldStepsSharingChanged(events []Event) []StepResult {
 			steps = make([]StepResult, len(e.Steps))
 
 			for k := range e.Steps {
-				steps[k].Name = e.Steps[k].Name
+				steps[k].Name, steps[k].Status = e.Steps[k].Name, StepNotStarted
 			}
 		}
 
@@ -204,39 +159,43 @@ func foldStepsSharingChanged(events []Event) []StepResult {
 }
 
 func applyEventSharingChanged(s *StepResult, e *Event) {
-	statuses := [...]StepStatus{
-		EventStepSucceeded:         StepSucceeded,
-		EventStepFailed:            StepFailed,
-		EventStepUnknown:           StepUnknown,
-		EventStepSkipped:           StepSkipped,
-		EventCompensationSucceeded: StepCompensated,
-		EventCompensationFailed:    StepCompensationFailed,
-		EventCompensationBlocked:   StepBlocked,
-		EventCompensationHalted:    StepHalted,
-	}
-
 	switch e.Kind {
 	case EventStepStarted:
 		s.Status, s.Start = StepUnknown, e.Time
-
-		return
 	case EventStepSucceeded, EventStepFailed, EventStepUnknown:
-		s.Status, s.Attempts, s.Err, s.Changed, s.End = statuses[e.Kind], e.Attempt, e.Err, e.Changed, e.Time
-
-		return
+		s.Status, s.Attempts, s.Err, s.Changed, s.End = outcomeStatus(e.Kind), e.Attempt, e.Err, e.Changed, e.Time
 	case EventStepSkipped:
 		s.Status = StepSkipped
-
-		return
 	case EventCompensationSucceeded, EventCompensationFailed, EventCompensationBlocked, EventCompensationHalted:
-		s.Status, s.CompensationErr, s.End = statuses[e.Kind], e.Err, e.Time
-
-		return
+		s.Status, s.CompensationErr, s.End = outcomeStatus(e.Kind), e.Err, e.Time
 	case EventCompensationStarted:
 		s.Status = StepCompensationFailed
-
+	case "", EventSagaStarted, EventSagaFinished:
 		return
-	case EventInvalid, EventSagaStarted, EventSagaFinished:
-		return
+	default:
 	}
+}
+
+func outcomeStatus(k EventKind) StepStatus {
+	switch k {
+	case EventStepSucceeded:
+		return StepSucceeded
+	case EventStepFailed:
+		return StepFailed
+	case EventStepUnknown:
+		return StepUnknown
+	case EventCompensationSucceeded:
+		return StepCompensated
+	case EventCompensationFailed:
+		return StepCompensationFailed
+	case EventCompensationBlocked:
+		return StepBlocked
+	case EventCompensationHalted:
+		return StepHalted
+	case "", EventSagaStarted, EventStepStarted, EventStepSkipped, EventCompensationStarted, EventSagaFinished:
+		return ""
+	default:
+	}
+
+	return ""
 }
