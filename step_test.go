@@ -61,6 +61,90 @@ func Test_Step(t *testing.T) {
 	}
 }
 
+func Test_After(t *testing.T) {
+	t.Parallel()
+
+	node := func(name string, after ...string) Option {
+		if len(after) == 0 {
+			return Step(name, okAction)
+		}
+
+		return Step(name, okAction, After(after...))
+	}
+
+	tests := []struct {
+		name         string
+		steps        []Option
+		wantOrder    []int
+		wantParents  [][]int
+		wantChildren [][]int
+		wantContains string
+		wantErr      error
+	}{
+		{
+			name:         "[Success] When: the steps form a chain ; Should: order them along it",
+			steps:        []Option{node("c", "b"), node("b", "a"), node("a")},
+			wantOrder:    []int{2, 1, 0},
+			wantParents:  [][]int{{1}, {2}, {}},
+			wantChildren: [][]int{{}, {0}, {1}},
+		},
+		{
+			name:         "[Success] When: the steps form a diamond ; Should: list both parents and both children",
+			steps:        []Option{node("a"), node("b", "a"), node("c", "a"), node("d", "b", "c")},
+			wantOrder:    []int{0, 1, 2, 3},
+			wantParents:  [][]int{{}, {0}, {0}, {1, 2}},
+			wantChildren: [][]int{{1, 2}, {3}, {3}, {}},
+		},
+		{
+			name:         "[Success] When: two steps are independent ; Should: keep declaration order",
+			steps:        []Option{node("b"), node("a")},
+			wantOrder:    []int{0, 1},
+			wantParents:  [][]int{{}, {}},
+			wantChildren: [][]int{{}, {}},
+		},
+		{
+			name:         "[Fail] When: a step waits for an unknown step ; Should: return ErrUnknownDependency",
+			steps:        []Option{node("a", "ghost")},
+			wantErr:      ErrUnknownDependency,
+			wantContains: `step "a"`,
+		},
+		{
+			name:         "[Fail] When: After is given twice ; Should: reject it",
+			steps:        []Option{Step("a", okAction, twice(After())...)},
+			wantErr:      ErrInvalidStep,
+			wantContains: "After given more than once",
+		},
+		{
+			name:         "[Fail] When: a name repeats inside one list ; Should: reject it naming the name",
+			steps:        []Option{node("a"), node("b", "a", "a")},
+			wantErr:      ErrInvalidStep,
+			wantContains: `After lists "a" more than once`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := New[tripState]("trip", tt.steps...)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.ErrorContains(t, err, tt.wantContains)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOrder, s.order)
+
+			for i, n := range s.steps {
+				assert.Equal(t, tt.wantParents[i], n.parents, "parents of step %d", i)
+				assert.Equal(t, tt.wantChildren[i], n.children, "children of step %d", i)
+			}
+		})
+	}
+}
+
 func Test_Compensate(t *testing.T) {
 	t.Parallel()
 
@@ -499,6 +583,16 @@ func Test_checkStep(t *testing.T) {
 			name:         "[Fail] When: Timeout is given twice ; Should: report it",
 			step:         Step("a", okAction, twice(Timeout(time.Second))...),
 			wantContains: []string{"Timeout given more than once"},
+		},
+		{
+			name:         "[Fail] When: After is given twice ; Should: report it",
+			step:         Step("a", okAction, After("x"), After("y")),
+			wantContains: []string{"After given more than once"},
+		},
+		{
+			name:         "[Fail] When: a name repeats inside one After list ; Should: report the name",
+			step:         Step("a", okAction, After("x", "y", "x")),
+			wantContains: []string{stepA, `After lists "x" more than once`},
 		},
 		{
 			name: "[Fail] When: OnCompensationFailure is given twice ; Should: report it",

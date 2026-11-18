@@ -39,14 +39,17 @@ type Saga[S any] struct {
 	steps    []stepNode[S]
 	journal  Journal
 	recovery time.Duration
+	order    []int
 }
 
 type stepNode[S any] struct {
-	name    string
-	pred    func(*S) bool
-	retry   RetryPolicy
-	timeout time.Duration
-	policy  CompensationFailurePolicy
+	name     string
+	pred     func(*S) bool
+	retry    RetryPolicy
+	timeout  time.Duration
+	policy   CompensationFailurePolicy
+	parents  []int
+	children []int
 }
 
 // New builds the saga called name from its options. It returns every problem of the definition, joined.
@@ -70,6 +73,9 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 		errs = append(errs, checkStep[S](&d.steps[i])...)
 	}
 
+	g, graphErrs := checkGraph(d.steps)
+	errs = append(errs, graphErrs...)
+
 	if err := checkState(reflect.TypeFor[S]()); err != nil {
 		errs = append(errs, err)
 	}
@@ -78,18 +84,21 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 		return nil, err
 	}
 
-	return build[S](name, d), nil
+	return build[S](name, d, g), nil
 }
 
-func build[S any](name string, d *definition) *Saga[S] {
-	s := &Saga[S]{name: name, journal: d.journal, recovery: d.recovery, steps: make([]stepNode[S], 0, len(d.steps))}
+func build[S any](name string, d *definition, g graph) *Saga[S] {
+	s := &Saga[S]{
+		name: name, journal: d.journal, recovery: d.recovery, order: g.order,
+		steps: make([]stepNode[S], 0, len(d.steps)),
+	}
 	if s.recovery == 0 {
 		s.recovery = DefaultRecoveryTimeout
 	}
 
 	for i := range d.steps {
 		sd := &d.steps[i]
-		n := stepNode[S]{name: sd.name, retry: sd.retry, timeout: sd.timeout, policy: sd.policy}
+		n := stepNode[S]{name: sd.name, retry: sd.retry, timeout: sd.timeout, policy: sd.policy, parents: g.parents[i]}
 
 		if n.policy == "" {
 			n.policy = CompensationBlock
@@ -100,6 +109,11 @@ func build[S any](name string, d *definition) *Saga[S] {
 		}
 
 		s.steps = append(s.steps, n)
+	}
+
+	children := childrenOf(g.parents)
+	for i := range s.steps {
+		s.steps[i].children = children[i]
 	}
 
 	return s

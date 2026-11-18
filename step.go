@@ -33,6 +33,7 @@ type stepDef struct {
 	timeout    time.Duration
 	retry      RetryPolicy
 	policy     CompensationFailurePolicy
+	after      []string
 	given      map[string]int
 	nilOptions int
 }
@@ -97,6 +98,14 @@ func OnCompensationFailure(p CompensationFailurePolicy) StepOption {
 	}
 }
 
+// After makes the step wait for the steps called names. Call it once with every name.
+func After(names ...string) StepOption {
+	return func(s *stepDef) {
+		s.after = names
+		s.given["After"]++
+	}
+}
+
 func checkStep[S any](d *stepDef) []error {
 	rules := []string{}
 
@@ -120,6 +129,7 @@ func checkStep[S any](d *stepDef) []error {
 
 	rules = append(rules, checkRetry(d.retry)...)
 	rules = append(rules, checkPolicy(d)...)
+	rules = append(rules, checkAfter(d.after)...)
 	rules = append(rules, checkRepeats(d.given, d.nilOptions, "StepOption")...)
 
 	errs := make([]error, 0, len(rules))
@@ -159,6 +169,19 @@ func checkPolicy(d *stepDef) []string {
 
 	if d.given["OnCompensationFailure"] > 0 && d.undo == nil {
 		rules = append(rules, "OnCompensationFailure without Compensate")
+	}
+
+	return rules
+}
+
+func checkAfter(after []string) []string {
+	var rules []string
+
+	for i, name := range after {
+		first := slices.Index(after, name)
+		if first < i && !slices.Contains(after[first+1:i], name) {
+			rules = append(rules, fmt.Sprintf("After lists %q more than once", name))
+		}
 	}
 
 	return rules

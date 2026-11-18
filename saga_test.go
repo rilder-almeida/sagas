@@ -143,6 +143,38 @@ func Test_New(t *testing.T) {
 			wantContains: []string{"WithRecoveryTimeout given more than once"},
 		},
 		{
+			name:         "[Fail] When: two steps share a name ; Should: return ErrDuplicateStep naming it",
+			build:        func() error { return buildTrip(twice(step())...) },
+			wantErrs:     []error{ErrDuplicateStep},
+			wantContains: []string{`"a"`},
+		},
+		{
+			name: "[Fail] When: two steps wait for each other ; Should: return ErrCycle naming both",
+			build: func() error {
+				return buildTrip(Step("a", okAction, After("b")), Step("b", okAction, After("a")))
+			},
+			wantErrs:     []error{ErrCycle},
+			wantContains: []string{`"a"`, `"b"`},
+		},
+		{
+			name:         "[Fail] When: a step waits for itself ; Should: return ErrCycle naming it",
+			build:        func() error { return buildTrip(Step("a", okAction, After("a"))) },
+			wantErrs:     []error{ErrCycle},
+			wantContains: []string{`"a"`},
+		},
+		{
+			name: "[Fail] When: one step has an unknown dependency and two others form a cycle ; Should: return both",
+			build: func() error {
+				return buildTrip(
+					Step("a", okAction, After("ghost")),
+					Step("b", okAction, After("c")),
+					Step("c", okAction, After("b")),
+				)
+			},
+			wantErrs:     []error{ErrUnknownDependency, ErrCycle},
+			wantContains: []string{`"ghost"`, `"b"`, `"c"`},
+		},
+		{
 			name: "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
 			build: func() error {
 				_, err := New[chanState]("trip", Step("a", func(context.Context, *chanState) error { return nil }))
