@@ -481,6 +481,94 @@ func pipelineTwiceRow() pipelineRow {
 	}
 }
 
+func abandoning(start, limit time.Duration) Middleware {
+	return func(next Handler) Handler {
+		return func(ctx context.Context) error {
+			errc := make(chan error, 1)
+
+			go func() {
+				time.Sleep(start)
+
+				errc <- next(ctx)
+			}()
+
+			timer := time.NewTimer(limit)
+			defer timer.Stop()
+
+			select {
+			case err := <-errc:
+				return err
+			case <-timer.C:
+				return context.DeadlineExceeded
+			}
+		}
+	}
+}
+
+const lateCall = "late call"
+
+func lateFirstCall(r *recorder) func(context.Context, *pipeState) error {
+	return func(ctx context.Context, s *pipeState) error {
+		if attemptOf(ctx) == 1 {
+			time.Sleep(20 * time.Millisecond)
+
+			s.B = lateCall
+
+			r.add(lateCall)
+
+			return nil
+		}
+
+		s.A = 2
+
+		return nil
+	}
+}
+
+func pipelineAbandonedRow() pipelineRow {
+	return pipelineRow{
+		name: "[Success] When: middleware abandons attempt 1's call and attempt 2 runs ; " +
+			"Should: succeed with attempt 2's copy and never attempt 1's late one",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{abandoning(0, 10*time.Millisecond)}
+		},
+		call:         lateFirstCall,
+		wantKind:     outcomeSuccess,
+		wantAttempts: 2,
+		wantState:    &pipeState{A: 2},
+		wantTrace:    []string{lateCall},
+	}
+}
+
+func pipelineAbandonedThenSkipRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: attempt 1's abandoned call ends late and attempt 2 returns nil without next ; " +
+			"Should: fail with ErrCallNotRun",
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			first := abandoning(15*time.Millisecond, 10*time.Millisecond)
+
+			return []Middleware{func(next Handler) Handler {
+				return func(ctx context.Context) error {
+					if attemptOf(ctx) == 1 {
+						return first(next)(ctx)
+					}
+
+					time.Sleep(30 * time.Millisecond)
+
+					return nil
+				}
+			}}
+		},
+		call:         lateFirstCall,
+		wantKind:     outcomeFailure,
+		wantAttempts: 2,
+		wantErr:      ErrCallNotRun,
+		wantTrace:    []string{lateCall},
+	}
+}
+
 type pipelineRow struct {
 	name         string
 	spec         callSpec
@@ -802,6 +890,42 @@ func Test_requireRan(t *testing.T) {
 	}
 }
 
+func Test_attemptState_record(t *testing.T) {
+	t.Parallel()
+
+	out := &pipeState{A: 1}
+
+	tests := []struct {
+		name       string
+		sealFirst  bool
+		wantResult callResult[pipeState]
+	}{
+		{
+			name:       "[Success] When: a call records before the seal ; Should: keep its result",
+			wantResult: callResult[pipeState]{called: true, out: out},
+		},
+		{
+			name:      "[Fail] When: a call records after the seal ; Should: drop its result",
+			sealFirst: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			at := &attemptState[pipeState]{}
+			if tt.sealFirst {
+				assert.Equal(t, callResult[pipeState]{}, at.seal())
+			}
+
+			at.record(out, nil)
+
+			assert.Equal(t, tt.wantResult, at.seal())
+		})
+	}
+}
+
 func Test_pipeline(t *testing.T) {
 	t.Parallel()
 
@@ -825,6 +949,8 @@ func Test_pipeline(t *testing.T) {
 		pipelineLastCallFailsRow(),
 		pipelineLostContextRow(),
 		pipelineLaterAttemptSkipRow(),
+		pipelineAbandonedRow(),
+		pipelineAbandonedThenSkipRow(),
 	}
 
 	for _, tt := range tests {
@@ -840,6 +966,8 @@ func Test_pipeline(t *testing.T) {
 				}
 
 				got := pipeline(&spec, tt.call(rec))(t.Context(), "exec-1", baseFor(t, &tt))
+
+				time.Sleep(time.Minute)
 
 				assert.Equal(t, tt.wantKind, got.kind)
 				assert.Equal(t, tt.wantAttempts, got.attempts)

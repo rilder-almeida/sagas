@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -53,13 +54,46 @@ type callSpec struct {
 }
 
 type callState[S any] struct {
-	base   snapshot[S]
+	base snapshot[S]
+	out  *S
+}
+
+type callStateKey struct{}
+
+type callResult[S any] struct {
 	called bool
 	out    *S
 	err    error
 }
 
-type callStateKey struct{}
+type attemptState[S any] struct {
+	base   snapshot[S]
+	mu     sync.Mutex
+	sealed bool
+	last   callResult[S]
+}
+
+type attemptStateKey struct{}
+
+func (a *attemptState[S]) record(out *S, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.sealed {
+		return
+	}
+
+	a.last = callResult[S]{called: true, out: out, err: err}
+}
+
+func (a *attemptState[S]) seal() callResult[S] {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.sealed = true
+
+	return a.last
+}
 
 func classify(err error) outcomeKind {
 	var panicked *PanicError
@@ -111,6 +145,12 @@ func stateFrom[S any](ctx context.Context) (*callState[S], bool) {
 	return st, ok
 }
 
+func attemptFrom[S any](ctx context.Context) (*attemptState[S], bool) {
+	at, ok := ctx.Value(attemptStateKey{}).(*attemptState[S])
+
+	return at, ok
+}
+
 func requireRan[S any](next Handler) Handler {
 	return func(ctx context.Context) error {
 		st, ok := stateFrom[S](ctx)
@@ -118,38 +158,42 @@ func requireRan[S any](next Handler) Handler {
 			return Permanent(ErrCallContextLost)
 		}
 
-		st.called, st.out, st.err = false, nil, nil
+		at := &attemptState[S]{base: st.base}
 
-		err := next(ctx)
-		if err != nil {
+		err := next(context.WithValue(ctx, attemptStateKey{}, at))
+
+		last := at.seal()
+
+		switch {
+		case err != nil:
 			return err
-		}
-
-		if !st.called {
+		case !last.called:
 			return Permanent(ErrCallNotRun)
+		case last.err != nil:
+			return last.err
 		}
 
-		return st.err
+		st.out = last.out
+
+		return nil
 	}
 }
 
 func runCall[S any](call func(context.Context, *S) error) Handler {
 	return func(ctx context.Context) error {
-		st, ok := stateFrom[S](ctx)
+		at, ok := attemptFrom[S](ctx)
 		if !ok {
 			return Permanent(ErrCallContextLost)
 		}
 
-		st.called, st.out = true, nil
-
-		fresh, err := copyState(st.base)
+		fresh, err := copyState(at.base)
 		if err != nil {
 			err = Permanent(err)
-		} else if err = catchPanic(func() error { return call(ctx, fresh) }); err == nil {
-			st.out = fresh
+		} else if err = catchPanic(func() error { return call(ctx, fresh) }); err != nil {
+			fresh = nil
 		}
 
-		st.err = err
+		at.record(fresh, err)
 
 		return err
 	}
