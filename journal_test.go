@@ -182,117 +182,104 @@ func Test_memoryJournal_Append(t *testing.T) {
 	e1, e2, e3 := journalEvent("a", 1), journalEvent("a", 2), journalEvent("a", 3)
 	e5, e0, eNeg, b1 := journalEvent("a", 5), journalEvent("a", 0), journalEvent("a", -1), journalEvent("b", 1)
 	c1 := journalEvent("c", 1)
+	c1.Changed, c1.Steps = nil, nil
 	stamped := withEvent(&e1, func(e *Event) { e.Time = now })
 
 	tests := []struct {
-		name      string
-		prior     []Event
-		event     *Event
-		execution string
-		wantErr   error
-		wantMsg   string
-		want      []Event
+		name    string
+		prior   []Event
+		event   *Event
+		wantErr error
+		wantMsg string
+		want    map[string][]Event
 	}{
 		{
-			name:      "[Success] When: the first event of a new execution ; Should: write it",
-			event:     &e1,
-			execution: "a",
-			want:      []Event{e1},
+			name:  "[Success] When: the first event of a new execution ; Should: write it",
+			event: &e1,
+			want:  map[string][]Event{"a": {e1}},
 		},
 		{
-			name:      "[Success] When: the next Seq ; Should: write it after the last event",
-			prior:     []Event{e1},
-			event:     &e2,
-			execution: "a",
-			want:      []Event{e1, e2},
+			name:  "[Success] When: the next Seq ; Should: write it after the last event",
+			prior: []Event{e1},
+			event: &e2,
+			want:  map[string][]Event{"a": {e1, e2}},
 		},
 		{
-			name:      "[Success] When: the caller changes a scalar and a slice after Append ; Should: keep a copy",
-			event:     &c1,
-			execution: "c",
-			want:      []Event{c1},
+			name:  "[Success] When: the first event has nil Changed and Steps ; Should: store them as nil",
+			event: &c1,
+			want:  map[string][]Event{"c": {c1}},
 		},
 		{
-			name:      "[Fail] When: Seq 5 after Seq 1 to 3 ; Should: return ErrConcurrentWriter and write nothing",
-			prior:     []Event{e1, e2, e3},
-			event:     &e5,
-			execution: "a",
-			wantErr:   ErrConcurrentWriter,
-			wantMsg:   `sagas: concurrent writer: execution "a" seq 5`,
-			want:      []Event{e1, e2, e3},
+			name:    "[Fail] When: Seq 5 after Seq 1 to 3 ; Should: return ErrConcurrentWriter and write nothing",
+			prior:   []Event{e1, e2, e3},
+			event:   &e5,
+			wantErr: ErrConcurrentWriter,
+			wantMsg: `sagas: concurrent writer: execution "a" seq 5`,
+			want:    map[string][]Event{"a": {e1, e2, e3}},
 		},
 		{
-			name:      "[Fail] When: Seq 0 on an empty execution ; Should: return errInvalidEvent and write nothing",
-			event:     &e0,
-			execution: "a",
-			wantErr:   errInvalidEvent,
-			wantMsg:   `sagas: invalid event: execution "a" seq 0`,
-			want:      []Event{},
+			name:    "[Fail] When: Seq 0 on an empty execution ; Should: return errInvalidEvent and write nothing",
+			event:   &e0,
+			wantErr: errInvalidEvent,
+			wantMsg: `sagas: invalid event: execution "a" seq 0`,
+			want:    map[string][]Event{"a": {}},
 		},
 		{
-			name:      "[Fail] When: Seq -1 after Seq 1 ; Should: return errInvalidEvent and write nothing",
-			prior:     []Event{e1},
-			event:     &eNeg,
-			execution: "a",
-			wantErr:   errInvalidEvent,
-			wantMsg:   `sagas: invalid event: execution "a" seq -1`,
-			want:      []Event{e1},
+			name:    "[Fail] When: Seq -1 after Seq 1 ; Should: return errInvalidEvent and write nothing",
+			prior:   []Event{e1},
+			event:   &eNeg,
+			wantErr: errInvalidEvent,
+			wantMsg: `sagas: invalid event: execution "a" seq -1`,
+			want:    map[string][]Event{"a": {e1}},
 		},
 		{
-			name:      "[Fail] When: a nil event after Seq 1 ; Should: return errInvalidEvent and write nothing",
-			prior:     []Event{e1},
-			execution: "a",
-			wantErr:   errInvalidEvent,
-			wantMsg:   `sagas: invalid event: nil event`,
-			want:      []Event{e1},
+			name:    "[Fail] When: a nil event after Seq 1 ; Should: return errInvalidEvent and write nothing",
+			prior:   []Event{e1},
+			wantErr: errInvalidEvent,
+			wantMsg: `sagas: invalid event: nil event`,
+			want:    map[string][]Event{"a": {e1}},
 		},
 		{
-			name:      "[Success] When: an equal resend, new slices, monotonic-only Time ; Should: nil, no write",
-			prior:     []Event{*stamped},
-			event:     withEvent(stamped, func(e *Event) { e.Time = now.Round(0) }),
-			execution: "a",
-			want:      []Event{*stamped},
+			name:  "[Success] When: an equal resend, new slices, monotonic-only Time ; Should: nil, no write",
+			prior: []Event{*stamped},
+			event: withEvent(stamped, func(e *Event) { e.Time = now.Round(0) }),
+			want:  map[string][]Event{"a": {*stamped}},
 		},
 		{
-			name:      "[Success] When: an equal resend of an earlier Seq ; Should: return nil, write nothing",
-			prior:     []Event{e1, e2, e3},
-			event:     withEvent(&e2, func(*Event) {}),
-			execution: "a",
-			want:      []Event{e1, e2, e3},
+			name:  "[Success] When: an equal resend of an earlier Seq ; Should: return nil, write nothing",
+			prior: []Event{e1, e2, e3},
+			event: withEvent(&e2, func(*Event) {}),
+			want:  map[string][]Event{"a": {e1, e2, e3}},
 		},
 		{
-			name:      "[Fail] When: the same Seq and Writer with another Kind ; Should: return ErrConcurrentWriter",
-			prior:     []Event{e1, e2},
-			event:     withEvent(&e2, func(e *Event) { e.Kind = EventStepFailed }),
-			execution: "a",
-			wantErr:   ErrConcurrentWriter,
-			wantMsg:   `sagas: concurrent writer: execution "a" seq 2`,
-			want:      []Event{e1, e2},
+			name:    "[Fail] When: the same Seq and Writer with another Kind ; Should: return ErrConcurrentWriter",
+			prior:   []Event{e1, e2},
+			event:   withEvent(&e2, func(e *Event) { e.Kind = EventStepFailed }),
+			wantErr: ErrConcurrentWriter,
+			wantMsg: `sagas: concurrent writer: execution "a" seq 2`,
+			want:    map[string][]Event{"a": {e1, e2}},
 		},
 		{
-			name:      "[Fail] When: another writer appends Seq 1 of a taken execution ; Should: ErrExecutionExists",
-			prior:     []Event{e1},
-			event:     withEvent(&e1, func(e *Event) { e.Writer = "w2" }),
-			execution: "a",
-			wantErr:   ErrExecutionExists,
-			wantMsg:   `sagas: execution exists: execution "a" seq 1`,
-			want:      []Event{e1},
+			name:    "[Fail] When: another writer appends Seq 1 of a taken execution ; Should: ErrExecutionExists",
+			prior:   []Event{e1},
+			event:   withEvent(&e1, func(e *Event) { e.Writer = "w2" }),
+			wantErr: ErrExecutionExists,
+			wantMsg: `sagas: execution exists: execution "a" seq 1`,
+			want:    map[string][]Event{"a": {e1}},
 		},
 		{
-			name:      "[Fail] When: another writer appends a taken later Seq ; Should: return ErrConcurrentWriter",
-			prior:     []Event{e1, e2},
-			event:     withEvent(&e2, func(e *Event) { e.Writer = "w2" }),
-			execution: "a",
-			wantErr:   ErrConcurrentWriter,
-			wantMsg:   `sagas: concurrent writer: execution "a" seq 2`,
-			want:      []Event{e1, e2},
+			name:    "[Fail] When: another writer appends a taken later Seq ; Should: return ErrConcurrentWriter",
+			prior:   []Event{e1, e2},
+			event:   withEvent(&e2, func(e *Event) { e.Writer = "w2" }),
+			wantErr: ErrConcurrentWriter,
+			wantMsg: `sagas: concurrent writer: execution "a" seq 2`,
+			want:    map[string][]Event{"a": {e1, e2}},
 		},
 		{
-			name:      "[Success] When: Seq 1 of another execution ; Should: write it apart from the first execution",
-			prior:     []Event{e1, e2},
-			event:     &b1,
-			execution: "b",
-			want:      []Event{journalEvent("b", 1)},
+			name:  "[Success] When: Seq 1 of another execution ; Should: write it and leave the first one unchanged",
+			prior: []Event{e1, e2},
+			event: &b1,
+			want:  map[string][]Event{"a": {e1, e2}, "b": {b1}},
 		},
 	}
 
@@ -312,8 +299,11 @@ func Test_memoryJournal_Append(t *testing.T) {
 			assert.Equal(t, tt.wantMsg, errText(err))
 
 			scribbleEvent(in)
-			scribble(j.events(tt.execution))
-			assert.Equal(t, tt.want, j.events(tt.execution))
+
+			for execution, want := range tt.want {
+				scribble(j.events(execution))
+				assert.Equal(t, want, j.events(execution), execution)
+			}
 		})
 	}
 }
@@ -517,11 +507,20 @@ func assertRaceOutcome(t *testing.T, events []Event, results [][]error) {
 }
 
 func Benchmark_memoryJournal_Append(b *testing.B) {
+	const streamLen = 64
+
 	j := newMemoryJournal()
-	e := journalEvent("a", 0)
+	e := journalEvent("", 0)
+	n := 0
 
 	for b.Loop() {
-		e.Seq++
+		e.Seq = n%streamLen + 1
+		if e.Seq == 1 {
+			e.Execution = strconv.Itoa(n / streamLen)
+		}
+
+		n++
+
 		if err := j.Append(b.Context(), &e); err != nil {
 			b.Fatal(err)
 		}

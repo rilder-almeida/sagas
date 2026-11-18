@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	// ErrJournal is returned when a journal append fails for any reason other than a rejection.
+	// ErrJournal wraps an Append error that is not a rejection; a Journal returns its own failures as is.
 	ErrJournal = errors.New("sagas: journal failure")
 	// ErrExecutionExists is returned when the journal rejects the first event because the execution already exists.
 	ErrExecutionExists = errors.New("sagas: execution exists")
