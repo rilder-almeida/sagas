@@ -365,7 +365,7 @@ func Test_retry(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(withMeta(t.Context(), &callMeta{execution: "exec-1"}))
+				ctx, cancel := context.WithCancel(withMeta(t.Context(), &callMeta{execution: infoExecution}))
 				defer cancel()
 
 				if tt.cancelAt > 0 {
