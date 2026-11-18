@@ -3,6 +3,7 @@ package sagas
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -600,4 +601,160 @@ func Test_isNilValue(t *testing.T) {
 			assert.Equal(t, tt.want, isNilValue(tt.value))
 		})
 	}
+}
+
+type fuzzGraph struct {
+	deps  [][]int
+	pivot []bool
+	comp  []bool
+}
+
+func decodeFuzzGraph(b []byte) fuzzGraph {
+	at := func(i int) byte {
+		if i < len(b) {
+			return b[i]
+		}
+
+		return 0
+	}
+
+	n := 1 + int(at(0))%6
+	g := fuzzGraph{deps: make([][]int, n), pivot: make([]bool, n), comp: make([]bool, n)}
+
+	for i := range n {
+		for j := range n {
+			if at(1+i)>>j&1 == 1 {
+				g.deps[i] = append(g.deps[i], j)
+			}
+		}
+
+		g.pivot[i] = at(1+n+i)&1 == 1
+		g.comp[i] = at(1+n+i)&2 == 2
+	}
+
+	return g
+}
+
+func (g fuzzGraph) options() []Option {
+	opts := make([]Option, 0, len(g.deps))
+
+	for i, deps := range g.deps {
+		var stepOpts []StepOption
+
+		if len(deps) > 0 {
+			names := make([]string, 0, len(deps))
+			for _, j := range deps {
+				names = append(names, fmt.Sprintf("s%d", j))
+			}
+
+			stepOpts = append(stepOpts, After(names...))
+		}
+
+		if g.pivot[i] {
+			stepOpts = append(stepOpts, Pivot())
+		}
+
+		if g.comp[i] {
+			stepOpts = append(stepOpts, Compensate(okAction))
+		}
+
+		opts = append(opts, Step(fmt.Sprintf("s%d", i), okAction, stepOpts...))
+	}
+
+	return opts
+}
+
+func (g fuzzGraph) reaches(from, to int) bool {
+	seen := make([]bool, len(g.deps))
+
+	var walk func(int) bool
+
+	walk = func(at int) bool {
+		for _, next := range g.deps[at] {
+			if next == to {
+				return true
+			}
+
+			if !seen[next] {
+				seen[next] = true
+
+				if walk(next) {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+	return walk(from)
+}
+
+func (g fuzzGraph) cyclic() bool {
+	for i := range g.deps {
+		if g.reaches(i, i) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (g fuzzGraph) pivotBroken() bool {
+	var pivots []int
+
+	for i, isPivot := range g.pivot {
+		if isPivot {
+			pivots = append(pivots, i)
+		}
+	}
+
+	switch {
+	case len(pivots) > 1:
+		return true
+	case len(pivots) == 0:
+		return false
+	case g.comp[pivots[0]]:
+		return true
+	case g.cyclic():
+		return false
+	}
+
+	return g.reachBroken(pivots[0])
+}
+
+func (g fuzzGraph) reachBroken(p int) bool {
+	for i := range g.deps {
+		ancestor, descendant := g.reaches(p, i), g.reaches(i, p)
+
+		if i != p && !ancestor && !descendant {
+			return true
+		}
+
+		if descendant && g.comp[i] {
+			return true
+		}
+	}
+
+	return false
+}
+
+func FuzzNew(f *testing.F) {
+	f.Add([]byte{4, 0, 0, 0, 7, 8, 2, 2, 2, 1, 0})
+	f.Add([]byte{1, 2, 1, 0, 0})
+	f.Add([]byte{1, 0, 0, 1, 0})
+	f.Add([]byte{1, 0, 1, 1, 2})
+
+	f.Fuzz(func(t *testing.T, b []byte) {
+		g := decodeFuzzGraph(b)
+
+		_, err := New[tripState]("trip", g.options()...)
+
+		cyclic := g.cyclic()
+		assert.Equal(t, cyclic || g.pivotBroken(), err != nil, "error: %v", err)
+
+		if cyclic {
+			require.ErrorIs(t, err, ErrCycle)
+		}
+	})
 }
