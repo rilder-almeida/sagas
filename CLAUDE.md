@@ -5,6 +5,8 @@
 - The core module imports only the standard library.
 - Positional arguments are a name and an action. Everything else is a functional option.
 - `docs/glossary.md` is the vocabulary.
+- Take the simplest code that meets each rule. Measure performance with a benchmark
+  instead of guessing, and record the numbers when a change touches a hot path.
 
 ## API style
 
