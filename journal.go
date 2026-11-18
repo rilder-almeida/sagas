@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -51,76 +50,35 @@ type StepZone struct {
 	Zone Zone
 }
 
-// EventKind says what an Event records.
-type EventKind int
+// EventKind says what an Event records. The empty string means not set and is never a real event.
+type EventKind string
 
-// EventKind values; EventInvalid is the zero value and never a real event.
+// EventKind values.
 const (
-	EventInvalid EventKind = iota
-	EventSagaStarted
-	EventStepStarted
-	EventStepSucceeded
-	EventStepFailed
-	EventStepUnknown
-	EventStepSkipped
-	EventCompensationStarted
-	EventCompensationSucceeded
-	EventCompensationFailed
-	EventCompensationBlocked
-	EventCompensationHalted
-	EventSagaFinished
+	EventSagaStarted           EventKind = "saga started"
+	EventStepStarted           EventKind = "step started"
+	EventStepSucceeded         EventKind = "step succeeded"
+	EventStepFailed            EventKind = "step failed"
+	EventStepUnknown           EventKind = "step unknown"
+	EventStepSkipped           EventKind = "step skipped"
+	EventCompensationStarted   EventKind = "compensation started"
+	EventCompensationSucceeded EventKind = "compensation succeeded"
+	EventCompensationFailed    EventKind = "compensation failed"
+	EventCompensationBlocked   EventKind = "compensation blocked"
+	EventCompensationHalted    EventKind = "compensation halted"
+	EventSagaFinished          EventKind = "saga finished"
 )
 
-// Zone says whether a step can be compensated: before the pivot, the pivot itself, or after it.
-type Zone int
+// Zone says whether a step can be compensated: before the pivot, the pivot itself, or after it. The empty string
+// means not set and is never a real zone.
+type Zone string
 
-// Zone values; ZoneInvalid is the zero value and never a real zone.
+// Zone values.
 const (
-	ZoneInvalid Zone = iota
-	ZoneCompensable
-	ZonePivot
-	ZoneForwardOnly
+	ZoneCompensable Zone = "compensable"
+	ZonePivot       Zone = "pivot"
+	ZoneForwardOnly Zone = "forward-only"
 )
-
-// String returns the event kind in words, or EventKind(n) for an unknown value.
-func (k EventKind) String() string {
-	names := [...]string{
-		EventInvalid:               "invalid",
-		EventSagaStarted:           "saga started",
-		EventStepStarted:           "step started",
-		EventStepSucceeded:         "step succeeded",
-		EventStepFailed:            "step failed",
-		EventStepUnknown:           "step unknown",
-		EventStepSkipped:           "step skipped",
-		EventCompensationStarted:   "compensation started",
-		EventCompensationSucceeded: "compensation succeeded",
-		EventCompensationFailed:    "compensation failed",
-		EventCompensationBlocked:   "compensation blocked",
-		EventCompensationHalted:    "compensation halted",
-		EventSagaFinished:          "saga finished",
-	}
-	if k >= 0 && int(k) < len(names) {
-		return names[k]
-	}
-
-	return "EventKind(" + strconv.Itoa(int(k)) + ")"
-}
-
-// String returns the zone in words, or Zone(n) for an unknown value.
-func (z Zone) String() string {
-	switch z {
-	case ZoneInvalid:
-		return "invalid"
-	case ZoneCompensable:
-		return "compensable"
-	case ZonePivot:
-		return "pivot"
-	case ZoneForwardOnly:
-		return "forward-only"
-	}
-
-	return "Zone(" + strconv.Itoa(int(z)) + ")"
-}
 
 type memoryJournal struct {
 	mu      sync.Mutex
