@@ -105,12 +105,12 @@ func backoff(p RetryPolicy, attempt int, r func(int64) int64) time.Duration {
 func retry(p RetryPolicy) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context) error {
-			return runAttempts(ctx, p, next)
+			return runAttempts(ctx, p, next, rand.Int64N)
 		}
 	}
 }
 
-func runAttempts(ctx context.Context, p RetryPolicy, next Handler) error {
+func runAttempts(ctx context.Context, p RetryPolicy, next Handler, draw func(int64) int64) error {
 	meta := metaFrom(ctx)
 
 	for attempt := 1; ; attempt++ {
@@ -123,7 +123,7 @@ func runAttempts(ctx context.Context, p RetryPolicy, next Handler) error {
 			return err
 		}
 
-		if !sleep(ctx, backoff(p, attempt, rand.Int64N)) {
+		if !sleep(ctx, backoff(p, attempt, draw)) {
 			return err
 		}
 	}

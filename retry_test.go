@@ -421,3 +421,50 @@ func Test_retry(t *testing.T) {
 		})
 	}
 }
+
+func Test_runAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		draw        func(int64) int64
+		wantElapsed time.Duration
+	}{
+		{
+			name:        "[Success] When: the draw is half the bound ; Should: wait half of each delay",
+			draw:        func(n int64) int64 { return n / 2 },
+			wantElapsed: 300 * time.Millisecond,
+		},
+		{
+			name:        "[Success] When: the draw is zero ; Should: retry at once",
+			draw:        func(int64) int64 { return 0 },
+			wantElapsed: 0,
+		},
+		{
+			name:        "[Success] When: the draw is the top of the range ; Should: wait just under each delay",
+			draw:        func(n int64) int64 { return n - 1 },
+			wantElapsed: 600*time.Millisecond - 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				ctx := withMeta(t.Context(), &callMeta{execution: infoExecution})
+
+				var seen []int
+
+				next := scriptedHandler([]error{errA, errB, nil}, nil, 0, &seen)
+
+				start := time.Now()
+				err := runAttempts(ctx, RetryPolicy{}, next, tt.draw)
+
+				require.NoError(t, err)
+				assert.Len(t, seen, 3)
+				assert.Equal(t, tt.wantElapsed, time.Since(start))
+			})
+		})
+	}
+}
