@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+var (
+	// ErrInvalidState is returned when the state type or a state value cannot round-trip through its JSON encoding.
+	ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
+	// ErrConflict is returned when a step changes a field that another step committed after the step's snapshot.
+	ErrConflict = &KindError{name: "conflict", message: "sagas: state conflict"}
+)
+
 type offense struct {
 	path string
 	rule string
@@ -249,12 +256,17 @@ func (s *store[S]) snapshot() snapshot[S] {
 	return snapshot[S]{fields: slices.Clone(s.fields), versions: slices.Clone(s.versions)}
 }
 
-func (s *store[S]) commit(step string, snap snapshot[S], attempt S) ([]string, error) {
+type commitResult struct {
+	changed []string
+	label   *KindError
+}
+
+func (s *store[S]) commit(step string, snap snapshot[S], attempt S) (commitResult, error) {
 	v := reflect.ValueOf(attempt)
 
 	fields, err := encodeFields(v)
 	if err != nil {
-		return nil, err
+		return commitResult{label: ErrInvalidState}, err
 	}
 
 	var (
@@ -274,7 +286,7 @@ func (s *store[S]) commit(step string, snap snapshot[S], attempt S) ([]string, e
 	}
 
 	if len(conflicts) > 0 {
-		return nil, errors.Join(conflicts...)
+		return commitResult{label: ErrConflict}, errors.Join(conflicts...)
 	}
 
 	names := make([]string, 0, len(changed))
@@ -285,7 +297,7 @@ func (s *store[S]) commit(step string, snap snapshot[S], attempt S) ([]string, e
 		names = append(names, v.Type().Field(i).Name)
 	}
 
-	return names, nil
+	return commitResult{changed: names}, nil
 }
 
 func (s *store[S]) writeBack(dst *S) error {

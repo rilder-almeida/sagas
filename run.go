@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// ErrInvalidRun is returned by Run for a run option or an execution ID that breaks a rule of the run input.
+var ErrInvalidRun = &KindError{name: "invalid_run", message: "sagas: invalid run"}
+
 const (
 	keyWithExecutionID = "WithExecutionID"
 	idBytes            = 16

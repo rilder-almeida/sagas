@@ -510,6 +510,7 @@ func Test_judge(t *testing.T) {
 		wantRun   bool
 		wantPanic bool
 		wantErrIs error
+		wantLabel *KindError
 	}{
 		{
 			name:    "[Success] When: the predicate returns true ; Should: report go",
@@ -524,12 +525,14 @@ func Test_judge(t *testing.T) {
 			name:      "[Fail] When: the predicate panics ; Should: return a PanicError and no go",
 			pred:      func(*tripState) bool { panic("boom") },
 			wantPanic: true,
+			wantLabel: ErrPanic,
 		},
 		{
 			name:      "[Fail] When: the base does not decode ; Should: return ErrInvalidState, skip the predicate",
 			pred:      func(*tripState) bool { panic("never called") },
 			corrupt:   true,
 			wantErrIs: ErrInvalidState,
+			wantLabel: ErrInvalidState,
 		},
 	}
 
@@ -542,9 +545,10 @@ func Test_judge(t *testing.T) {
 				base.fields[0] = []byte("{")
 			}
 
-			run, err := judge(tt.pred, base)
+			run, label, err := judge(tt.pred, base)
 
 			assert.Equal(t, tt.wantRun, run)
+			assert.Same(t, tt.wantLabel, label)
 
 			var panicked *PanicError
 

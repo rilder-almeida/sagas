@@ -344,6 +344,7 @@ func pipelineUserPanicRow() pipelineRow {
 		},
 		call:         recordCall,
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrPanic,
 		wantAttempts: 1,
 		wantPanic:    true,
 	}
@@ -568,6 +569,7 @@ func pipelinePanicValueRow() pipelineRow {
 			return func(context.Context, *pipeState) error { panic(errBoom) }
 		},
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrPanic,
 		wantAttempts: 1,
 		wantPanic:    true,
 		wantErrs:     []error{errBoom},
@@ -582,6 +584,7 @@ func pipelineCallPanicRow() pipelineRow {
 			return func(context.Context, *pipeState) error { panic("bad call") }
 		},
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrPanic,
 		wantAttempts: 1,
 		wantPanic:    true,
 	}
@@ -612,6 +615,7 @@ func pipelineMiddlewareSeesPanicRow() pipelineRow {
 			return func(context.Context, *pipeState) error { panic("bad call") }
 		},
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrPanic,
 		wantAttempts: 1,
 		wantPanic:    true,
 		wantTrace:    []string{"panic:bad call"},
@@ -629,6 +633,7 @@ func pipelineNotRunRow() pipelineRow {
 		},
 		call:         recordCall,
 		wantKind:     outcomeFailure,
+		wantLabel:    ErrCallNotRun,
 		wantAttempts: 1,
 		wantErrs:     []error{ErrCallNotRun},
 	}
@@ -709,6 +714,7 @@ func pipelineAbandonedRow() pipelineRow {
 		},
 		call:         slowCall,
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrCallUnfinished,
 		wantAttempts: 1,
 		wantErrs:     []error{context.DeadlineExceeded, ErrCallUnfinished},
 		wantTrace:    []string{slowMark},
@@ -737,6 +743,7 @@ func pipelineAbandonedThenSkipRow() pipelineRow {
 		},
 		call:         slowCall,
 		wantKind:     outcomeFailure,
+		wantLabel:    ErrCallNotRun,
 		wantAttempts: 2,
 		wantErrs:     []error{ErrCallNotRun},
 		wantPrevious: []error{context.DeadlineExceeded},
@@ -761,6 +768,7 @@ func pipelineUnfinishedRow() pipelineRow {
 		},
 		call:         slowCall,
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrCallUnfinished,
 		wantAttempts: 1,
 		wantErrs:     []error{ErrCallUnfinished},
 		wantTrace:    []string{slowMark},
@@ -783,6 +791,7 @@ func pipelineLateStartRow() pipelineRow {
 		},
 		call:         slowCall,
 		wantKind:     outcomeFailure,
+		wantLabel:    ErrCallNotRun,
 		wantAttempts: 1,
 		wantErrs:     []error{ErrCallNotRun},
 	}
@@ -845,6 +854,7 @@ func pipelineHedgedRow() pipelineRow {
 		},
 		call:         hedgedCall,
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrCallUnfinished,
 		wantAttempts: 1,
 		wantErrs:     []error{ErrCallConcurrent, ErrCallUnfinished},
 		wantTrace:    []string{hedgeMark},
@@ -897,6 +907,7 @@ func pipelinePanicAfterLateStartRow() pipelineRow {
 		},
 		call:         slowCall,
 		wantKind:     outcomeUnknown,
+		wantLabel:    ErrPanic,
 		wantAttempts: 1,
 		wantPanic:    true,
 	}
@@ -918,6 +929,7 @@ type pipelineRow struct {
 	wantCause    []error
 	wantCauseTxt string
 	wantPrevious []error
+	wantLabel    *KindError
 	cancelAfter  time.Duration
 	cancelCause  error
 }
@@ -1079,6 +1091,7 @@ func pipelineLaterAttemptSkipRow() pipelineRow {
 		},
 		call:         failWith(errCall),
 		wantKind:     outcomeFailure,
+		wantLabel:    ErrCallNotRun,
 		wantAttempts: 2,
 		wantErrs:     []error{ErrCallNotRun},
 		wantPrevious: []error{errCall},
@@ -1097,9 +1110,57 @@ func pipelineLostContextRow() pipelineRow {
 		},
 		call:         recordCall,
 		wantKind:     outcomeFailure,
+		wantLabel:    ErrCallContextLost,
 		wantAttempts: 1,
 		wantErrs:     []error{ErrCallContextLost},
 	}
+}
+
+func lostContext(next Handler) Handler {
+	return func(context.Context) error { return next(context.Background()) }
+}
+
+func markedRow(name string, mws []Middleware, label *KindError, wantErrs []error) pipelineRow {
+	return pipelineRow{
+		name: name,
+		spec: actionSpec(),
+		middleware: func(*recorder) []Middleware {
+			return mws
+		},
+		call:         failWith(errBoom),
+		corruptBase:  label == ErrInvalidState,
+		wantKind:     outcomeFailure,
+		wantLabel:    label,
+		wantAttempts: 1,
+		wantErrs:     append([]error{errMarker}, wantErrs...),
+	}
+}
+
+func pipelineMarkedInvalidStateRow() pipelineRow {
+	return markedRow(
+		"[Fail] When: middleware wraps the decode failure ; Should: keep the marker and the ErrInvalidState label",
+		[]Middleware{marking}, ErrInvalidState, []error{ErrInvalidState},
+	)
+}
+
+func pipelineMarkedLostContextRow() pipelineRow {
+	return markedRow(
+		"[Fail] When: middleware wraps a lost-context failure ; Should: keep the marker and the label",
+		[]Middleware{marking, lostContext}, ErrCallContextLost, []error{ErrCallContextLost},
+	)
+}
+
+func pipelineMarkedPanicRow() pipelineRow {
+	row := markedRow(
+		"[Fail] When: middleware wraps a panic ; Should: keep the marker and the ErrPanic label",
+		[]Middleware{marking}, ErrPanic, []error{errBoom},
+	)
+	row.call = func(*recorder) func(context.Context, *pipeState) error {
+		return func(context.Context, *pipeState) error { panic(errBoom) }
+	}
+	row.wantKind, row.wantPanic = outcomeUnknown, true
+
+	return row
 }
 
 func pipelineCorruptBaseRow() pipelineRow {
@@ -1109,6 +1170,7 @@ func pipelineCorruptBaseRow() pipelineRow {
 		call:         recordCall,
 		corruptBase:  true,
 		wantKind:     outcomeFailure,
+		wantLabel:    ErrInvalidState,
 		wantAttempts: 1,
 		wantErrs:     []error{ErrInvalidState},
 	}
@@ -1161,6 +1223,7 @@ func assertCause(t *testing.T, got error, want []error, text string) {
 func assertPipelineErr(t *testing.T, tt *pipelineRow, got *outcome[pipeState]) {
 	t.Helper()
 
+	assert.Same(t, tt.wantLabel, got.label)
 	assertCause(t, got.cause, tt.wantCause, tt.wantCauseTxt)
 	assertPrevious(t, got.previous, tt.wantPrevious)
 
@@ -1293,6 +1356,9 @@ func Test_pipeline(t *testing.T) {
 		pipelineCancelledCallRow(),
 		pipelineCancelledCompensationRow(),
 		pipelinePanicValueRow(),
+		pipelineMarkedInvalidStateRow(),
+		pipelineMarkedLostContextRow(),
+		pipelineMarkedPanicRow(),
 		pipelineCompensationRow(),
 		pipelineSuccessRow(),
 		pipelineFailureRow(),
@@ -1381,6 +1447,102 @@ func Benchmark_pipeline(b *testing.B) {
 					b.Fatal(got.err)
 				}
 			}
+		})
+	}
+}
+
+func Test_contextLostError_Error(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  contextLostError
+		want string
+	}{
+		{
+			name: "[Success] When: the context lost the call state ; Should: print the ErrCallContextLost message",
+			err:  contextLostError{},
+			want: ErrCallContextLost.Error(),
+		},
+		{
+			name: "[Success] When: the error is permanent ; Should: print the same message",
+			err:  contextLostError{},
+			want: Permanent(contextLostError{}).Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.err.Error())
+		})
+	}
+}
+
+func Test_contextLostError_Unwrap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "[Success] When: the error is bare ; Should: match ErrCallContextLost", err: contextLostError{}},
+		{name: "[Success] When: the error is permanent ; Should: match it", err: Permanent(contextLostError{})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.ErrorIs(t, tt.err, ErrCallContextLost)
+			assert.Equal(t, ErrCallContextLost, contextLostError{}.Unwrap())
+		})
+	}
+}
+
+func Test_recoverPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		fn           func() error
+		wantPanicked bool
+		wantErr      error
+	}{
+		{
+			name: "[Success] When: the function returns nil ; Should: report no panic and no error",
+			fn:   func() error { return nil },
+		},
+		{
+			name:    "[Fail] When: the function returns an error ; Should: report no panic and keep the error",
+			fn:      func() error { return errBoom },
+			wantErr: errBoom,
+		},
+		{
+			name:         "[Fail] When: the function panics with an error ; Should: report a panic wrapping it",
+			fn:           func() error { panic(errBoom) },
+			wantPanicked: true,
+			wantErr:      errBoom,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			panicked, err := recoverPanic(tt.fn)
+
+			assert.Equal(t, tt.wantPanicked, panicked)
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantPanicked, errors.As(err, new(*PanicError)))
 		})
 	}
 }

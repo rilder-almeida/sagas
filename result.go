@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+var (
+	// ErrCompensated is returned when a run fails and every started compensable step is compensated.
+	ErrCompensated = &KindError{name: "compensated", message: "sagas: compensated"}
+	// ErrCompensationFailed is returned when a run fails and at least one compensation does not succeed.
+	ErrCompensationFailed = &KindError{name: "compensation_failed", message: "sagas: compensation failed"}
+	// ErrIncomplete is returned when a run cannot finish forward: the pivot is unknown or forward-only work is undone.
+	ErrIncomplete = &KindError{name: "incomplete", message: "sagas: incomplete"}
+)
+
 // Status is the outcome of a run. The empty string means not set.
 type Status string
 

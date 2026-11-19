@@ -538,10 +538,10 @@ type runRow struct {
 	wantCauseIs        map[string]error
 	wantNotCauseIs     map[string]error
 	wantCauseText      map[string]string
-	wantEventKinds     map[string]string
 	wantEventCauseText map[string]string
-	wantEventPrevLn    map[string]int
 	wantTextCount      map[string]int
+	wantErrText        map[string]string
+	wantUnrecorded     []string
 	wantExecution      string
 	wantSteps          map[string]StepStatus
 	wantPending        []string
@@ -711,7 +711,9 @@ func assertEvents(t *testing.T, res *Result, tt *runRow, journal Journal) {
 		}
 	}
 
-	if tt.wantExecution != "" {
+	if tt.wantExecution == "" {
+		assert.Regexp(t, hexID, res.Execution)
+	} else {
 		assert.Equal(t, tt.wantExecution, res.Execution)
 	}
 
@@ -719,11 +721,23 @@ func assertEvents(t *testing.T, res *Result, tt *runRow, journal Journal) {
 		assert.Equal(t, tt.wantTrail, trail)
 	}
 
-	if tt.wantZones != nil {
-		assert.Equal(t, tt.wantZones, events[0].Steps)
-	}
+	assertZones(t, events[0].Steps, tt.wantZones)
 
 	if stored, ok := journal.(*memoryJournal); ok {
 		assert.Equal(t, events, stored.events(res.Execution))
 	}
+}
+
+func assertZones(t *testing.T, got, want []StepZone) {
+	t.Helper()
+
+	if want == nil {
+		for _, z := range got {
+			assert.Equal(t, ZoneCompensable, z.Zone, "step %s", z.Name)
+		}
+
+		return
+	}
+
+	assert.Equal(t, want, got)
 }

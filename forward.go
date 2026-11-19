@@ -41,9 +41,10 @@ type report interface {
 }
 
 type verdict struct {
-	step int
-	run  bool
-	err  error
+	step  int
+	run   bool
+	label *KindError
+	err   error
 }
 
 type settled[S any] struct {
@@ -173,7 +174,7 @@ func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
 
 	defer func() { reports <- v }()
 
-	v.run, v.err = judge(pred, j.base)
+	v.run, v.label, v.err = judge(pred, j.base)
 
 	return v.run && v.err == nil
 }
@@ -185,7 +186,7 @@ func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
 
 	defer func() {
 		if !returned {
-			done.out.attempts, done.out.previous = meta.attempt, meta.previous
+			done.out.attempts, done.out.previous = meta.attempt, meta.history()
 		}
 
 		reports <- done
@@ -195,21 +196,25 @@ func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
 	returned = true
 }
 
-func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, error) {
+func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, *KindError, error) {
 	view, err := copyState(base)
 	if err != nil {
-		return false, kinded(ErrInvalidState, err)
+		return false, ErrInvalidState, err
 	}
 
 	var ok bool
 
-	err = catchPanic(func() error {
+	panicked, err := recoverPanic(func() error {
 		ok = pred(view)
 
 		return nil
 	})
 
-	return ok && err == nil, err
+	if panicked {
+		return false, ErrPanic, err
+	}
+
+	return ok, nil, nil
 }
 
 func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool) bool {
@@ -221,14 +226,14 @@ func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool)
 		answer <- false
 
 		if v.err != nil {
-			r.note(i, outcome[S]{kind: outcomeFailure, err: v.err})
+			r.note(i, outcome[S]{kind: outcomeFailure, err: v.err, label: v.label})
 		}
 
 		r.runs[i].status = runNotStarted
 	case v.err != nil:
 		answer <- false
 
-		r.refuse(grace, i, outcome[S]{kind: outcomeFailure, err: v.err})
+		r.refuse(grace, i, outcome[S]{kind: outcomeFailure, err: v.err, label: v.label})
 	case !v.run:
 		answer <- false
 
@@ -267,21 +272,16 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 		return
 	}
 
-	changed, err := r.store.commit(name, f.base, *f.out.state)
+	res, err := r.store.commit(name, f.base, *f.out.state)
 	if err != nil {
-		label := ErrInvalidState
-		if errors.Is(err, ErrConflict) {
-			label = ErrConflict
-		}
-
-		r.fail(grace, i, outcome[S]{kind: outcomeFailure, attempts: f.out.attempts, err: err, label: label})
+		r.fail(grace, i, outcome[S]{kind: outcomeFailure, attempts: f.out.attempts, err: err, label: res.label})
 
 		return
 	}
 
 	r.runs[i].status, r.runs[i].attempts = runSucceeded, f.out.attempts
 
-	done := Event{Kind: EventStepSucceeded, Step: name, Attempt: f.out.attempts, Changed: changed}
+	done := Event{Kind: EventStepSucceeded, Step: name, Attempt: f.out.attempts, Changed: res.changed}
 	if !r.record(grace, &done) {
 		r.runs[i].status = runUnknown
 	}
@@ -302,10 +302,6 @@ func (r *runner[S]) refuse(ctx context.Context, i int, out outcome[S]) {
 
 func (r *runner[S]) note(i int, out outcome[S]) Event {
 	name := r.saga.steps[i].name
-
-	if ce, ok := errors.AsType[*callError](out.err); ok {
-		out.err, out.label = ce.err, ce.kind
-	}
 
 	failure := &Error{
 		Kind: kindOf(out.kind, out.label), Step: name, Attempts: out.attempts,

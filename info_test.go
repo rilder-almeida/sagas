@@ -134,3 +134,168 @@ func Test_Key(t *testing.T) {
 		})
 	}
 }
+
+func Test_callMeta_closeAttempt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		meta         *callMeta
+		err          error
+		wantPrevious []error
+	}{
+		{
+			name:         "[Success] When: the attempt failed ; Should: record it and clear the attempt",
+			meta:         &callMeta{cause: nil, label: ErrPanic},
+			err:          errBoom,
+			wantPrevious: []error{errBoom},
+		},
+		{
+			name:         "[Success] When: an error was replaced and a cause is set ; Should: record both",
+			meta:         &callMeta{replaced: []error{errCall}, cause: errStop},
+			err:          errBoom,
+			wantPrevious: []error{errCall, errBoom},
+		},
+		{
+			name:         "[Success] When: an earlier attempt is recorded ; Should: keep it first",
+			meta:         &callMeta{previous: []error{errA}},
+			err:          errBoom,
+			wantPrevious: []error{errA, errBoom},
+		},
+		{
+			name: "[Success] When: the meta is nil ; Should: do nothing",
+			meta: nil,
+			err:  errBoom,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.meta.closeAttempt(tt.err)
+
+			assertPrevious(t, tt.meta.history(), tt.wantPrevious)
+
+			if tt.meta != nil {
+				require.NoError(t, tt.meta.cause)
+				assert.Nil(t, tt.meta.label)
+				assert.Empty(t, tt.meta.replaced)
+			}
+		})
+	}
+}
+
+func Test_callMeta_history(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		meta *callMeta
+		want []error
+	}{
+		{
+			name: "[Success] When: nothing is recorded ; Should: return no errors",
+			meta: &callMeta{},
+		},
+		{
+			name: "[Success] When: earlier attempts and a replaced error exist ; Should: list the attempts first",
+			meta: &callMeta{previous: []error{errA}, replaced: []error{errB}},
+			want: []error{errA, errB},
+		},
+		{
+			name: "[Success] When: the meta is nil ; Should: return no errors",
+			meta: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertPrevious(t, tt.meta.history(), tt.want)
+		})
+	}
+}
+
+func Test_callMeta_mark(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		meta *callMeta
+		want *KindError
+	}{
+		{name: "[Success] When: the meta has no label ; Should: set it", meta: &callMeta{}, want: ErrPanic},
+		{name: "[Success] When: the meta has a label ; Should: replace it", meta: &callMeta{label: ErrPanic}},
+		{name: "[Success] When: the meta is nil ; Should: change nothing", meta: nil, want: ErrPanic},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.meta.mark(tt.want)
+
+			if tt.meta != nil {
+				assert.Same(t, tt.want, tt.meta.label)
+			}
+		})
+	}
+}
+
+func Test_callMeta_replace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		meta *callMeta
+		want []error
+	}{
+		{name: "[Success] When: nothing was replaced ; Should: record it", meta: &callMeta{}, want: []error{errA}},
+		{
+			name: "[Success] When: an error was replaced ; Should: keep it first",
+			meta: &callMeta{replaced: []error{errB}},
+			want: []error{errB, errA},
+		},
+		{name: "[Success] When: the meta is nil ; Should: not panic", meta: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.meta.replace(errA)
+
+			if tt.meta != nil {
+				assertPrevious(t, tt.meta.replaced, tt.want)
+			}
+		})
+	}
+}
+
+func Test_callMeta_end(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		meta *callMeta
+		want error
+	}{
+		{name: "[Success] When: no cause is set ; Should: set it", meta: &callMeta{}, want: errA},
+		{name: "[Success] When: a cause is set ; Should: keep the first", meta: &callMeta{cause: errB}, want: errB},
+		{name: "[Success] When: the meta is nil ; Should: leave it alone", meta: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.meta.end(errA)
+
+			if tt.meta != nil {
+				assert.Same(t, tt.want, tt.meta.cause)
+			}
+		})
+	}
+}

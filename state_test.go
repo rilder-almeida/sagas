@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"image"
 	"math"
 	"math/big"
@@ -1553,10 +1554,10 @@ func Test_store_commit(t *testing.T) {
 
 			tt.secondMutate(attempt)
 
-			changed, err := st.commit(secondStep, second, *attempt)
+			res, err := st.commit(secondStep, second, *attempt)
 			require.ErrorIs(t, err, tt.wantErr)
 			assertInOrder(t, errText(err), tt.wantInMsg)
-			assert.Equal(t, tt.wantChanged, changed)
+			assert.Equal(t, tt.wantChanged, res.changed)
 
 			var got testState
 			require.NoError(t, st.writeBack(&got))
@@ -1684,5 +1685,86 @@ func benchCommit[S any](b *testing.B, initial S, change func(*S)) {
 
 		_, commitErr := st.commit("bench", snap, *attempt)
 		require.NoError(b, commitErr)
+	}
+}
+
+type lyingField int
+
+func (l lyingField) MarshalJSON() ([]byte, error) {
+	if l == 1 {
+		return nil, fmt.Errorf("lying marshaler: %w", ErrConflict)
+	}
+
+	return []byte("0"), nil
+}
+
+func (l *lyingField) UnmarshalJSON([]byte) error {
+	*l = 0
+
+	return nil
+}
+
+type lyingState struct {
+	Lie lyingField
+	N   int
+}
+
+func Test_store_commit_label(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		prior     []lyingState
+		attempt   lyingState
+		wantLabel *KindError
+		wantIs    []error
+	}{
+		{
+			name:    "[Success] When: the attempt changes a field nobody else changed ; Should: commit with no label",
+			attempt: lyingState{N: 1},
+		},
+		{
+			name:      "[Fail] When: another step committed the same field first ; Should: label ErrConflict",
+			prior:     []lyingState{{N: 1}},
+			attempt:   lyingState{N: 2},
+			wantLabel: ErrConflict,
+			wantIs:    []error{ErrConflict},
+		},
+		{
+			name:      "[Fail] When: a marshaler error wraps ErrConflict ; Should: label ErrInvalidState",
+			attempt:   lyingState{Lie: 1},
+			wantLabel: ErrInvalidState,
+			wantIs:    []error{ErrInvalidState, ErrConflict},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st := &store[lyingState]{
+				fields:   [][]byte{[]byte("0"), []byte("0")},
+				versions: make([]uint64, 2),
+				steps:    make([]string, 2),
+			}
+			snap := st.snapshot()
+
+			for _, p := range tt.prior {
+				_, err := st.commit("first", snap, p)
+				require.NoError(t, err)
+			}
+
+			res, err := st.commit("second", snap, tt.attempt)
+
+			assert.Same(t, tt.wantLabel, res.label)
+
+			if tt.wantLabel == nil {
+				require.NoError(t, err)
+			}
+
+			for _, want := range tt.wantIs {
+				require.ErrorIs(t, err, want)
+			}
+		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -470,6 +471,17 @@ func assertFailures(t *testing.T, tt *runRow, got *ran) {
 		se := failureOf(t, got.err, step)
 		assert.Same(t, kind, se.Kind)
 		require.ErrorIs(t, se, kind)
+
+		assertPrevious(t, se.Previous, tt.wantPreviousIs[step])
+		assertCause(t, se.Cause, causeList(tt.wantCauseIs[step]), tt.wantCauseText[step])
+
+		if slices.Contains(tt.wantUnrecorded, step) {
+			assert.Equal(t, EventError{}, resultOf(t, got, step).Err)
+
+			continue
+		}
+
+		assertEventMirror(t, resultOf(t, got, step).Err, se)
 	}
 
 	for step, kind := range tt.wantNotKinds {
@@ -481,43 +493,47 @@ func assertFailures(t *testing.T, tt *runRow, got *ran) {
 		assert.Equal(t, attempts, resultOf(t, got, step).Attempts)
 	}
 
-	for step, want := range tt.wantPreviousIs {
-		assertPrevious(t, failureOf(t, got.err, step).Previous, want)
-	}
-
-	for step, cause := range tt.wantCauseIs {
-		require.ErrorIs(t, failureOf(t, got.err, step).Cause, cause)
-	}
-
 	for step, cause := range tt.wantNotCauseIs {
 		require.NotErrorIs(t, failureOf(t, got.err, step).Cause, cause)
 	}
 
-	for step, text := range tt.wantCauseText {
-		require.Error(t, failureOf(t, got.err, step).Cause)
-		assert.Contains(t, failureOf(t, got.err, step).Cause.Error(), text)
-	}
-
-	assertEventErrors(t, tt, got)
-
-	for text, count := range tt.wantTextCount {
-		assert.Equal(t, count, strings.Count(got.err.Error(), text))
-	}
-}
-
-func assertEventErrors(t *testing.T, tt *runRow, got *ran) {
-	t.Helper()
-
-	for step, kind := range tt.wantEventKinds {
-		assert.Equal(t, kind, resultOf(t, got, step).Err.Kind)
+	for step, text := range tt.wantErrText {
+		assert.Contains(t, failureOf(t, got.err, step).Err.Error(), text)
 	}
 
 	for step, text := range tt.wantEventCauseText {
 		assert.Contains(t, resultOf(t, got, step).Err.Cause, text)
 	}
 
-	for step, n := range tt.wantEventPrevLn {
-		assert.Len(t, resultOf(t, got, step).Err.Previous, n)
+	for text, count := range tt.wantTextCount {
+		assert.Equal(t, count, strings.Count(got.err.Error(), text))
+	}
+}
+
+func causeList(cause error) []error {
+	if cause == nil {
+		return nil
+	}
+
+	return []error{cause}
+}
+
+func assertEventMirror(t *testing.T, event EventError, se *Error) {
+	t.Helper()
+
+	assert.Equal(t, se.Kind.Name(), event.Kind)
+	assert.Equal(t, se.Err.Error(), event.Message)
+
+	if se.Cause == nil {
+		assert.Empty(t, event.Cause)
+	} else {
+		assert.Equal(t, se.Cause.Error(), event.Cause)
+	}
+
+	require.Len(t, event.Previous, len(se.Previous))
+
+	for i := range se.Previous {
+		assert.Equal(t, se.Previous[i].Error(), event.Previous[i])
 	}
 }
 
@@ -568,6 +584,80 @@ func errorRows() []runRow {
 		callerConflictRow(),
 		callerJournalRow(),
 		callerPanicRow(),
+		rejectionStopRow(),
+		journalStopRow(),
+		markedPanicRow(),
+	}
+}
+
+func waitingSibling(rec *recorder) []Option {
+	waits := Step("c", func(ctx context.Context, _ *tripState) error {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}, After("a"), Retry(RetryPolicy{Attempts: 1}))
+
+	return []Option{rec.step("a"), rec.step("b", After("a")), waits}
+}
+
+func rejectionStopRow() runRow {
+	return runRow{
+		name:        "[Fail] When: the journal rejects an event beside a sibling ; Should: name it as the cause",
+		steps:       waitingSibling,
+		journal:     scripted(map[int]error{6: ErrConcurrentWriter}),
+		wantStatus:  StatusUnfinished,
+		wantErrs:    []error{ErrConcurrentWriter, context.Canceled},
+		wantNotErrs: []error{ErrJournal},
+		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
+		wantPending: []string{"b", "c"},
+		wantKinds:   map[string]*KindError{"c": ErrUnknown},
+
+		wantUnrecorded: []string{"c"},
+		wantCauseText:  map[string]string{"c": "journal rejected an event"},
+	}
+}
+
+func journalStopRow() runRow {
+	return runRow{
+		name:        "[Fail] When: the journal fails an append beside a running sibling ; Should: name it as the cause",
+		steps:       waitingSibling,
+		journal:     scripted(map[int]error{6: errJournalDown}),
+		wantStatus:  StatusUnfinished,
+		wantErrs:    []error{ErrJournal, errJournalDown, context.Canceled},
+		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
+		wantPending: []string{"b", "c"},
+		wantKinds:   map[string]*KindError{"c": ErrUnknown},
+
+		wantCauseText: map[string]string{"c": "journal failure stopped"},
+	}
+}
+
+var errMarker = errors.New("marked by middleware")
+
+func marking(next Handler) Handler {
+	return func(ctx context.Context) error {
+		if err := next(ctx); err != nil {
+			return fmt.Errorf("%w: %w", errMarker, err)
+		}
+
+		return nil
+	}
+}
+
+func markedPanicRow() runRow {
+	return runRow{
+		name: "[Fail] When: middleware wraps a panicking action ; Should: keep the marker and report ErrPanic",
+		steps: func(rec *recorder) []Option {
+			boom := Step("b", func(context.Context, *tripState) error { panic(errAlwaysFails) }, After("a"))
+
+			return []Option{rec.step("a"), boom, WithMiddleware(marking)}
+		},
+		wantStatus:  StatusUnfinished,
+		wantErrs:    []error{errMarker, errAlwaysFails},
+		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantPending: []string{"b"},
+		wantKinds:   map[string]*KindError{"b": ErrPanic},
+		wantErrText: map[string]string{"b": errMarker.Error()},
 	}
 }
 
@@ -577,14 +667,12 @@ func failedKindRow() runRow {
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), fails(After("a"))}
 		},
-		wantStatus:      StatusUnfinished,
-		wantErrs:        []error{errAlwaysFails, ErrFailed},
-		wantSteps:       map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
-		wantKinds:       map[string]*KindError{"b": ErrFailed},
-		wantAttempts:    map[string]int{"b": 3},
-		wantPreviousIs:  map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
-		wantEventKinds:  map[string]string{"b": nameFailed},
-		wantEventPrevLn: map[string]int{"b": 2},
+		wantStatus:     StatusUnfinished,
+		wantErrs:       []error{errAlwaysFails, ErrFailed},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantAttempts:   map[string]int{"b": 3},
+		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 	}
 }
 
@@ -596,12 +684,11 @@ func panicKindRow() runRow {
 				panic(errAlwaysFails)
 			}, After("a"))}
 		},
-		wantStatus:     StatusUnfinished,
-		wantErrs:       []error{errAlwaysFails, ErrPanic},
-		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
-		wantPending:    []string{"b"},
-		wantKinds:      map[string]*KindError{"b": ErrPanic},
-		wantEventKinds: map[string]string{"b": namePanic},
+		wantStatus:  StatusUnfinished,
+		wantErrs:    []error{errAlwaysFails, ErrPanic},
+		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantPending: []string{"b"},
+		wantKinds:   map[string]*KindError{"b": ErrPanic},
 	}
 }
 
@@ -615,12 +702,11 @@ func conflictKindRow() runRow {
 				napping("c", "plaza", After("a")),
 			}
 		},
-		wantStatus:     StatusUnfinished,
-		wantErrs:       []error{ErrConflict},
-		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
-		wantState:      tripState{Hotel: hotelRitz},
-		wantKinds:      map[string]*KindError{"c": ErrConflict},
-		wantEventKinds: map[string]string{"c": nameConflict},
+		wantStatus: StatusUnfinished,
+		wantErrs:   []error{ErrConflict},
+		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
+		wantState:  tripState{Hotel: hotelRitz},
+		wantKinds:  map[string]*KindError{"c": ErrConflict},
 	}
 }
 
@@ -641,6 +727,7 @@ func siblingCauseRow() runRow {
 		wantSteps:          map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepUnknown},
 		wantPending:        []string{"c"},
 		wantKinds:          map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
+		wantPreviousIs:     map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantNotKinds:       map[string]*KindError{"c": ErrFailed},
 		wantNotCauseIs:     map[string]error{"c": errAlwaysFails},
 		wantCauseText:      map[string]string{"c": quotedB},
@@ -696,6 +783,8 @@ func droppedPredicateRow() runRow {
 		wantPending: []string{"b"},
 		wantTrail:   []string{opened, startOf("a"), doneOf("a"), startOf("b")},
 		wantKinds:   map[string]*KindError{"c": ErrPanic},
+
+		wantUnrecorded: []string{"c"},
 	}
 }
 
@@ -719,6 +808,9 @@ func droppedOutcomeRow() runRow {
 		wantPending: []string{"b", "c"},
 		wantTrail:   []string{opened, startOf("a"), doneOf("a"), startOf("b"), startOf("c")},
 		wantKinds:   map[string]*KindError{"c": ErrFailed},
+
+		wantUnrecorded: []string{"c"},
+		wantCauseText:  map[string]string{"c": "journal rejected an event"},
 	}
 }
 
@@ -782,222 +874,4 @@ func callerPanicRow() runRow {
 		"[Fail] When: an action returns an error that wraps a PanicError ; Should: report ErrUnknown, not ErrPanic",
 		&PanicError{Value: "nested"}, StepUnknown, ErrUnknown, []string{"b"},
 	)
-}
-
-func Test_callError_Error(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		ce   *callError
-		want string
-	}{
-		{
-			name: "[Success] When: the call error has a cause and a history ; Should: print the error alone",
-			ce:   &callError{err: errFirst, cause: errStop, previous: []error{errSecond}},
-			want: errFirst.Error(),
-		},
-		{
-			name: "[Success] When: the call error has only an error ; Should: print it",
-			ce:   &callError{err: errSecond},
-			want: errSecond.Error(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, tt.ce.Error())
-		})
-	}
-}
-
-func Test_callError_Unwrap(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		ce     *callError
-		wantIs error
-		notIs  error
-	}{
-		{
-			name:   "[Success] When: the call error has a cause and a history ; Should: unwrap to the error alone",
-			ce:     &callError{err: errFirst, cause: errStop, previous: []error{errSecond}},
-			wantIs: errFirst,
-			notIs:  errSecond,
-		},
-		{
-			name:   "[Success] When: the error is permanent ; Should: keep the mark visible to the retry loop",
-			ce:     &callError{err: Permanent(errFirst), previous: []error{errSecond}},
-			wantIs: errPermanent,
-			notIs:  errStop,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			require.ErrorIs(t, tt.ce, tt.wantIs)
-			require.NotErrorIs(t, tt.ce, tt.notIs)
-			require.NotErrorIs(t, tt.ce, tt.ce.cause)
-		})
-	}
-}
-
-func Test_withCause(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		err       error
-		wantErr   error
-		wantCause error
-	}{
-		{
-			name:      "[Success] When: the error is plain ; Should: hold the cause and keep the error",
-			err:       errFirst,
-			wantErr:   errFirst,
-			wantCause: errStop,
-		},
-		{
-			name:      "[Success] When: a cause is already set ; Should: keep the first cause",
-			err:       withCause(errFirst, errSecond),
-			wantErr:   errFirst,
-			wantCause: errSecond,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ce := asCallError(withCause(tt.err, errStop))
-
-			assert.Same(t, tt.wantErr, ce.err)
-			assert.Same(t, tt.wantCause, ce.cause)
-		})
-	}
-}
-
-func Test_withPrevious(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		err   error
-		prior []error
-		want  []error
-	}{
-		{
-			name: "[Success] When: there are no earlier errors ; Should: return the error unchanged",
-			err:  errThird,
-		},
-		{
-			name:  "[Success] When: the error is plain ; Should: hold the earlier errors",
-			err:   errThird,
-			prior: []error{errFirst, errSecond},
-			want:  []error{errFirst, errSecond},
-		},
-		{
-			name:  "[Success] When: middleware replaced the call error ; Should: put the earlier errors first",
-			err:   replaced(errThird, errSecond),
-			prior: []error{errFirst},
-			want:  []error{errFirst, errSecond},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := withPrevious(tt.err, tt.prior)
-
-			require.ErrorIs(t, got, errThird)
-			assert.Equal(t, tt.want, asCallError(got).previous)
-		})
-	}
-}
-
-func Test_replaced(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		err          error
-		original     error
-		wantPrevious []error
-	}{
-		{
-			name:     "[Success] When: there is no original error ; Should: return the error unchanged",
-			err:      errReplaced,
-			original: nil,
-		},
-		{
-			name:     "[Success] When: the error wraps the original ; Should: return the error unchanged",
-			err:      fmt.Errorf("wrapped: %w", errFirst),
-			original: errFirst,
-		},
-		{
-			name:         "[Success] When: the error replaces the original ; Should: keep the original as history",
-			err:          errReplaced,
-			original:     errFirst,
-			wantPrevious: []error{errFirst},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := replaced(tt.err, tt.original)
-
-			require.ErrorIs(t, got, tt.err)
-			assert.Equal(t, tt.wantPrevious, asCallError(got).previous)
-		})
-	}
-}
-
-func Test_record(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		ce   *callError
-		want [][]error
-	}{
-		{
-			name: "[Success] When: the attempt has only an error ; Should: record it",
-			ce:   &callError{err: errFirst},
-			want: [][]error{{errFirst}},
-		},
-		{
-			name: "[Success] When: the attempt replaced an earlier error ; Should: record it first",
-			ce:   &callError{err: errSecond, previous: []error{errFirst}},
-			want: [][]error{{errFirst}, {errSecond}},
-		},
-		{
-			name: "[Success] When: the attempt has a cause ; Should: record the error with the cause joined",
-			ce:   &callError{err: errFirst, cause: errStop},
-			want: [][]error{{errFirst, errStop}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := record(tt.ce)
-
-			require.Len(t, got, len(tt.want))
-
-			for i, wants := range tt.want {
-				for _, want := range wants {
-					require.ErrorIs(t, got[i], want)
-				}
-			}
-		})
-	}
 }

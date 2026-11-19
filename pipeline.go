@@ -10,6 +10,24 @@ import (
 	"time"
 )
 
+// ErrCallNotRun is the error of a call that middleware returned from without running the action or compensation.
+var ErrCallNotRun = &KindError{name: "call_not_run", message: "sagas: middleware returned without running the call"}
+
+// ErrCallUnfinished is the error of a call that middleware returned from while the call was still running.
+var ErrCallUnfinished = &KindError{
+	name: "call_unfinished", message: "sagas: middleware returned before the call finished",
+}
+
+// ErrCallConcurrent is the error of a call that middleware started while another call of the attempt was running.
+var ErrCallConcurrent = &KindError{
+	name: "call_concurrent", message: "sagas: middleware called next while a call was running",
+}
+
+// ErrCallContextLost is the error of a call whose context no longer carries the call state.
+var ErrCallContextLost = &KindError{
+	name: "call_context_lost", message: "sagas: middleware passed on a context that lost the call state",
+}
+
 // PanicError is the error a panic in a call becomes. It holds the panic value and the stack.
 type PanicError struct {
 	Value any
@@ -74,6 +92,7 @@ type callResult[S any] struct {
 type attemptProgress[S any] struct {
 	started bool
 	running bool
+	label   *KindError
 	last    callResult[S]
 }
 
@@ -103,12 +122,20 @@ func (a *attemptState[S]) start() *KindError {
 	return nil
 }
 
-func (a *attemptState[S]) finish(out *S, err error) {
+func (a *attemptState[S]) finish(out *S, err error, label *KindError) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.progress.running = false
+	a.progress.label = label
 	a.progress.last = callResult[S]{out: out, err: err}
+}
+
+func (a *attemptState[S]) refuse(label *KindError) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.progress.label = label
 }
 
 func (a *attemptState[S]) close() attemptProgress[S] {
@@ -134,19 +161,34 @@ func classify(err error) outcomeKind {
 	}
 }
 
-func catchPanic(fn func() error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = kinded(ErrPanic, &PanicError{Value: r, Stack: debug.Stack()})
-		}
+func recoverPanic(fn func() error) (bool, error) {
+	var caught *PanicError
+
+	err := func() error {
+		defer func() {
+			if r := recover(); r != nil {
+				caught = &PanicError{Value: r, Stack: debug.Stack()}
+			}
+		}()
+
+		return fn()
 	}()
 
-	return fn()
+	if caught != nil {
+		return true, caught
+	}
+
+	return false, err
 }
 
 func recoverer(next Handler) Handler {
 	return func(ctx context.Context) error {
-		return catchPanic(func() error { return next(ctx) })
+		panicked, err := recoverPanic(func() error { return next(ctx) })
+		if panicked {
+			metaFrom(ctx).mark(ErrPanic)
+		}
+
+		return err
 	}
 }
 
@@ -160,7 +202,7 @@ func withTimeout(step string, d time.Duration) Middleware {
 
 			err := next(ctx)
 			if err != nil && ctx.Err() != nil {
-				return withCause(err, context.Cause(ctx))
+				metaFrom(ctx).end(context.Cause(ctx))
 			}
 
 			return err
@@ -184,11 +226,21 @@ func attemptFrom[S any](ctx context.Context) (*attemptState[S], bool) {
 	return at, ok
 }
 
+type contextLostError struct{}
+
+func (contextLostError) Error() string { return ErrCallContextLost.Error() }
+
+func (contextLostError) Unwrap() error { return ErrCallContextLost }
+
 func requireRan[S any](next Handler) Handler {
 	return func(ctx context.Context) error {
+		meta := metaFrom(ctx)
+
 		st, ok := stateFrom[S](ctx)
 		if !ok {
-			return kinded(ErrCallContextLost, Permanent(ErrCallContextLost))
+			meta.mark(ErrCallContextLost)
+
+			return Permanent(ErrCallContextLost)
 		}
 
 		at := &attemptState[S]{base: st.base}
@@ -199,16 +251,24 @@ func requireRan[S any](next Handler) Handler {
 		progress := at.close()
 
 		if progress.running {
-			return kinded(ErrCallUnfinished, Permanent(errors.Join(err, ErrCallUnfinished)))
+			meta.mark(ErrCallUnfinished)
+
+			return Permanent(errors.Join(err, ErrCallUnfinished))
 		}
 
 		if err != nil {
-			return replaced(err, progress.last.err)
+			noteCallError(meta, err, &progress)
+
+			return err
 		}
 
 		if !progress.started {
-			return kinded(ErrCallNotRun, Permanent(ErrCallNotRun))
+			meta.mark(ErrCallNotRun)
+
+			return Permanent(ErrCallNotRun)
 		}
+
+		meta.mark(progress.label)
 
 		st.out = progress.last.out
 
@@ -216,25 +276,44 @@ func requireRan[S any](next Handler) Handler {
 	}
 }
 
+func noteCallError[S any](meta *callMeta, err error, progress *attemptProgress[S]) {
+	switch {
+	case progress.last.err != nil && !errors.Is(err, progress.last.err):
+		meta.replace(progress.last.err)
+	case errors.Is(err, contextLostError{}):
+		meta.mark(ErrCallContextLost)
+	default:
+		meta.mark(progress.label)
+	}
+}
+
 func runCall[S any](call func(context.Context, *S) error) Handler {
 	return func(ctx context.Context) error {
 		at, ok := attemptFrom[S](ctx)
 		if !ok {
-			return kinded(ErrCallContextLost, Permanent(ErrCallContextLost))
+			return Permanent(contextLostError{})
 		}
 
 		if kind := at.start(); kind != nil {
-			return kinded(kind, Permanent(kind))
+			at.refuse(kind)
+
+			return Permanent(kind)
 		}
+
+		var label *KindError
 
 		fresh, err := copyState(at.base)
 		if err != nil {
-			err = kinded(ErrInvalidState, Permanent(err))
-		} else if err = catchPanic(func() error { return call(ctx, fresh) }); err != nil {
-			fresh = nil
+			label, err = ErrInvalidState, Permanent(err)
+		} else if panicked, callErr := recoverPanic(func() error { return call(ctx, fresh) }); callErr != nil {
+			fresh, err = nil, callErr
+
+			if panicked {
+				label = ErrPanic
+			}
 		}
 
-		at.finish(fresh, err)
+		at.finish(fresh, err, label)
 
 		return err
 	}
@@ -266,8 +345,7 @@ func pipeline[S any](spec *callSpec, call func(context.Context, *S) error) callF
 			return out
 		}
 
-		ce := asCallError(err)
-		out.err, out.label, out.cause, out.previous = ce.err, ce.kind, ce.cause, ce.previous
+		out.err, out.label, out.cause, out.previous = err, meta.label, meta.cause, meta.history()
 
 		if out.cause == nil && ctx.Err() != nil {
 			out.cause = context.Cause(ctx)

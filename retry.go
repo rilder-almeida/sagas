@@ -113,31 +113,17 @@ func withRetry(p RetryPolicy) Middleware {
 func runAttempts(ctx context.Context, p RetryPolicy, next Handler, draw func(int64) int64) error {
 	meta := metaFrom(ctx)
 
-	var prior []error
-
 	for attempt := 1; ; attempt++ {
 		if meta != nil {
 			meta.attempt = attempt
 		}
 
 		err := next(ctx)
-		if err == nil {
-			return nil
+		if err == nil || !retryable(err) || attempt >= p.attempts() || !sleep(ctx, backoff(p, attempt, draw)) {
+			return err
 		}
 
-		if !retryable(err) || attempt >= p.attempts() {
-			return withPrevious(err, prior)
-		}
-
-		if !sleep(ctx, backoff(p, attempt, draw)) {
-			return withPrevious(err, prior)
-		}
-
-		prior = append(prior, record(asCallError(err))...)
-
-		if meta != nil {
-			meta.previous = prior
-		}
+		meta.closeAttempt(err)
 	}
 }
 

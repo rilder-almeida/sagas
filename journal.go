@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+var (
+	// ErrJournal wraps an Append error that is not a rejection; a Journal returns its own failures as is.
+	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
+	// ErrExecutionExists is returned when the journal rejects the first event because the execution already exists.
+	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}
+	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
+	ErrConcurrentWriter = &KindError{name: "concurrent_writer", message: "sagas: concurrent writer"}
+)
+
 var errInvalidEvent = errors.New("sagas: invalid event")
 
 // Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of e,

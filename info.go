@@ -1,11 +1,57 @@
 package sagas
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"slices"
+)
 
 type callMeta struct {
 	execution string
 	attempt   int
 	previous  []error
+	replaced  []error
+	cause     error
+	label     *KindError
+}
+
+func (m *callMeta) mark(label *KindError) {
+	if m != nil {
+		m.label = label
+	}
+}
+
+func (m *callMeta) replace(original error) {
+	if m != nil {
+		m.replaced = append(m.replaced, original)
+	}
+}
+
+func (m *callMeta) end(cause error) {
+	if m != nil && m.cause == nil {
+		m.cause = cause
+	}
+}
+
+func (m *callMeta) history() []error {
+	if m == nil {
+		return nil
+	}
+
+	return slices.Concat(m.previous, m.replaced)
+}
+
+func (m *callMeta) closeAttempt(err error) {
+	if m == nil {
+		return
+	}
+
+	if m.cause != nil {
+		err = fmt.Errorf("%w: %w", err, m.cause)
+	}
+
+	m.previous = slices.Concat(m.previous, m.replaced, []error{err})
+	m.replaced, m.cause, m.label = nil, nil, nil
 }
 
 type metaKey struct{}
