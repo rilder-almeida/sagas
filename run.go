@@ -1,11 +1,13 @@
 package sagas
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 )
 
 // ErrInvalidRun is returned by Run for a run option or an execution ID that breaks a rule of the run input.
@@ -100,4 +102,72 @@ func newID() string {
 	}
 
 	return hex.EncodeToString(b)
+}
+
+type runner[S any] struct {
+	saga        *Saga[S]
+	execution   string
+	writer      string
+	journal     Journal
+	seq         int
+	events      []Event
+	journalErrs []error
+	rejected    error
+}
+
+func (r *runner[S]) append(ctx context.Context, e *Event) error {
+	stored := *e
+	stored.Saga = r.saga.name
+	stored.Execution = r.execution
+	stored.Writer = r.writer
+	stored.Seq = r.seq + 1
+	stored.Time = time.Now()
+	cloneSlices(&stored)
+
+	if err := r.journal.Append(ctx, &stored); err != nil {
+		if errors.Is(err, ErrExecutionExists) || errors.Is(err, ErrConcurrentWriter) {
+			r.rejected = err
+
+			return err
+		}
+
+		err = fmt.Errorf("%w: %w", ErrJournal, err)
+		r.journalErrs = append(r.journalErrs, err)
+
+		return err
+	}
+
+	r.seq++
+	r.events = append(r.events, stored)
+
+	return nil
+}
+
+func graceContext(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	grace, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		select {
+		case <-ctx.Done():
+		case <-grace.Done():
+			return
+		}
+
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+			cancel()
+		case <-grace.Done():
+		}
+	}()
+
+	return grace, func() {
+		cancel()
+		<-done
+	}
 }
