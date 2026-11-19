@@ -143,7 +143,9 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	return nil
 }
 
-func graceContext(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+type waitRelease func()
+
+func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRelease) {
 	grace, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
 

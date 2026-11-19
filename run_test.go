@@ -40,19 +40,25 @@ func Test_WithExecutionID(t *testing.T) {
 		name          string
 		ids           []string
 		wantExecution string
-		wantGiven     int
+		wantErrs      []error
+		wantContains  []string
 	}{
 		{
-			name:          "[Success] When: the option is applied once ; Should: set the execution and count it once",
+			name:          "[Success] When: the option is given once ; Should: run with that execution ID",
 			ids:           []string{"order-42"},
 			wantExecution: "order-42",
-			wantGiven:     1,
 		},
 		{
-			name:          "[Success] When: the option is applied twice ; Should: keep the last one and count two",
-			ids:           []string{"order-42", "order-43"},
-			wantExecution: "order-43",
-			wantGiven:     2,
+			name:         "[Fail] When: the option is given twice ; Should: reject the run with ErrInvalidRun",
+			ids:          []string{"order-42", "order-43"},
+			wantErrs:     []error{ErrInvalidRun},
+			wantContains: []string{"WithExecutionID given more than once"},
+		},
+		{
+			name:         "[Fail] When: the ID breaks the name rule ; Should: reject the run with ErrInvalidRun",
+			ids:          []string{"order:42"},
+			wantErrs:     []error{ErrInvalidRun},
+			wantContains: []string{nameRule},
 		},
 	}
 
@@ -60,13 +66,22 @@ func Test_WithExecutionID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := runConfig{given: map[string]int{}}
+			opts := make([]RunOption, 0, len(tt.ids))
 			for _, id := range tt.ids {
-				WithExecutionID(id)(&cfg)
+				opts = append(opts, WithExecutionID(id))
 			}
 
+			cfg, err := checkRun(&tripState{}, opts)
+			for _, want := range tt.wantErrs {
+				require.ErrorIs(t, err, want)
+			}
+
+			if len(tt.wantErrs) == 0 {
+				require.NoError(t, err)
+			}
+
+			requireText(t, err, tt.wantContains, nil)
 			assert.Equal(t, tt.wantExecution, cfg.execution)
-			assert.Equal(t, tt.wantGiven, cfg.given["WithExecutionID"])
 		})
 	}
 }
@@ -338,10 +353,14 @@ func Test_runner_append(t *testing.T) {
 			}
 			ctx := context.WithValue(t.Context(), graceKey{}, "grace")
 
-			for range tt.appends {
+			for i := range tt.appends {
 				changed := []string{"Hotel"}
 				err = r.append(ctx, &Event{Kind: EventStepSucceeded, Step: "a", Changed: changed})
 				changed[0] = "mutated"
+
+				if i < tt.appends-1 {
+					require.NoError(t, err)
+				}
 			}
 
 			requireAppendErr(t, err, tt.wantErrs, tt.wantNoErrs)
@@ -464,5 +483,65 @@ func Test_graceContext(t *testing.T) {
 				assert.Equal(t, "kept", g.Value(graceKey{}))
 			})
 		})
+	}
+}
+
+func Test_graceContext_releaseWaits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{name: "[Success] When: the helper goroutine is still running ; Should: return only after it exits"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				gate := make(chan struct{})
+				_, release := graceContext(gatedContext{gate: gate}, time.Minute)
+
+				returned := make(chan struct{})
+
+				go func() {
+					release()
+					close(returned)
+				}()
+
+				synctest.Wait()
+				assert.False(t, isClosed(returned), "release returned while the helper goroutine was alive")
+
+				close(gate)
+				synctest.Wait()
+				assert.True(t, isClosed(returned), "release did not return after the helper goroutine exited")
+			})
+		})
+	}
+}
+
+type gatedContext struct {
+	gate chan struct{}
+}
+
+func (gatedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c gatedContext) Done() <-chan struct{} {
+	<-c.gate
+
+	return nil
+}
+
+func (gatedContext) Err() error { return nil }
+
+func (gatedContext) Value(any) any { return nil }
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
 }
