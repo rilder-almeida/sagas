@@ -15,7 +15,8 @@ type forwardEnd int
 const (
 	endCompleted forwardEnd = iota
 	endFailed
-	endAborted
+	endRejected
+	endJournal
 )
 
 type runStatus int
@@ -35,13 +36,25 @@ type stepRun struct {
 	err      *StepError
 }
 
-type report[S any] struct {
-	step      int
-	predicate bool
-	run       bool
-	out       outcome[S]
-	base      snapshot[S]
+type report interface {
+	index() int
 }
+
+type verdict struct {
+	step int
+	run  bool
+	err  error
+}
+
+type settled[S any] struct {
+	step int
+	out  outcome[S]
+	base snapshot[S]
+}
+
+func (v verdict) index() int { return v.step }
+
+func (f settled[S]) index() int { return f.step }
 
 type job[S any] struct {
 	step   int
@@ -60,16 +73,16 @@ func ready(parents []int, status []stepRun) bool {
 }
 
 func (r *runner[S]) stopped() bool {
-	return r.failure != nil || r.rejected != nil || len(r.journalErrs) > 0
+	return len(r.failures) > 0 || r.rejected != nil || len(r.journalErrs) > 0
 }
 
 func (r *runner[S]) record(ctx context.Context, e *Event) bool {
-	return r.append(ctx, e) == nil
+	return r.rejected == nil && r.append(ctx, e) == nil
 }
 
 type crew[S any] struct {
 	wg      sync.WaitGroup
-	reports chan report[S]
+	reports chan report
 	answers []chan bool
 	running int
 }
@@ -79,7 +92,7 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 	defer cancel(nil)
 
 	c := &crew[S]{
-		reports: make(chan report[S], reportsPerStep*len(r.saga.steps)),
+		reports: make(chan report, reportsPerStep*len(r.saga.steps)),
 		answers: make([]chan bool, len(r.saga.steps)),
 	}
 	defer c.wg.Wait()
@@ -99,9 +112,11 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 	}
 
 	switch {
-	case r.rejected != nil || len(r.journalErrs) > 0:
-		return endAborted
-	case r.failure != nil:
+	case r.rejected != nil:
+		return endRejected
+	case len(r.journalErrs) > 0:
+		return endJournal
+	case len(r.failures) > 0:
 		return endFailed
 	default:
 		return endCompleted
@@ -131,54 +146,45 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 }
 
 func (r *runner[S]) receive(grace context.Context, c *crew[S]) {
-	rep := <-c.reports
-
-	finished := true
-	if rep.predicate {
-		finished = r.decide(grace, &rep, c.answers[rep.step])
-	} else {
+	switch rep := (<-c.reports).(type) {
+	case verdict:
+		if r.decide(grace, rep, c.answers[rep.step]) {
+			c.running--
+		}
+	case settled[S]:
 		r.settle(grace, &rep)
-	}
 
-	if finished {
 		c.running--
+	default:
 	}
 }
 
-func (r *runner[S]) work(ctx context.Context, reports chan<- report[S], j job[S]) {
-	node := &r.saga.steps[j.step]
-	final := report[S]{step: j.step, base: j.base, out: outcome[S]{kind: outcomeUnknown, err: errGoexit}}
-	quiet := false
-
-	defer func() {
-		if !quiet {
-			reports <- final
-		}
-	}()
-
-	if node.pred != nil {
-		final.predicate, final.out.kind = true, outcomeFailure
-
-		verdict := report[S]{step: j.step, predicate: true}
-		verdict.run, verdict.out.err = judge(node.pred, j.base)
-
-		if verdict.out.err != nil {
-			verdict.out.kind = outcomeFailure
-		}
-
-		quiet = true
-
-		reports <- verdict
-
-		if !<-j.answer {
+func (r *runner[S]) work(ctx context.Context, reports chan<- report, j job[S]) {
+	if pred := r.saga.steps[j.step].pred; pred != nil {
+		if !vet(pred, reports, j) || !<-j.answer {
 			return
 		}
-
-		quiet = false
-		final.predicate, final.out.kind = false, outcomeUnknown
 	}
 
-	final.out = node.action(ctx, r.execution, j.base)
+	r.act(ctx, reports, j)
+}
+
+func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
+	v := verdict{step: j.step, err: errGoexit}
+
+	defer func() { reports <- v }()
+
+	v.run, v.err = judge(pred, j.base)
+
+	return v.run && v.err == nil
+}
+
+func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
+	done := settled[S]{step: j.step, base: j.base, out: outcome[S]{kind: outcomeUnknown, err: errGoexit}}
+
+	defer func() { reports <- done }()
+
+	done.out = r.saga.steps[j.step].action(ctx, r.execution, j.base)
 }
 
 func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, error) {
@@ -187,27 +193,27 @@ func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, error) {
 		return false, err
 	}
 
-	var verdict bool
+	var ok bool
 
 	err = catchPanic(func() error {
-		verdict = pred(view)
+		ok = pred(view)
 
 		return nil
 	})
 
-	return verdict && err == nil, err
+	return ok && err == nil, err
 }
 
-func (r *runner[S]) decide(grace context.Context, rep *report[S], answer chan<- bool) bool {
-	i := rep.step
+func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool) bool {
+	i := v.step
 	name := r.saga.steps[i].name
 
 	switch {
-	case rep.out.kind == outcomeFailure:
+	case v.err != nil:
 		answer <- false
 
-		r.fail(grace, i, rep.out)
-	case !rep.run:
+		r.fail(grace, i, outcome[S]{kind: outcomeFailure, err: v.err})
+	case !v.run:
 		answer <- false
 
 		r.runs[i].status = runSkipped
@@ -225,27 +231,32 @@ func (r *runner[S]) decide(grace context.Context, rep *report[S], answer chan<- 
 	return true
 }
 
-func (r *runner[S]) settle(grace context.Context, rep *report[S]) {
-	i := rep.step
-	out := rep.out
+func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
+	i := f.step
+	name := r.saga.steps[i].name
 
-	if out.kind != outcomeSuccess {
-		r.fail(grace, i, out)
+	if r.rejected != nil {
+		r.runs[i].status = runUnknown
 
 		return
 	}
 
-	changed, err := r.store.commit(r.saga.steps[i].name, rep.base, *out.state)
+	if f.out.kind != outcomeSuccess {
+		r.fail(grace, i, f.out)
+
+		return
+	}
+
+	changed, err := r.store.commit(name, f.base, *f.out.state)
 	if err != nil {
-		out.kind, out.err = outcomeFailure, err
-		r.fail(grace, i, out)
+		r.fail(grace, i, outcome[S]{kind: outcomeFailure, attempts: f.out.attempts, err: err})
 
 		return
 	}
 
-	r.runs[i].status, r.runs[i].attempts = runSucceeded, out.attempts
+	r.runs[i].status, r.runs[i].attempts = runSucceeded, f.out.attempts
 
-	done := Event{Kind: EventStepSucceeded, Step: r.saga.steps[i].name, Attempt: out.attempts, Changed: changed}
+	done := Event{Kind: EventStepSucceeded, Step: name, Attempt: f.out.attempts, Changed: changed}
 	if !r.record(grace, &done) {
 		r.runs[i].status = runUnknown
 	}
@@ -256,15 +267,14 @@ func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
 	failure := &StepError{Step: name, Attempts: out.attempts, Err: out.err}
 	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: out.err.Error()}
 	r.runs[i] = stepRun{status: runFailed, attempts: out.attempts, err: failure}
+	r.failures = append(r.failures, failure)
 
 	if out.kind == outcomeUnknown {
 		e.Kind = EventStepUnknown
 		r.runs[i].status = runUnknown
 	}
 
-	if r.failure == nil {
-		r.failure = failure
+	if !r.record(ctx, &e) {
+		r.runs[i].status = runUnknown
 	}
-
-	r.record(ctx, &e)
 }

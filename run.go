@@ -115,7 +115,7 @@ type runner[S any] struct {
 	rejected    error
 	store       *store[S]
 	runs        []stepRun
-	failure     *StepError
+	failures    []*StepError
 }
 
 func (r *runner[S]) append(ctx context.Context, e *Event) error {
@@ -149,8 +149,8 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 func (r *runner[S]) errs() []error {
 	var errs []error
 
-	if r.failure != nil {
-		errs = append(errs, r.failure)
+	for _, failure := range r.failures {
+		errs = append(errs, failure)
 	}
 
 	if r.rejected != nil {
@@ -195,16 +195,20 @@ func (s *Saga[S]) Run(ctx context.Context, st *S, opts ...RunOption) (Result, er
 		return Result{}, startErr
 	}
 
-	if r.forward(ctx, grace) == endCompleted {
-		r.record(grace, &Event{Kind: EventSagaFinished, Status: StatusCompleted})
-	}
+	end := r.forward(ctx, grace)
+	sealed := end == endCompleted && r.record(grace, &Event{Kind: EventSagaFinished, Status: StatusCompleted})
 
 	errs := r.errs()
 	if err = committed.writeBack(st); err != nil {
 		errs = append(errs, err)
 	}
 
-	return buildResult(r.events), errors.Join(errs...)
+	res := buildResult(r.events)
+	if end == endCompleted && !sealed && r.rejected == nil {
+		res.Status = StatusCompleted
+	}
+
+	return res, errors.Join(errs...)
 }
 
 type waitRelease func()
