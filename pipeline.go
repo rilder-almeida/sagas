@@ -150,7 +150,7 @@ func recoverer(next Handler) Handler {
 	}
 }
 
-func timeout(d time.Duration) Middleware {
+func withTimeout(d time.Duration) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context) error {
 			ctx, cancel := context.WithTimeout(ctx, d)
@@ -234,9 +234,9 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 }
 
 func pipeline[S any](spec *callSpec, call func(context.Context, *S) error) callFunc[S] {
-	layers := []Middleware{retry(spec.retry), withStepInfo(spec.saga, spec.step, spec.phase)}
+	layers := []Middleware{withRetry(spec.retry), withStepInfo(spec.saga, spec.step, spec.phase)}
 	if spec.phase == PhaseAction && spec.timeout > 0 {
-		layers = append(layers, timeout(spec.timeout))
+		layers = append(layers, withTimeout(spec.timeout))
 	}
 
 	layers = append(layers, recoverer, requireRan[S])

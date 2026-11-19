@@ -292,7 +292,7 @@ func scriptedHandler(script []error, cancel context.CancelFunc, cancelOnCall int
 	}
 }
 
-func Test_retry(t *testing.T) {
+func Test_withRetry(t *testing.T) {
 	t.Parallel()
 
 	fast := RetryPolicy{NoJitter: true}
@@ -403,7 +403,7 @@ func Test_retry(t *testing.T) {
 				var seen []int
 
 				start := time.Now()
-				err := retry(tt.policy)(scriptedHandler(tt.script, cancel, tt.cancelOnCall, &seen))(ctx)
+				err := withRetry(tt.policy)(scriptedHandler(tt.script, cancel, tt.cancelOnCall, &seen))(ctx)
 
 				if tt.wantErr == nil {
 					require.NoError(t, err)
