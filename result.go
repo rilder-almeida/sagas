@@ -1,19 +1,8 @@
 package sagas
 
 import (
-	"errors"
 	"slices"
 	"time"
-)
-
-var (
-	// ErrCompensated is returned when a run fails and every started compensable step is compensated.
-	ErrCompensated = errors.New("sagas: compensated")
-	// ErrCompensationFailed is returned when a run fails and at least one compensation does not succeed.
-	ErrCompensationFailed = errors.New("sagas: compensation failed")
-	// ErrIncomplete is returned when a run cannot finish forward: the pivot's outcome stays unknown, or
-	// forward-only work is left undone after the pivot succeeds.
-	ErrIncomplete = errors.New("sagas: incomplete")
 )
 
 // Status is the outcome of a run. The empty string means not set.
@@ -49,8 +38,8 @@ type StepResult struct {
 	Name            string
 	Status          StepStatus
 	Attempts        int
-	Err             string
-	CompensationErr string
+	Err             EventError
+	CompensationErr EventError
 	Changed         []string
 	Start           time.Time
 	End             time.Time
@@ -121,6 +110,8 @@ func buildResult(events []Event) Result {
 
 	for k := range r.Steps {
 		r.Steps[k].Changed = slices.Clone(r.Steps[k].Changed)
+		r.Steps[k].Err.Previous = slices.Clone(r.Steps[k].Err.Previous)
+		r.Steps[k].CompensationErr.Previous = slices.Clone(r.Steps[k].CompensationErr.Previous)
 	}
 
 	for i := range r.events {

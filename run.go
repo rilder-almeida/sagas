@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// ErrInvalidRun is returned by Run for a run option or an execution ID that breaks a rule of the run input.
-var ErrInvalidRun = errors.New("sagas: invalid run")
-
 const (
 	keyWithExecutionID = "WithExecutionID"
 	idBytes            = 16
@@ -32,29 +29,6 @@ func WithExecutionID(id string) RunOption {
 		c.execution = id
 		c.given[keyWithExecutionID]++
 	}
-}
-
-// StepError reports the step whose action or compensation failed, after how many attempts, and why.
-type StepError struct {
-	Step         string
-	Attempts     int
-	Compensation bool
-	Err          error
-}
-
-// Error names the step, whether its compensation failed, the attempts and the cause.
-func (e *StepError) Error() string {
-	what := "step"
-	if e.Compensation {
-		what = "compensation of step"
-	}
-
-	return fmt.Sprintf("sagas: %s %q failed after %d attempts: %v", what, e.Step, e.Attempts, e.Err)
-}
-
-// Unwrap returns the cause of the failure.
-func (e *StepError) Unwrap() error {
-	return e.Err
 }
 
 func checkRun[S any](s *S, opts []RunOption) (runConfig, error) {
@@ -115,7 +89,7 @@ type runner[S any] struct {
 	rejected    error
 	store       *store[S]
 	runs        []stepRun
-	failures    []*StepError
+	failures    []*Error
 }
 
 func (r *runner[S]) append(ctx context.Context, e *Event) error {
@@ -214,7 +188,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S, opts ...RunOption) (Result, er
 type waitRelease func()
 
 func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRelease) {
-	grace, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	grace, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	done := make(chan struct{})
 
 	go func() {
@@ -231,13 +205,13 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 
 		select {
 		case <-timer.C:
-			cancel()
+			cancel(ErrGraceEnded)
 		case <-grace.Done():
 		}
 	}()
 
 	return grace, func() {
-		cancel()
+		cancel(nil)
 		<-done
 	}
 }

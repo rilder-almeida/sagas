@@ -233,7 +233,6 @@ func journalRows() []runRow {
 	return []runRow{
 		rejectionRow(),
 		lateSiblingRow(),
-		latePredicateRow(),
 		predicateAppendRow(),
 		outcomeAppendRow(),
 		failureAppendRow(),
@@ -246,7 +245,7 @@ func journalRows() []runRow {
 
 func stepFailsRow() runRow {
 	return runRow{
-		name: "[Fail] When: a step fails ; Should: record the failure, start nothing after it and return its StepError",
+		name: "[Fail] When: a step fails ; Should: record the failure, start nothing after it and return its Error",
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), fails(After("a")), rec.step("c", After("b"))}
 		},
@@ -396,29 +395,6 @@ func lateSiblingRow() runRow {
 	}
 }
 
-func latePredicateRow() runRow {
-	return runRow{
-		name: "[Fail] When: a predicate fails after a rejection ; Should: add no StepError and not start the step",
-		steps: func(rec *recorder) []Option {
-			late := If(func(*tripState) bool {
-				time.Sleep(pause)
-
-				panic("late")
-			})
-
-			return []Option{rec.step("a"), rec.step("b", After("a")), rec.step("c", After("a"), late)}
-		},
-		journal:       scripted(map[int]error{5: ErrConcurrentWriter}),
-		wantStatus:    StatusUnfinished,
-		wantErrs:      []error{ErrConcurrentWriter},
-		wantNotErrs:   []error{ErrJournal},
-		wantNoStepErr: true,
-		wantSteps:     map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepNotStarted},
-		wantPending:   []string{"b"},
-		wantTrail:     []string{opened, startOf("a"), doneOf("a"), startOf("b")},
-	}
-}
-
 func predicateAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: a predicate fails and its append fails ; Should: keep the step not started",
@@ -454,7 +430,7 @@ func outcomeAppendRow() runRow {
 
 func failureAppendRow() runRow {
 	return runRow{
-		name: "[Fail] When: the outcome append of a failure fails ; Should: join the StepError with ErrJournal",
+		name: "[Fail] When: the outcome append of a failure fails ; Should: join the Error with ErrJournal",
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), fails(After("a"))}
 		},

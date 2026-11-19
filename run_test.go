@@ -2,7 +2,6 @@ package sagas
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -96,77 +95,6 @@ func Test_WithExecutionID(t *testing.T) {
 
 			requireText(t, err, tt.wantContains, nil)
 			assert.Equal(t, tt.wantExecution, cfg.execution)
-		})
-	}
-}
-
-func Test_StepError_Error(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		err  StepError
-		want string
-	}{
-		{
-			name: "[Success] When: an action failed ; Should: name the step and its attempts",
-			err:  StepError{Step: payStep, Attempts: 3, Err: errAlwaysFails},
-			want: `sagas: step "pay" failed after 3 attempts: ` + errAlwaysFails.Error(),
-		},
-		{
-			name: "[Success] When: a compensation failed ; Should: name the compensation of the step",
-			err:  StepError{Step: payStep, Attempts: 1, Compensation: true, Err: errAlwaysFails},
-			want: `sagas: compensation of step "pay" failed after 1 attempts: ` + errAlwaysFails.Error(),
-		},
-		{
-			name: "[Success] When: the step never ran ; Should: report 0 attempts",
-			err:  StepError{Step: "car", Err: ErrJournal},
-			want: `sagas: step "car" failed after 0 attempts: ` + ErrJournal.Error(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, tt.err.Error())
-		})
-	}
-}
-
-func Test_StepError_Unwrap(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		err    error
-		wantIs bool
-	}{
-		{
-			name:   "[Success] When: Err is the sentinel ; Should: match it through errors.Is",
-			err:    errAlwaysFails,
-			wantIs: true,
-		},
-		{
-			name:   "[Success] When: Err wraps the sentinel ; Should: match it through the chain",
-			err:    fmt.Errorf("booking: %w", errAlwaysFails),
-			wantIs: true,
-		},
-		{
-			name:   "[Fail] When: Err is nil ; Should: match nothing",
-			err:    nil,
-			wantIs: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			se := &StepError{Step: payStep, Err: tt.err}
-
-			require.Equal(t, tt.err, se.Unwrap())
-			assert.Equal(t, tt.wantIs, errors.Is(se, errAlwaysFails))
 		})
 	}
 }
@@ -445,6 +373,7 @@ func Test_graceContext(t *testing.T) {
 		cancelCaller bool
 		wait         time.Duration
 		wantOpen     bool
+		wantCause    error
 	}{
 		{
 			name:     "[Success] When: the caller never cancels ; Should: keep the grace context open with no timer",
@@ -462,12 +391,14 @@ func Test_graceContext(t *testing.T) {
 			cancelCaller: true,
 			wait:         grace,
 			wantOpen:     false,
+			wantCause:    ErrGraceEnded,
 		},
 		{
 			name:         "[Fail] When: release runs before the caller cancels ; Should: end the grace context",
 			releaseFirst: true,
 			cancelCaller: true,
 			wantOpen:     false,
+			wantCause:    context.Canceled,
 		},
 	}
 
@@ -494,6 +425,7 @@ func Test_graceContext(t *testing.T) {
 				synctest.Wait()
 
 				assert.Equal(t, tt.wantOpen, g.Err() == nil)
+				assert.Equal(t, tt.wantCause, context.Cause(g))
 				assert.Equal(t, "kept", g.Value(graceKey{}))
 			})
 		})
@@ -597,7 +529,9 @@ type runRow struct {
 	wantErrs      []error
 	wantNotErrs   []error
 	wantText      []string
-	wantNoStepErr bool
+	cancelAfter   time.Duration
+	cancelCause   error
+	verify        func(t *testing.T, got *ran)
 	wantExecution string
 	wantSteps     map[string]StepStatus
 	wantPending   []string
@@ -610,7 +544,7 @@ type runRow struct {
 func Test_Saga_Run(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(forwardRows(), stopRows()) {
+	for _, tt := range slices.Concat(forwardRows(), stopRows(), errorRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -648,17 +582,15 @@ func assertRun(t *testing.T, tt *runRow, got *ran, journal Journal) {
 		require.NotErrorIs(t, err, no)
 	}
 
-	if tt.wantNoStepErr {
-		var stepErr *StepError
-
-		assert.NotErrorAs(t, err, &stepErr)
-	}
-
 	assert.Equal(t, tt.wantStatus, res.Status)
 	assert.Equal(t, tt.wantPending, res.Pending())
 	assert.Equal(t, tt.wantState, got.state)
 	assertSteps(t, res, tt.wantSteps)
 	assertEvents(t, res, tt, journal)
+
+	if tt.verify != nil {
+		tt.verify(t, got)
+	}
 }
 
 type ran struct {
@@ -673,7 +605,16 @@ func execute(s *Saga[tripState], tt *runRow) []ran {
 	var wg sync.WaitGroup
 
 	for i := range out {
-		call := func() { out[i].res, out[i].err = s.Run(context.Background(), &out[i].state, tt.runOpts...) }
+		call := func() {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+
+			if tt.cancelCause != nil {
+				time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
+			}
+
+			out[i].res, out[i].err = s.Run(ctx, &out[i].state, tt.runOpts...)
+		}
 		if tt.concurrent {
 			wg.Go(call)
 

@@ -33,7 +33,7 @@ const (
 type stepRun struct {
 	status   runStatus
 	attempts int
-	err      *StepError
+	err      *Error
 }
 
 type report interface {
@@ -99,7 +99,7 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 
 	for {
 		if r.stopped() {
-			cancel(errors.Join(r.errs()...))
+			cancel(r.errs()[0])
 		} else {
 			r.launch(stepCtx, grace, c)
 		}
@@ -179,11 +179,20 @@ func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
 }
 
 func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
+	meta := &callMeta{execution: r.execution}
 	done := settled[S]{step: j.step, base: j.base, out: outcome[S]{kind: outcomeUnknown, err: errGoexit}}
+	returned := false
 
-	defer func() { reports <- done }()
+	defer func() {
+		if !returned {
+			done.out.attempts, done.out.previous = meta.attempt, meta.previous
+		}
 
-	done.out = r.saga.steps[j.step].action(ctx, r.execution, j.base)
+		reports <- done
+	}()
+
+	done.out = r.saga.steps[j.step].action(ctx, meta, j.base)
+	returned = true
 }
 
 func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, error) {
@@ -210,6 +219,10 @@ func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool)
 	switch {
 	case r.rejected != nil:
 		answer <- false
+
+		if v.err != nil {
+			r.note(i, outcome[S]{kind: outcomeFailure, err: v.err})
+		}
 
 		r.runs[i].status = runNotStarted
 	case v.err != nil:
@@ -239,6 +252,10 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	name := r.saga.steps[i].name
 
 	if r.rejected != nil {
+		if f.out.kind != outcomeSuccess {
+			r.note(i, f.out)
+		}
+
 		r.runs[i].status = runUnknown
 
 		return
@@ -280,8 +297,11 @@ func (r *runner[S]) refuse(ctx context.Context, i int, out outcome[S]) {
 
 func (r *runner[S]) note(i int, out outcome[S]) Event {
 	name := r.saga.steps[i].name
-	failure := &StepError{Step: name, Attempts: out.attempts, Err: out.err}
-	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: out.err.Error()}
+	failure := &Error{
+		Kind: kindOf(out.kind, out.err), Step: name, Attempts: out.attempts,
+		Err: out.err, Cause: out.cause, Previous: out.previous,
+	}
+	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: eventErrorOf(failure)}
 	r.runs[i] = stepRun{status: runFailed, attempts: out.attempts, err: failure}
 	r.failures = append(r.failures, failure)
 

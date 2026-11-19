@@ -56,7 +56,7 @@ func twoSecondCall(ctx context.Context, _ *tripState) error {
 func callOnce(tb testing.TB, call callFunc[tripState]) outcome[tripState] {
 	tb.Helper()
 
-	return call(context.Background(), "exec-1", baseOf(tb, tripState{}))
+	return call(context.Background(), &callMeta{execution: infoExecution}, baseOf(tb, tripState{}))
 }
 
 func hotelOf(tb testing.TB, out outcome[tripState]) string {

@@ -180,6 +180,45 @@ func Test_classify(t *testing.T) {
 	}
 }
 
+func Test_PanicError_Unwrap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value any
+		want  error
+	}{
+		{
+			name:  "[Success] When: the value is an error ; Should: return it",
+			value: errBoom,
+			want:  errBoom,
+		},
+		{
+			name:  "[Success] When: the value is a package Kind ; Should: return it",
+			value: ErrConflict,
+			want:  ErrConflict,
+		},
+		{
+			name:  "[Success] When: the value is a string ; Should: return nothing",
+			value: "text",
+		},
+		{
+			name:  "[Success] When: the value is nil ; Should: return nothing",
+			value: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pe := &PanicError{Value: tt.value}
+
+			assert.Equal(t, tt.want, pe.Unwrap())
+		})
+	}
+}
+
 var errCall = errors.New("call failed")
 
 type pipeState struct {
@@ -349,6 +388,9 @@ func pipelineTimeoutRow() pipelineRow {
 		wantKind:     outcomeUnknown,
 		wantAttempts: 3,
 		wantErrs:     []error{context.DeadlineExceeded},
+		wantCause:    []error{context.DeadlineExceeded},
+		wantCauseTxt: `"pay"`,
+		wantPrevious: []error{context.DeadlineExceeded, context.DeadlineExceeded},
 	}
 }
 
@@ -398,6 +440,8 @@ func pipelineFailureRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 3,
 		wantErrs:     []error{errBoom},
+		wantNoCause:  true,
+		wantPrevious: []error{errBoom, errBoom},
 	}
 }
 
@@ -408,6 +452,127 @@ func pipelinePermanentRow() pipelineRow {
 		call:         failWith(Permanent(errBoom)),
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
+		wantErrs:     []error{errBoom},
+	}
+}
+
+func perAttempt(errs ...error) func(*recorder) func(context.Context, *pipeState) error {
+	return func(*recorder) func(context.Context, *pipeState) error {
+		return func(ctx context.Context, _ *pipeState) error { return errs[attemptOf(ctx)-1] }
+	}
+}
+
+func pipelineHistoryRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: three attempts fail with different errors ; Should: return the last, keep the first two " +
+			"oldest first",
+		spec:         actionSpec(),
+		call:         perAttempt(errFirst, errSecond, errThird),
+		wantKind:     outcomeFailure,
+		wantAttempts: 3,
+		wantErrs:     []error{errThird},
+		wantNoCause:  true,
+		wantPrevious: []error{errFirst, errSecond},
+	}
+}
+
+func replacing(next Handler) Handler {
+	return func(ctx context.Context) error {
+		if err := next(ctx); err != nil {
+			return errReplaced
+		}
+
+		return nil
+	}
+}
+
+func pipelineReplacedRow() pipelineRow {
+	spec := actionSpec()
+	spec.retry.Attempts = 1
+
+	return pipelineRow{
+		name: "[Fail] When: middleware replaces the call error ; Should: keep the call error in the history",
+		spec: spec,
+		middleware: func(*recorder) []Middleware {
+			return []Middleware{replacing}
+		},
+		call:         failWith(errBoom),
+		wantKind:     outcomeFailure,
+		wantAttempts: 1,
+		wantErrs:     []error{errReplaced},
+		wantNoCause:  true,
+		wantPrevious: []error{errBoom},
+	}
+}
+
+func pipelineStoppedBackoffRow() pipelineRow {
+	spec := actionSpec()
+	spec.retry.Initial = 10 * time.Millisecond
+
+	return pipelineRow{
+		name: "[Fail] When: the context ends during the wait between attempts ; Should: keep the attempt a failure " +
+			"and hold the context cause",
+		spec:         spec,
+		call:         perAttempt(errFirst, errSecond, errThird),
+		cancelAfter:  5 * time.Millisecond,
+		cancelCause:  errStop,
+		wantKind:     outcomeFailure,
+		wantAttempts: 1,
+		wantErrs:     []error{errFirst},
+		wantCause:    []error{errStop},
+	}
+}
+
+func pipelineCancelledCallRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: the context ends while the call runs ; Should: end unknown and hold the context cause",
+		spec: actionSpec(),
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			return func(ctx context.Context, _ *pipeState) error {
+				<-ctx.Done()
+
+				return ctx.Err()
+			}
+		},
+		cancelAfter:  5 * time.Millisecond,
+		cancelCause:  errStop,
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantErrs:     []error{context.Canceled},
+		wantCause:    []error{errStop},
+	}
+}
+
+func pipelineCancelledCompensationRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: the context ends in a compensation with no timeout ; Should: hold the cause",
+		spec: compensationSpec(),
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			return func(ctx context.Context, _ *pipeState) error {
+				<-ctx.Done()
+
+				return ctx.Err()
+			}
+		},
+		cancelAfter:  5 * time.Millisecond,
+		cancelCause:  errStop,
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantErrs:     []error{context.Canceled},
+		wantCause:    []error{errStop},
+	}
+}
+
+func pipelinePanicValueRow() pipelineRow {
+	return pipelineRow{
+		name: "[Fail] When: the call panics with an error value ; Should: match that value through the PanicError",
+		spec: actionSpec(),
+		call: func(*recorder) func(context.Context, *pipeState) error {
+			return func(context.Context, *pipeState) error { panic(errBoom) }
+		},
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantPanic:    true,
 		wantErrs:     []error{errBoom},
 	}
 }
@@ -577,6 +742,7 @@ func pipelineAbandonedThenSkipRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 2,
 		wantErrs:     []error{ErrCallNotRun},
+		wantPrevious: []error{context.DeadlineExceeded},
 	}
 }
 
@@ -752,6 +918,12 @@ type pipelineRow struct {
 	wantPanic    bool
 	wantState    *pipeState
 	wantTrace    []string
+	wantCause    []error
+	wantCauseTxt string
+	wantNoCause  bool
+	wantPrevious []error
+	cancelAfter  time.Duration
+	cancelCause  error
 }
 
 func actionSpec() callSpec {
@@ -781,6 +953,7 @@ func pipelineSwallowRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 3,
 		wantErrs:     []error{errBoom},
+		wantPrevious: []error{errBoom, errBoom},
 	}
 }
 
@@ -818,6 +991,7 @@ func pipelineStaleCopyRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 2,
 		wantErrs:     []error{errCall},
+		wantPrevious: []error{errBoom},
 	}
 }
 
@@ -911,6 +1085,7 @@ func pipelineLaterAttemptSkipRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 2,
 		wantErrs:     []error{ErrCallNotRun},
+		wantPrevious: []error{errCall},
 	}
 }
 
@@ -967,6 +1142,52 @@ func assertCallErr(t *testing.T, got error, want []error) {
 
 	for _, w := range want {
 		require.ErrorIs(t, got, w)
+	}
+}
+
+func assertCause(t *testing.T, got error, want []error, text string) {
+	t.Helper()
+
+	for _, w := range want {
+		require.ErrorIs(t, got, w)
+	}
+
+	if text != "" {
+		require.Error(t, got)
+		assert.Contains(t, got.Error(), text)
+	}
+}
+
+func assertPipelineErr(t *testing.T, tt *pipelineRow, got *outcome[pipeState]) {
+	t.Helper()
+
+	if tt.wantNoCause {
+		require.NoError(t, got.cause)
+	}
+
+	assertCause(t, got.cause, tt.wantCause, tt.wantCauseTxt)
+	assertPrevious(t, got.previous, tt.wantPrevious)
+
+	if tt.wantPanic {
+		require.ErrorAs(t, got.err, new(*PanicError))
+
+		for _, w := range tt.wantErrs {
+			require.ErrorIs(t, got.err, w)
+		}
+
+		return
+	}
+
+	assertCallErr(t, got.err, tt.wantErrs)
+}
+
+func assertPrevious(t *testing.T, got, want []error) {
+	t.Helper()
+
+	require.Len(t, got, len(want))
+
+	for i := range want {
+		require.ErrorIs(t, got[i], want[i])
 	}
 }
 
@@ -1070,6 +1291,12 @@ func Test_pipeline(t *testing.T) {
 		pipelineUserPanicRow(),
 		pipelineFreshCopyRow(),
 		pipelineTimeoutRow(),
+		pipelineHistoryRow(),
+		pipelineReplacedRow(),
+		pipelineStoppedBackoffRow(),
+		pipelineCancelledCallRow(),
+		pipelineCancelledCompensationRow(),
+		pipelinePanicValueRow(),
 		pipelineCompensationRow(),
 		pipelineSuccessRow(),
 		pipelineFailureRow(),
@@ -1107,7 +1334,14 @@ func Test_pipeline(t *testing.T) {
 					spec.middleware = tt.middleware(rec)
 				}
 
-				got := pipeline(&spec, tt.call(rec))(t.Context(), "exec-1", baseFor(t, &tt))
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+
+				if tt.cancelCause != nil {
+					time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
+				}
+
+				got := pipeline(&spec, tt.call(rec))(ctx, &callMeta{execution: infoExecution}, baseFor(t, &tt))
 
 				time.Sleep(time.Minute)
 
@@ -1116,13 +1350,7 @@ func Test_pipeline(t *testing.T) {
 				assert.Equal(t, tt.wantState, got.state)
 				assert.Equal(t, tt.wantTrace, rec.snapshot())
 
-				if tt.wantPanic {
-					require.ErrorAs(t, got.err, new(*PanicError))
-
-					return
-				}
-
-				assertCallErr(t, got.err, tt.wantErrs)
+				assertPipelineErr(t, &tt, &got)
 			})
 		})
 	}
@@ -1153,7 +1381,7 @@ func Benchmark_pipeline(b *testing.B) {
 			b.ReportAllocs()
 
 			for b.Loop() {
-				if got := call(ctx, "exec-1", base); got.kind != outcomeSuccess {
+				if got := call(ctx, &callMeta{execution: infoExecution}, base); got.kind != outcomeSuccess {
 					b.Fatal(got.err)
 				}
 			}

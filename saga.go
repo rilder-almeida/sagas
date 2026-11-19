@@ -8,17 +8,6 @@ import (
 	"time"
 )
 
-var (
-	// ErrInvalidStep is returned by New for a step or saga option that breaks a rule of the definition.
-	ErrInvalidStep = errors.New("sagas: invalid step")
-	// ErrDuplicateStep is returned by New when two steps share a name.
-	ErrDuplicateStep = errors.New("sagas: duplicate step")
-	// ErrUnknownDependency is returned by New when a step depends on a step that does not exist.
-	ErrUnknownDependency = errors.New("sagas: unknown dependency")
-	// ErrCycle is returned by New when the steps depend on each other in a loop.
-	ErrCycle = errors.New("sagas: cycle")
-)
-
 // DefaultRecoveryTimeout is the recovery grace period used when WithRecoveryTimeout is zero or absent.
 const DefaultRecoveryTimeout = 5 * time.Minute
 

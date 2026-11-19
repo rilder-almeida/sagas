@@ -207,7 +207,7 @@ func Test_buildResult(t *testing.T) {
 			events: runEvents(
 				Event{Kind: EventStepStarted, Step: holdStep},
 				Event{Kind: EventStepSucceeded, Step: holdStep, Attempt: 1, Changed: []string{itemsField}},
-				Event{Kind: EventStepFailed, Step: bookStep, Attempt: 3, Err: "sold out"},
+				Event{Kind: EventStepFailed, Step: bookStep, Attempt: 3, Err: EventError{Message: "sold out"}},
 				Event{Kind: EventCompensationStarted, Step: holdStep},
 				Event{Kind: EventCompensationSucceeded, Step: holdStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompensated},
@@ -217,7 +217,13 @@ func Test_buildResult(t *testing.T) {
 					Name: holdStep, Status: StepCompensated, Attempts: 1, Changed: []string{itemsField},
 					Start: eventTime(2), End: eventTime(6),
 				},
-				StepResult{Name: bookStep, Status: StepFailed, Attempts: 3, Err: "sold out", End: eventTime(4)},
+				StepResult{
+					Name:     bookStep,
+					Status:   StepFailed,
+					Attempts: 3,
+					Err:      EventError{Message: "sold out"},
+					End:      eventTime(4),
+				},
 			)},
 		},
 		{
@@ -235,15 +241,18 @@ func Test_buildResult(t *testing.T) {
 			name: "[Fail] When: a compensation fails ; Should: report it with its compensation error",
 			events: runEvents(
 				Event{Kind: EventStepSucceeded, Step: holdStep},
-				Event{Kind: EventStepFailed, Step: bookStep, Err: "declined"},
-				Event{Kind: EventCompensationFailed, Step: holdStep, Err: "refund down"},
+				Event{Kind: EventStepFailed, Step: bookStep, Err: EventError{Message: "declined"}},
+				Event{Kind: EventCompensationFailed, Step: holdStep, Err: EventError{Message: "refund down"}},
 				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
 			),
 			want: Result{Execution: "x1", Status: StatusCompensationFailed, Steps: wantSteps(
 				StepResult{
-					Name: holdStep, Status: StepCompensationFailed, CompensationErr: "refund down", End: eventTime(4),
+					Name:            holdStep,
+					Status:          StepCompensationFailed,
+					CompensationErr: EventError{Message: "refund down"},
+					End:             eventTime(4),
 				},
-				StepResult{Name: bookStep, Status: StepFailed, Err: "declined", End: eventTime(3)},
+				StepResult{Name: bookStep, Status: StepFailed, Err: EventError{Message: "declined"}, End: eventTime(3)},
 			)},
 		},
 		{
@@ -366,8 +375,14 @@ func Test_applyEventSharingChanged(t *testing.T) {
 
 	prior := func() StepResult {
 		return StepResult{
-			Name: holdStep, Status: StepSucceeded, Attempts: 2, Err: "late", CompensationErr: "refund late",
-			Changed: []string{seatsField}, Start: eventTime(1), End: eventTime(2),
+			Name:            holdStep,
+			Status:          StepSucceeded,
+			Attempts:        2,
+			Err:             EventError{Message: "late"},
+			CompensationErr: EventError{Message: "refund late"},
+			Changed:         []string{seatsField},
+			Start:           eventTime(1),
+			End:             eventTime(2),
 		}
 	}
 	with := func(change func(*StepResult)) StepResult {
@@ -384,7 +399,7 @@ func Test_applyEventSharingChanged(t *testing.T) {
 	}{
 		{
 			name:  "[Success] When: the step starts ; Should: set Start and the status unknown until an outcome",
-			event: Event{Kind: EventStepStarted, Attempt: 9, Err: "x", Time: eventTime(9)},
+			event: Event{Kind: EventStepStarted, Attempt: 9, Err: EventError{Message: "x"}, Time: eventTime(9)},
 			want:  with(func(s *StepResult) { s.Status, s.Start = StepUnknown, eventTime(9) }),
 		},
 		{
@@ -393,72 +408,102 @@ func Test_applyEventSharingChanged(t *testing.T) {
 				Kind: EventStepSucceeded, Attempt: 3, Changed: []string{itemsField, chargeField}, Time: eventTime(9),
 			},
 			want: with(func(s *StepResult) {
-				s.Status, s.Attempts, s.Err, s.End = StepSucceeded, 3, "", eventTime(9)
+				s.Status, s.Attempts, s.Err, s.End = StepSucceeded, 3, EventError{}, eventTime(9)
 				s.Changed = []string{itemsField, chargeField}
 			}),
 		},
 		{
 			name:  "[Success] When: the step fails ; Should: set status, attempts, error, no changed fields and End",
-			event: Event{Kind: EventStepFailed, Attempt: 4, Err: "no stock", Time: eventTime(9)},
+			event: Event{Kind: EventStepFailed, Attempt: 4, Err: EventError{Message: "no stock"}, Time: eventTime(9)},
 			want: with(func(s *StepResult) {
-				s.Status, s.Attempts, s.Err, s.Changed, s.End = StepFailed, 4, "no stock", nil, eventTime(9)
+				s.Status, s.Attempts, s.Err, s.Changed, s.End = StepFailed, 4, EventError{
+					Message: "no stock",
+				}, nil, eventTime(
+					9,
+				)
 			}),
 		},
 		{
 			name:  "[Success] When: the step ends unknown ; Should: set status, attempts, error and End",
-			event: Event{Kind: EventStepUnknown, Attempt: 1, Err: "timeout", Time: eventTime(9)},
+			event: Event{Kind: EventStepUnknown, Attempt: 1, Err: EventError{Message: "timeout"}, Time: eventTime(9)},
 			want: with(func(s *StepResult) {
-				s.Status, s.Attempts, s.Err, s.Changed, s.End = StepUnknown, 1, "timeout", nil, eventTime(9)
+				s.Status, s.Attempts, s.Err, s.Changed, s.End = StepUnknown, 1, EventError{
+					Message: "timeout",
+				}, nil, eventTime(
+					9,
+				)
 			}),
 		},
 		{
 			name:  "[Success] When: the step is skipped ; Should: set only the status",
-			event: Event{Kind: EventStepSkipped, Attempt: 9, Err: "x", Time: eventTime(9)},
+			event: Event{Kind: EventStepSkipped, Attempt: 9, Err: EventError{Message: "x"}, Time: eventTime(9)},
 			want:  with(func(s *StepResult) { s.Status = StepSkipped }),
 		},
 		{
 			name:  "[Success] When: the compensation succeeds ; Should: set status, compensation error and End",
 			event: Event{Kind: EventCompensationSucceeded, Attempt: 9, Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepCompensated, "", eventTime(9) }),
+			want: with(
+				func(s *StepResult) {
+					s.Status, s.CompensationErr, s.End = StepCompensated, EventError{}, eventTime(9)
+				},
+			),
 		},
 		{
 			name:  "[Success] When: the compensation fails ; Should: set status, compensation error and End",
-			event: Event{Kind: EventCompensationFailed, Err: "refund timeout", Time: eventTime(9)},
+			event: Event{Kind: EventCompensationFailed, Err: EventError{Message: "refund timeout"}, Time: eventTime(9)},
 			want: with(func(s *StepResult) {
-				s.Status, s.CompensationErr, s.End = StepCompensationFailed, "refund timeout", eventTime(9)
+				s.Status, s.CompensationErr, s.End = StepCompensationFailed, EventError{
+					Message: "refund timeout",
+				}, eventTime(
+					9,
+				)
 			}),
 		},
 		{
 			name:  "[Success] When: the compensation is blocked ; Should: set status, compensation error and End",
-			event: Event{Kind: EventCompensationBlocked, Err: "waits on book", Time: eventTime(9)},
+			event: Event{Kind: EventCompensationBlocked, Err: EventError{Message: "waits on book"}, Time: eventTime(9)},
 			want: with(
-				func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepBlocked, "waits on book", eventTime(9) },
+				func(s *StepResult) {
+					s.Status, s.CompensationErr, s.End = StepBlocked, EventError{Message: "waits on book"}, eventTime(9)
+				},
 			),
 		},
 		{
 			name:  "[Success] When: the compensation is halted ; Should: set status, compensation error and End",
 			event: Event{Kind: EventCompensationHalted, Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepHalted, "", eventTime(9) }),
+			want: with(
+				func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepHalted, EventError{}, eventTime(9) },
+			),
 		},
 		{
 			name:  "[Success] When: the compensation starts ; Should: set only the status failed until an outcome",
-			event: Event{Kind: EventCompensationStarted, Attempt: 9, Err: "x", Time: eventTime(9)},
+			event: Event{Kind: EventCompensationStarted, Attempt: 9, Err: EventError{Message: "x"}, Time: eventTime(9)},
 			want:  with(func(s *StepResult) { s.Status = StepCompensationFailed }),
 		},
 		{
-			name:  "[Fail] When: the event is a saga event ; Should: change nothing",
-			event: Event{Kind: EventSagaFinished, Status: StatusCompleted, Err: "x", Time: eventTime(9)},
-			want:  prior(),
+			name: "[Fail] When: the event is a saga event ; Should: change nothing",
+			event: Event{
+				Kind:   EventSagaFinished,
+				Status: StatusCompleted,
+				Err:    EventError{Message: "x"},
+				Time:   eventTime(9),
+			},
+			want: prior(),
 		},
 		{
 			name:  "[Fail] When: the kind is not set ; Should: change nothing",
-			event: Event{Kind: "", Attempt: 9, Err: "x", Time: eventTime(9)},
+			event: Event{Kind: "", Attempt: 9, Err: EventError{Message: "x"}, Time: eventTime(9)},
 			want:  prior(),
 		},
 		{
-			name:  "[Fail] When: the kind is unknown ; Should: change nothing",
-			event: Event{Kind: EventKind("no such kind"), Attempt: 9, Err: "x", Time: eventTime(9)},
-			want:  prior(),
+			name: "[Fail] When: the kind is unknown ; Should: change nothing",
+			event: Event{
+				Kind:    EventKind("no such kind"),
+				Attempt: 9,
+				Err:     EventError{Message: "x"},
+				Time:    eventTime(9),
+			},
+			want: prior(),
 		},
 	}
 
@@ -647,6 +692,10 @@ func Test_Result_Events(t *testing.T) {
 		return runEvents(
 			Event{Kind: EventStepStarted, Step: holdStep},
 			Event{Kind: EventStepSucceeded, Step: holdStep, Attempt: 1, Changed: []string{itemsField}},
+			Event{
+				Kind: EventStepFailed, Step: bookStep, Attempt: 2,
+				Err: EventError{Kind: nameFailed, Message: "sold out", Previous: []string{"first"}},
+			},
 			Event{Kind: EventSagaFinished, Status: StatusCompleted},
 		)
 	}
@@ -680,6 +729,11 @@ func Test_Result_Events(t *testing.T) {
 			name:   "[Success] When: the caller changes a step's Changed ; Should: return the original",
 			events: stream(),
 			mutate: func(_ []Event, r *Result) { r.Steps[0].Changed[0] = "changed" },
+		},
+		{
+			name:   "[Success] When: the caller changes a step's Err previous ; Should: return the original",
+			events: stream(),
+			mutate: func(_ []Event, r *Result) { r.Steps[1].Err.Previous[0] = "changed" },
 		},
 	}
 

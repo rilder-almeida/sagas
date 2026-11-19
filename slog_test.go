@@ -114,7 +114,7 @@ func Test_Slog(t *testing.T) {
 					return err
 				}
 
-				got := pipeline(spec, call)(t.Context(), "exec-1", baseOf(t, pipeState{}))
+				got := pipeline(spec, call)(t.Context(), &callMeta{execution: infoExecution}, baseOf(t, pipeState{}))
 
 				if last := tt.attempts[len(tt.attempts)-1].err; last == nil {
 					require.NoError(t, got.err)
@@ -154,7 +154,7 @@ func Test_Slog_panic(t *testing.T) {
 	}
 	call := func(context.Context, *pipeState) error { panic("bad call") }
 
-	got := pipeline(spec, call)(t.Context(), "exec-1", baseOf(t, pipeState{}))
+	got := pipeline(spec, call)(t.Context(), &callMeta{execution: infoExecution}, baseOf(t, pipeState{}))
 
 	panicked, ok := errors.AsType[*PanicError](got.err)
 	require.True(t, ok)

@@ -20,7 +20,7 @@ func journalEvent(execution string, seq int) Event {
 		Kind:      EventStepSucceeded,
 		Step:      "reserve",
 		Attempt:   1,
-		Err:       "",
+		Err:       EventError{Kind: nameFailed, Message: "declined", Cause: "stopped", Previous: []string{"first"}},
 		Changed:   []string{"Seats"},
 		Steps:     []StepZone{{Name: "reserve", Zone: ZoneCompensable}},
 		Status:    StatusUnfinished,
@@ -32,10 +32,13 @@ func withEvent(e *Event, change func(*Event)) *Event {
 	out := *e
 	out.Changed = slices.Clone(out.Changed)
 	out.Steps = slices.Clone(out.Steps)
+	out.Err.Previous = slices.Clone(out.Err.Previous)
 	change(&out)
 
 	return &out
 }
+
+const scribbled = "scribbled"
 
 func scribble(events []Event) {
 	for i := range events {
@@ -48,15 +51,19 @@ func scribbleEvent(e *Event) {
 		return
 	}
 
-	e.Step = "scribbled"
+	e.Step = scribbled
 	e.Seq = 99
 
 	for k := range e.Changed {
-		e.Changed[k] = "scribbled"
+		e.Changed[k] = scribbled
 	}
 
 	for k := range e.Steps {
-		e.Steps[k].Name = "scribbled"
+		e.Steps[k].Name = scribbled
+	}
+
+	for k := range e.Err.Previous {
+		e.Err.Previous[k] = scribbled
 	}
 }
 
@@ -256,8 +263,24 @@ func Test_sameEvent(t *testing.T) {
 			a:    &base, b: withEvent(&base, func(e *Event) { e.Attempt = 2 }),
 		},
 		{
-			name: "[Fail] When: Err differs ; Should: return false",
-			a:    &base, b: withEvent(&base, func(e *Event) { e.Err = "boom" }),
+			name: "[Fail] When: the Err kind differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Kind = nameUnknown }),
+		},
+		{
+			name: "[Fail] When: the Err message differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Message = "boom" }),
+		},
+		{
+			name: "[Fail] When: the Err cause differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Cause = "other" }),
+		},
+		{
+			name: "[Fail] When: an Err previous text differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Previous[0] = "second" }),
+		},
+		{
+			name: "[Fail] When: Err has one more previous text ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Previous = append(e.Err.Previous, "second") }),
 		},
 		{
 			name: "[Fail] When: a Changed name differs ; Should: return false",

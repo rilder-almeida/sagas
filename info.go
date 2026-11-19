@@ -5,6 +5,7 @@ import "context"
 type callMeta struct {
 	execution string
 	attempt   int
+	previous  []error
 }
 
 type metaKey struct{}

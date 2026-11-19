@@ -9,16 +9,7 @@ import (
 	"time"
 )
 
-var (
-	// ErrJournal wraps an Append error that is not a rejection; a Journal returns its own failures as is.
-	ErrJournal = errors.New("sagas: journal failure")
-	// ErrExecutionExists is returned when the journal rejects the first event because the execution already exists.
-	ErrExecutionExists = errors.New("sagas: execution exists")
-	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
-	ErrConcurrentWriter = errors.New("sagas: concurrent writer")
-
-	errInvalidEvent = errors.New("sagas: invalid event")
-)
+var errInvalidEvent = errors.New("sagas: invalid event")
 
 // Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of e,
 // never e or its slices, only when its Seq is its execution's last Seq plus one; an equal resend from the same Writer
@@ -37,11 +28,19 @@ type Event struct {
 	Kind      EventKind
 	Step      string
 	Attempt   int
-	Err       string
+	Err       EventError
 	Changed   []string
 	Steps     []StepZone
 	Status    Status
 	Time      time.Time
+}
+
+// EventError is the text form of an Error as a journal stores it. The zero value means no error.
+type EventError struct {
+	Kind     string
+	Message  string
+	Cause    string
+	Previous []string
 }
 
 // StepZone names a step and the zone it runs in.
@@ -143,14 +142,19 @@ func copyEvents(events []Event) []Event {
 func cloneSlices(e *Event) {
 	e.Changed = slices.Clone(e.Changed)
 	e.Steps = slices.Clone(e.Steps)
+	e.Err.Previous = slices.Clone(e.Err.Previous)
 }
 
 func sameEvent(a, b *Event) bool {
-	return sameScalars(a, b) && slices.Equal(a.Changed, b.Changed) && slices.Equal(a.Steps, b.Steps) &&
-		a.Time.Equal(b.Time)
+	return sameScalars(a, b) && sameError(&a.Err, &b.Err) && slices.Equal(a.Changed, b.Changed) &&
+		slices.Equal(a.Steps, b.Steps) && a.Time.Equal(b.Time)
+}
+
+func sameError(a, b *EventError) bool {
+	return a.Kind == b.Kind && a.Message == b.Message && a.Cause == b.Cause && slices.Equal(a.Previous, b.Previous)
 }
 
 func sameScalars(a, b *Event) bool {
 	return a.Saga == b.Saga && a.Execution == b.Execution && a.Writer == b.Writer && a.Seq == b.Seq &&
-		a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Err == b.Err && a.Status == b.Status
+		a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Status == b.Status
 }
