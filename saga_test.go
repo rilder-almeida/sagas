@@ -460,13 +460,19 @@ func Test_WithJournal(t *testing.T) {
 }
 
 func middlewaresOf(rec *recorder, names []string) []Middleware {
-	mws := make([]Middleware, 0, len(names)+1)
+	mws := make([]Middleware, 0, len(names))
 
 	for _, n := range names {
 		mws = append(mws, tagged(rec, n))
 	}
 
 	return mws
+}
+
+func overwrite(mws []Middleware) {
+	for i := range mws {
+		mws[i] = okMiddleware
+	}
 }
 
 func Test_WithMiddleware(t *testing.T) {
@@ -527,7 +533,7 @@ func Test_WithMiddleware(t *testing.T) {
 			require.NoError(t, err)
 
 			if tt.changeAfterNew {
-				clear(mws)
+				overwrite(mws)
 			}
 
 			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
