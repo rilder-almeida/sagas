@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -543,5 +545,203 @@ func isClosed(ch <-chan struct{}) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (r *recorder) step(name string, opts ...StepOption) Option {
+	return Step(name, func(context.Context, *tripState) error {
+		r.add(name)
+
+		return nil
+	}, opts...)
+}
+
+func (r *recorder) booking(name, hotel string, opts ...StepOption) Option {
+	return Step(name, func(_ context.Context, s *tripState) error {
+		r.add(name)
+
+		s.Hotel = hotel
+
+		return nil
+	}, opts...)
+}
+
+func (r *recorder) when(verdict bool, name string) StepOption {
+	return If(func(*tripState) bool {
+		r.add("if:" + name)
+
+		return verdict
+	})
+}
+
+type runRow struct {
+	name        string
+	steps       func(rec *recorder) []Option
+	journal     func() Journal
+	cancelAt    time.Duration
+	runOpts     []RunOption
+	wantStatus  Status
+	wantErrs    []error
+	wantSteps   map[string]StepStatus
+	wantPending []string
+	wantOrder   [][2]string
+	wantZones   []StepZone
+	wantState   tripState
+}
+
+func Test_Saga_Run(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range forwardRows() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				rec := &recorder{}
+				opts := tt.steps(rec)
+
+				var journal Journal
+				if tt.journal != nil {
+					journal = tt.journal()
+					opts = append(opts, WithJournal(journal))
+				}
+
+				s, err := New[tripState]("trip", opts...)
+				require.NoError(t, err)
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				if tt.cancelAt > 0 {
+					time.AfterFunc(tt.cancelAt, cancel)
+				}
+
+				var st tripState
+
+				res, err := s.Run(ctx, &st, tt.runOpts...)
+
+				requireErrs(t, err, tt.wantErrs)
+				assert.Equal(t, tt.wantStatus, res.Status)
+				assert.Equal(t, tt.wantPending, res.Pending())
+				assert.Equal(t, tt.wantState, st)
+				assertSteps(t, &res, tt.wantSteps)
+				assertOrder(t, rec.snapshot(), tt.wantOrder)
+				assertEvents(t, &res, tt.wantZones, journal)
+			})
+		})
+	}
+}
+
+func requireErrs(t *testing.T, err error, wants []error) {
+	t.Helper()
+
+	if len(wants) == 0 {
+		require.NoError(t, err)
+
+		return
+	}
+
+	for _, want := range wants {
+		require.ErrorIs(t, err, want)
+	}
+}
+
+func assertSteps(t *testing.T, res *Result, want map[string]StepStatus) {
+	t.Helper()
+
+	got := make(map[string]StepStatus, len(res.Steps))
+	for i := range res.Steps {
+		got[res.Steps[i].Name] = res.Steps[i].Status
+	}
+
+	assert.Equal(t, want, got)
+}
+
+func assertOrder(t *testing.T, calls []string, want [][2]string) {
+	t.Helper()
+
+	for _, pair := range want {
+		before, after := slices.Index(calls, pair[0]), slices.Index(calls, pair[1])
+
+		assert.GreaterOrEqual(t, before, 0, "%s never ran in %v", pair[0], calls)
+		assert.Greater(t, after, before, "%s did not run after %s in %v", pair[1], pair[0], calls)
+	}
+}
+
+func assertEvents(t *testing.T, res *Result, wantZones []StepZone, journal Journal) {
+	t.Helper()
+
+	events := res.Events()
+	require.NotEmpty(t, events)
+	assert.Equal(t, EventSagaStarted, events[0].Kind)
+
+	started := map[string]bool{}
+
+	for i := range events {
+		assert.Equal(t, i+1, events[i].Seq)
+		assert.Equal(t, res.Execution, events[i].Execution)
+
+		if events[i].Kind == EventStepStarted {
+			started[events[i].Step] = true
+		}
+	}
+
+	for i := range res.Steps {
+		step := &res.Steps[i]
+		assert.Equal(t, step.Status != StepSkipped, started[step.Name], "step %s started event", step.Name)
+	}
+
+	if wantZones != nil {
+		assert.Equal(t, wantZones, events[0].Steps)
+	}
+
+	if stored, ok := journal.(*memoryJournal); ok {
+		assert.Equal(t, events, stored.events(res.Execution))
+	}
+}
+
+func Test_Saga_Run_defaultJournal(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		s, err := New[tripState]("trip", Step("a", func(context.Context, *tripState) error { return nil }))
+		require.NoError(t, err)
+
+		for range 2 {
+			var st tripState
+
+			res, runErr := s.Run(context.Background(), &st, WithExecutionID("order-7"))
+			require.NoError(t, runErr)
+			assert.Equal(t, StatusCompleted, res.Status)
+		}
+	})
+}
+
+func Test_Saga_Run_concurrent(t *testing.T) {
+	t.Parallel()
+
+	const runs = 8
+
+	rec := &recorder{}
+
+	s, err := New[tripState]("trip", rec.step("a"), rec.booking("b", "ritz", After("a")))
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+
+	errs := make([]error, runs)
+	states := make([]tripState, runs)
+
+	for i := range runs {
+		wg.Go(func() {
+			_, errs[i] = s.Run(context.Background(), &states[i])
+		})
+	}
+
+	wg.Wait()
+
+	for i := range runs {
+		require.NoError(t, errs[i])
+		assert.Equal(t, tripState{Hotel: "ritz"}, states[i])
 	}
 }

@@ -113,6 +113,9 @@ type runner[S any] struct {
 	events      []Event
 	journalErrs []error
 	rejected    error
+	store       *store[S]
+	runs        []stepRun
+	failure     *StepError
 }
 
 func (r *runner[S]) append(ctx context.Context, e *Event) error {
@@ -141,6 +144,67 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	r.events = append(r.events, stored)
 
 	return nil
+}
+
+func (r *runner[S]) errs() []error {
+	var errs []error
+
+	if r.failure != nil {
+		errs = append(errs, r.failure)
+	}
+
+	if r.rejected != nil {
+		errs = append(errs, r.rejected)
+	}
+
+	return append(errs, r.journalErrs...)
+}
+
+// Run executes the saga on the state st under ctx and returns the Result of the execution. A completed run returns a
+// nil error and writes the committed state back into st.
+func (s *Saga[S]) Run(ctx context.Context, st *S, opts ...RunOption) (Result, error) {
+	cfg, err := checkRun(st, opts)
+	if err != nil {
+		return Result{}, err
+	}
+
+	committed, err := newStore(*st)
+	if err != nil {
+		return Result{}, err
+	}
+
+	journal := s.journal
+	if journal == nil {
+		journal = newMemoryJournal()
+	}
+
+	r := &runner[S]{
+		saga: s, execution: cfg.execution, writer: newID(), journal: journal,
+		store: committed, runs: make([]stepRun, len(s.steps)),
+	}
+
+	grace, release := graceContext(ctx, s.recovery)
+	defer release()
+
+	zoned := make([]StepZone, len(s.steps))
+	for i := range s.steps {
+		zoned[i] = StepZone{Name: s.steps[i].name, Zone: s.steps[i].zone}
+	}
+
+	if startErr := r.append(grace, &Event{Kind: EventSagaStarted, Steps: zoned}); startErr != nil {
+		return Result{}, startErr
+	}
+
+	if r.forward(ctx, grace) == endCompleted {
+		r.record(grace, &Event{Kind: EventSagaFinished, Status: StatusCompleted})
+	}
+
+	errs := r.errs()
+	if err = committed.writeBack(st); err != nil {
+		errs = append(errs, err)
+	}
+
+	return buildResult(r.events), errors.Join(errs...)
 }
 
 type waitRelease func()
