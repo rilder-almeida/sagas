@@ -450,7 +450,7 @@ func Test_graceContext(t *testing.T) {
 			wantOpen:     false,
 		},
 		{
-			name:         "[Fail] When: release runs before the caller cancels ; Should: end it and leave no goroutine",
+			name:         "[Fail] When: release runs before the caller cancels ; Should: end the grace context",
 			releaseFirst: true,
 			cancelCaller: true,
 			wantOpen:     false,
