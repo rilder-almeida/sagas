@@ -3,6 +3,7 @@ package sagas
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -16,7 +17,6 @@ const (
 	endCompleted forwardEnd = iota
 	endFailed
 	endRejected
-	endJournal
 )
 
 type runStatus int
@@ -36,9 +36,7 @@ type stepRun struct {
 	err      *StepError
 }
 
-type report interface {
-	index() int
-}
+type report any
 
 type verdict struct {
 	step int
@@ -51,10 +49,6 @@ type settled[S any] struct {
 	out  outcome[S]
 	base snapshot[S]
 }
-
-func (v verdict) index() int { return v.step }
-
-func (f settled[S]) index() int { return f.step }
 
 type job[S any] struct {
 	step   int
@@ -114,9 +108,7 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 	switch {
 	case r.rejected != nil:
 		return endRejected
-	case len(r.journalErrs) > 0:
-		return endJournal
-	case len(r.failures) > 0:
+	case len(r.failures) > 0 || len(r.journalErrs) > 0:
 		return endFailed
 	default:
 		return endCompleted
@@ -156,6 +148,7 @@ func (r *runner[S]) receive(grace context.Context, c *crew[S]) {
 
 		c.running--
 	default:
+		panic(fmt.Sprintf("sagas: forward received an unknown report of type %T", rep))
 	}
 }
 
@@ -209,6 +202,10 @@ func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool)
 	name := r.saga.steps[i].name
 
 	switch {
+	case r.rejected != nil:
+		answer <- false
+
+		r.runs[i].status = runNotStarted
 	case v.err != nil:
 		answer <- false
 

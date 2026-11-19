@@ -25,14 +25,26 @@ type graceKey struct{}
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type scriptJournal struct {
-	errs map[int]error
-	ctxs []context.Context
+	errs   map[int]error
+	failed map[int]bool
+	ctxs   []context.Context
 }
 
 func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 	j.ctxs = append(j.ctxs, ctx)
 
-	return j.errs[e.Seq]
+	err, scripted := j.errs[e.Seq]
+	if !scripted || j.failed[e.Seq] {
+		return nil
+	}
+
+	if j.failed == nil {
+		j.failed = map[int]bool{}
+	}
+
+	j.failed[e.Seq] = true
+
+	return err
 }
 
 func Test_WithExecutionID(t *testing.T) {
@@ -585,6 +597,7 @@ type runRow struct {
 	wantErrs      []error
 	wantNotErrs   []error
 	wantText      []string
+	wantNoStepErr bool
 	wantExecution string
 	wantSteps     map[string]StepStatus
 	wantPending   []string
@@ -633,6 +646,12 @@ func assertRun(t *testing.T, tt *runRow, got *ran, journal Journal) {
 
 	for _, no := range tt.wantNotErrs {
 		require.NotErrorIs(t, err, no)
+	}
+
+	if tt.wantNoStepErr {
+		var stepErr *StepError
+
+		assert.NotErrorAs(t, err, &stepErr)
 	}
 
 	assert.Equal(t, tt.wantStatus, res.Status)
@@ -734,12 +753,12 @@ func assertEvents(t *testing.T, res *Result, tt *runRow, journal Journal) {
 
 	for i := range res.Steps {
 		step := &res.Steps[i]
-		if step.Status == StepSkipped {
-			assert.False(t, started[step.Name], "skipped step %s has a started event", step.Name)
+		if slices.Contains([]StepStatus{StepSkipped, StepNotStarted}, step.Status) {
+			assert.False(t, started[step.Name], "step %s is %s but has a started event", step.Name, step.Status)
 		}
 
-		if step.Status == StepSucceeded {
-			assert.True(t, started[step.Name], "succeeded step %s has no started event", step.Name)
+		if slices.Contains([]StepStatus{StepSucceeded, StepUnknown}, step.Status) {
+			assert.True(t, started[step.Name], "step %s is %s but has no started event", step.Name, step.Status)
 		}
 	}
 

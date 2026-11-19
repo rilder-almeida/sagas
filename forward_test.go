@@ -233,6 +233,7 @@ func journalRows() []runRow {
 	return []runRow{
 		rejectionRow(),
 		lateSiblingRow(),
+		latePredicateRow(),
 		outcomeAppendRow(),
 		failureAppendRow(),
 		intentAppendRow(),
@@ -391,6 +392,29 @@ func lateSiblingRow() runRow {
 		wantTrail: []string{
 			opened, startOf("a"), doneOf("a"), startOf("b"), startOf("c"),
 		},
+	}
+}
+
+func latePredicateRow() runRow {
+	return runRow{
+		name: "[Fail] When: a predicate fails after a rejection ; Should: add no StepError and not start the step",
+		steps: func(rec *recorder) []Option {
+			late := If(func(*tripState) bool {
+				time.Sleep(pause)
+
+				panic("late")
+			})
+
+			return []Option{rec.step("a"), rec.step("b", After("a")), rec.step("c", After("a"), late)}
+		},
+		journal:       scripted(map[int]error{5: ErrConcurrentWriter}),
+		wantStatus:    StatusUnfinished,
+		wantErrs:      []error{ErrConcurrentWriter},
+		wantNotErrs:   []error{ErrJournal},
+		wantNoStepErr: true,
+		wantSteps:     map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepNotStarted},
+		wantPending:   []string{"b"},
+		wantTrail:     []string{opened, startOf("a"), doneOf("a"), startOf("b")},
 	}
 }
 
@@ -601,6 +625,50 @@ func Test_ready(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.want, ready(tt.parents, runs))
+		})
+	}
+}
+
+func Test_runner_receive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		report    report
+		wantPanic string
+	}{
+		{
+			name:      "[Fail] When: the report is an int ; Should: panic naming the type",
+			report:    42,
+			wantPanic: "sagas: forward received an unknown report of type int",
+		},
+		{
+			name:      "[Fail] When: the report is a string ; Should: panic naming the type",
+			report:    "late",
+			wantPanic: "sagas: forward received an unknown report of type string",
+		},
+		{
+			name:      "[Fail] When: the report is nil ; Should: panic naming the missing type",
+			report:    nil,
+			wantPanic: "sagas: forward received an unknown report of type <nil>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := oneStep()
+			require.NoError(t, err)
+
+			r := &runner[tripState]{saga: s}
+			c := &crew[tripState]{reports: make(chan report, 1)}
+
+			c.reports <- tt.report
+
+			assert.PanicsWithValue(t, tt.wantPanic, func() {
+				r.receive(context.Background(), c)
+			})
 		})
 	}
 }
