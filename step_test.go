@@ -371,7 +371,7 @@ func Test_Timeout(t *testing.T) {
 			opts: []StepOption{Timeout(time.Minute)},
 		},
 		{
-			name: "[Success] When: the option is absent ; Should: store zero and let the action finish",
+			name: "[Success] When: the option is absent ; Should: set no limit and let the action finish",
 		},
 		{
 			name:    "[Fail] When: the timeout is negative ; Should: reject it",
@@ -422,28 +422,34 @@ func Test_Retry(t *testing.T) {
 		name         string
 		opts         []StepOption
 		wantAttempts int
+		wantMin      time.Duration
+		wantElapsed  time.Duration
 		wantErr      error
 	}{
 		{
-			name: "[Success] When: a policy is given ; Should: store it as given",
+			name: "[Success] When: a policy is given ; Should: wait its exact delays",
 			opts: []StepOption{Retry(given)}, wantAttempts: 5,
+			wantMin: 8125 * time.Millisecond, wantElapsed: 8125 * time.Millisecond,
 		},
 		{
-			name:         "[Success] When: the option is absent ; Should: store zero and make the default attempts",
-			wantAttempts: DefaultAttempts,
+			name:         "[Success] When: the option is absent ; Should: wait within the jittered default delays",
+			wantAttempts: DefaultAttempts, wantElapsed: 600 * time.Millisecond,
 		},
 		{
 			name: "[Success] When: two attempts are given ; Should: stop an always failing action after two",
-			opts: []StepOption{Retry(RetryPolicy{Attempts: 2})}, wantAttempts: 2,
+			opts: []StepOption{Retry(RetryPolicy{Attempts: 2, NoJitter: true})}, wantAttempts: 2,
+			wantMin: 200 * time.Millisecond, wantElapsed: 200 * time.Millisecond,
 		},
 		{
-			name: "[Success] When: the zero policy is given ; Should: make the default attempts",
-			opts: []StepOption{Retry(RetryPolicy{})}, wantAttempts: DefaultAttempts,
+			name: "[Success] When: the zero policy is given ; Should: wait the default delays",
+			opts: []StepOption{Retry(RetryPolicy{NoJitter: true})}, wantAttempts: DefaultAttempts,
+			wantMin: 600 * time.Millisecond, wantElapsed: 600 * time.Millisecond,
 		},
 		{
 			name:         "[Success] When: the multiplier is exactly one ; Should: accept it",
-			opts:         []StepOption{Retry(RetryPolicy{Multiplier: 1})},
+			opts:         []StepOption{Retry(RetryPolicy{Multiplier: 1, NoJitter: true})},
 			wantAttempts: DefaultAttempts,
+			wantMin:      400 * time.Millisecond, wantElapsed: 400 * time.Millisecond,
 		},
 		{
 			name:    "[Fail] When: Attempts is negative ; Should: reject it",
@@ -475,7 +481,14 @@ func Test_Retry(t *testing.T) {
 				}
 
 				require.NoError(t, err)
-				assert.Equal(t, tt.wantAttempts, callOnce(t, s.steps[0].action).attempts)
+
+				start := time.Now()
+				got := callOnce(t, s.steps[0].action)
+				elapsed := time.Since(start)
+
+				assert.Equal(t, tt.wantAttempts, got.attempts)
+				assert.GreaterOrEqual(t, elapsed, tt.wantMin)
+				assert.LessOrEqual(t, elapsed, tt.wantElapsed)
 			})
 		})
 	}

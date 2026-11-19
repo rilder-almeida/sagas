@@ -291,6 +291,12 @@ func Test_New(t *testing.T) {
 			wantContains: []string{`saga "a\tb"`, "name may hold only ASCII letters"},
 		},
 		{
+			name:         "[Fail] When: a step name is outside the allowed set ; Should: reject it naming the step",
+			build:        func() error { return buildTrip(Step("a b", okAction)) },
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "a b"`, "name may hold only ASCII letters"},
+		},
+		{
 			name: "[Fail] When: the saga has no steps ; Should: reject it",
 			build: func() error {
 				_, err := New[tripState]("trip")
