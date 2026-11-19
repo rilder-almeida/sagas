@@ -7,8 +7,8 @@ import (
 )
 
 // Mermaid returns the saga as a Mermaid flowchart. Node ids are s plus the declaration index, the pivot is a
-// hexagon, a conditional step ends in "(if)", and forward-only steps join the forwardOnly class. A double quote
-// in a step name is written as #quot;.
+// hexagon, a conditional step ends in "(if)", and forward-only steps join the forwardOnly class. The characters
+// ", # and ` in a step name are written as the entity codes #quot;, #35; and #96;.
 func (s *Saga[S]) Mermaid() string {
 	var b strings.Builder
 
@@ -18,7 +18,7 @@ func (s *Saga[S]) Mermaid() string {
 
 	for i := range s.steps {
 		n := &s.steps[i]
-		label := strings.ReplaceAll(n.name, `"`, "#quot;")
+		label := escapeLabel(n.name)
 
 		switch {
 		case i == s.pivot:
@@ -46,4 +46,11 @@ func (s *Saga[S]) Mermaid() string {
 	}
 
 	return b.String()
+}
+
+func escapeLabel(name string) string {
+	name = strings.ReplaceAll(name, "#", "#35;")
+	name = strings.ReplaceAll(name, `"`, "#quot;")
+
+	return strings.ReplaceAll(name, "`", "#96;")
 }

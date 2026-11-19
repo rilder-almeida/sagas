@@ -236,14 +236,13 @@ func Test_Compensate(t *testing.T) {
 		name        string
 		opts        []StepOption
 		wantPolicy  CompensationFailurePolicy
-		wantUndo    bool
 		wantUndoing string
 		wantErr     error
 	}{
 		{
 			name:       "[Success] When: a compensation is given ; Should: run it and keep the policy",
 			opts:       []StepOption{Compensate(undo), OnCompensationFailure(CompensationHalt)},
-			wantPolicy: CompensationHalt, wantUndo: true, wantUndoing: hotelUndone,
+			wantPolicy: CompensationHalt, wantUndoing: hotelUndone,
 		},
 		{
 			name:       "[Success] When: no compensation is given ; Should: store no compensation",
@@ -279,11 +278,15 @@ func Test_Compensate(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantPolicy, s.steps[0].policy)
-			assert.Equal(t, tt.wantUndo, s.steps[0].compensation != nil)
 
-			if s.steps[0].compensation != nil {
-				assert.Equal(t, tt.wantUndoing, hotelOf(t, callOnce(t, s.steps[0].compensation)))
+			if tt.wantUndoing == "" {
+				assert.Nil(t, s.steps[0].compensation)
+
+				return
 			}
+
+			require.NotNil(t, s.steps[0].compensation)
+			assert.Equal(t, tt.wantUndoing, hotelOf(t, callOnce(t, s.steps[0].compensation)))
 		})
 	}
 }
@@ -624,6 +627,11 @@ func Test_checkStep(t *testing.T) {
 			wantContains: []string{"empty name"},
 		},
 		{
+			name:         "[Fail] When: the name holds a newline ; Should: report the control character",
+			step:         Step("a\nb", okAction),
+			wantContains: []string{`step "a\nb"`, "name holds a control character"},
+		},
+		{
 			name:         "[Fail] When: the action is nil ; Should: report it naming the step",
 			step:         Step[tripState]("a", nil),
 			wantContains: []string{stepA, "action is nil"},
@@ -741,7 +749,7 @@ func Test_checkStep(t *testing.T) {
 			tt.step(d)
 			require.Len(t, d.steps, 1)
 
-			errs := checkStep[tripState](&d.steps[0])
+			_, errs := checkStep[tripState](&d.steps[0])
 			if len(tt.wantContains) == 0 {
 				assert.Empty(t, errs)
 

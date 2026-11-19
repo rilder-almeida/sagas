@@ -6,7 +6,9 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // StepOption configures one step of a saga. Pass it to Step.
@@ -115,22 +117,44 @@ func After(names ...string) StepOption {
 	}
 }
 
-func checkStep[S any](d *stepDef) []error {
+type stepFuncs[S any] struct {
+	do   func(context.Context, *S) error
+	undo func(context.Context, *S) error
+	pred func(*S) bool
+}
+
+func (f *stepFuncs[S]) convert(d *stepDef) []string {
+	var rules, more []string
+
+	rules = convertFunc(&f.do, d.do, "action")
+
+	if d.undo != nil {
+		more = convertFunc(&f.undo, d.undo, "Compensate function")
+		rules = append(rules, more...)
+	}
+
+	if d.pred != nil {
+		more = convertFunc(&f.pred, d.pred, "If function")
+		rules = append(rules, more...)
+	}
+
+	return rules
+}
+
+func checkStep[S any](d *stepDef) (stepFuncs[S], []error) {
 	rules := []string{}
 
 	if d.name == "" {
 		rules = append(rules, "empty name")
 	}
 
-	rules = append(rules, checkFunc[func(context.Context, *S) error](d.do, "action")...)
-
-	if d.undo != nil {
-		rules = append(rules, checkFunc[func(context.Context, *S) error](d.undo, "Compensate function")...)
+	if hasControl(d.name) {
+		rules = append(rules, "name holds a control character")
 	}
 
-	if d.pred != nil {
-		rules = append(rules, checkFunc[func(*S) bool](d.pred, "If function")...)
-	}
+	var funcs stepFuncs[S]
+
+	rules = append(rules, funcs.convert(d)...)
 
 	if d.timeout < 0 {
 		rules = append(rules, "Timeout is negative")
@@ -147,22 +171,26 @@ func checkStep[S any](d *stepDef) []error {
 		errs = append(errs, fmt.Errorf("%w: step %q: %s", ErrInvalidStep, d.name, rule))
 	}
 
-	return errs
+	return funcs, errs
 }
 
-func checkFunc[F any](v any, label string) []string {
+func hasControl(name string) bool { return strings.ContainsFunc(name, unicode.IsControl) }
+
+func convertFunc[F any](dst *F, v any, label string) []string {
+	if v == nil {
+		return []string{label + " is nil"}
+	}
+
 	f, ok := v.(F)
 	if !ok {
-		if v == nil {
-			return []string{label + " is nil"}
-		}
-
 		return []string{label + " is for another state type"}
 	}
 
 	if reflect.ValueOf(f).IsNil() {
 		return []string{label + " is nil"}
 	}
+
+	*dst = f
 
 	return nil
 }

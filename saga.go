@@ -1,7 +1,6 @@
 package sagas
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -74,8 +73,13 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 
 	errs := checkSaga(name, d, nilOptions)
 
+	funcs := make([]stepFuncs[S], len(d.steps))
+
 	for i := range d.steps {
-		errs = append(errs, checkStep[S](&d.steps[i])...)
+		var stepErrs []error
+
+		funcs[i], stepErrs = checkStep[S](&d.steps[i])
+		errs = append(errs, stepErrs...)
 	}
 
 	g, graphErrs := checkGraph(name, d.steps)
@@ -89,10 +93,10 @@ func New[S any](name string, opts ...Option) (*Saga[S], error) {
 		return nil, err
 	}
 
-	return build[S](name, d, &g)
+	return build(name, d, funcs, &g), nil
 }
 
-func build[S any](name string, d *definition, g *graph) (*Saga[S], error) {
+func build[S any](name string, d *definition, funcs []stepFuncs[S], g *graph) *Saga[S] {
 	s := &Saga[S]{
 		name: name, journal: d.journal, recovery: d.recovery, order: g.order,
 		pivot: g.pivot,
@@ -110,13 +114,8 @@ func build[S any](name string, d *definition, g *graph) (*Saga[S], error) {
 			n.policy = CompensationBlock
 		}
 
-		if pred, ok := sd.pred.(func(*S) bool); ok {
-			n.pred = pred
-		}
-
-		if err := n.buildCalls(name, sd, d.middleware); err != nil {
-			return nil, err
-		}
+		n.pred = funcs[i].pred
+		n.buildCalls(name, sd, &funcs[i], d.middleware)
 
 		s.steps = append(s.steps, n)
 	}
@@ -128,34 +127,22 @@ func build[S any](name string, d *definition, g *graph) (*Saga[S], error) {
 		s.steps[i].zone = zoned[i]
 	}
 
-	return s, nil
+	return s
 }
 
-func (n *stepNode[S]) buildCalls(saga string, sd *stepDef, middleware []Middleware) error {
+func (n *stepNode[S]) buildCalls(saga string, sd *stepDef, f *stepFuncs[S], middleware []Middleware) {
 	spec := callSpec{
 		saga: saga, step: sd.name, phase: PhaseAction, retry: sd.retry, timeout: sd.timeout, middleware: middleware,
 	}
 
-	do, ok := sd.do.(func(context.Context, *S) error)
-	if !ok {
-		return fmt.Errorf("%w: step %q: action is for another state type", ErrInvalidStep, sd.name)
-	}
+	n.action = pipeline(&spec, f.do)
 
-	n.action = pipeline(&spec, do)
-
-	if sd.undo == nil {
-		return nil
-	}
-
-	undo, ok := sd.undo.(func(context.Context, *S) error)
-	if !ok {
-		return fmt.Errorf("%w: step %q: Compensate is for another state type", ErrInvalidStep, sd.name)
+	if f.undo == nil {
+		return
 	}
 
 	spec.phase = PhaseCompensation
-	n.compensation = pipeline(&spec, undo)
-
-	return nil
+	n.compensation = pipeline(&spec, f.undo)
 }
 
 func checkSaga(name string, d *definition, nilOptions int) []error {
@@ -163,6 +150,10 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 
 	if name == "" {
 		rules = append(rules, "empty name")
+	}
+
+	if hasControl(name) {
+		rules = append(rules, "name holds a control character")
 	}
 
 	if len(d.steps) == 0 {

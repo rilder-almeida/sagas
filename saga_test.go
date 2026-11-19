@@ -71,8 +71,6 @@ func okPredicate(*tripState) bool { return true }
 
 func okMiddleware(next Handler) Handler { return next }
 
-func okMiddleware2(next Handler) Handler { return next }
-
 type pointerJournal struct{}
 
 func (*pointerJournal) Append(context.Context, *Event) error { return nil }
@@ -283,6 +281,16 @@ func Test_New(t *testing.T) {
 			wantContains: []string{`saga ""`, "empty name"},
 		},
 		{
+			name: "[Fail] When: the saga name holds a tab ; Should: reject it naming the saga",
+			build: func() error {
+				_, err := New[tripState]("a\tb", step())
+
+				return err
+			},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`saga "a\tb"`, "name holds a control character"},
+		},
+		{
 			name: "[Fail] When: the saga has no steps ; Should: reject it",
 			build: func() error {
 				_, err := New[tripState]("trip")
@@ -451,46 +459,45 @@ func Test_WithJournal(t *testing.T) {
 	}
 }
 
+func middlewaresOf(rec *recorder, names []string) []Middleware {
+	mws := make([]Middleware, 0, len(names)+1)
+
+	for _, n := range names {
+		mws = append(mws, tagged(rec, n))
+	}
+
+	return mws
+}
+
 func Test_WithMiddleware(t *testing.T) {
 	t.Parallel()
 
-	both := []string{"first>", "second>", "<second", "<first", "first>", "second>", "<second", "<first"}
+	both := []string{"outer>", "inner>", "<inner", "<outer", "outer>", "inner>", "<inner", "<outer"}
 
 	tests := []struct {
-		name      string
-		setup     func(r *recorder) (opts []Option, tamper func())
-		wantTrace []string
-		wantErr   error
+		name           string
+		names          []string
+		nilEntry       bool
+		calls          int
+		changeAfterNew bool
+		wantTrace      []string
+		wantErr        error
 	}{
 		{
-			name: "[Success] When: two middlewares are given in one call ; Should: wrap both phases in order",
-			setup: func(r *recorder) ([]Option, func()) {
-				return []Option{WithMiddleware(tagged(r, "first"), tagged(r, "second"))}, func() {}
-			},
-			wantTrace: both,
+			name:  "[Success] When: two middlewares are given in one call ; Should: wrap both phases in order",
+			names: []string{"outer", "inner"}, calls: 1, wantTrace: both,
 		},
 		{
-			name: "[Success] When: the caller changes its slice after New ; Should: run the original ones",
-			setup: func(r *recorder) ([]Option, func()) {
-				mws := []Middleware{tagged(r, "first"), tagged(r, "second")}
-
-				return []Option{WithMiddleware(mws...)}, func() { mws[0], mws[1] = okMiddleware, okMiddleware2 }
-			},
-			wantTrace: both,
+			name:  "[Success] When: the caller changes its slice after New ; Should: run the original ones",
+			names: []string{"outer", "inner"}, calls: 1, changeAfterNew: true, wantTrace: both,
 		},
 		{
-			name: "[Fail] When: an entry is nil ; Should: reject it",
-			setup: func(*recorder) ([]Option, func()) {
-				return []Option{WithMiddleware(nil)}, func() {}
-			},
-			wantErr: ErrInvalidStep,
+			name:  "[Fail] When: an entry is nil ; Should: reject it",
+			calls: 1, nilEntry: true, wantErr: ErrInvalidStep,
 		},
 		{
-			name: "[Fail] When: WithMiddleware is called twice ; Should: reject it",
-			setup: func(*recorder) ([]Option, func()) {
-				return twice(WithMiddleware(okMiddleware)), func() {}
-			},
-			wantErr: ErrInvalidStep,
+			name:  "[Fail] When: WithMiddleware is called twice ; Should: reject it",
+			names: []string{"outer"}, calls: 2, wantErr: ErrInvalidStep,
 		},
 	}
 
@@ -499,10 +506,18 @@ func Test_WithMiddleware(t *testing.T) {
 			t.Parallel()
 
 			rec := &recorder{}
-			opts, tamper := tt.setup(rec)
 
-			s, err := New[tripState]("trip",
-				append([]Option{Step("a", okAction, Compensate(okAction))}, opts...)...)
+			mws := middlewaresOf(rec, tt.names)
+			if tt.nilEntry {
+				mws = append(mws, nil)
+			}
+
+			opts := []Option{Step("a", okAction, Compensate(okAction))}
+			for range tt.calls {
+				opts = append(opts, WithMiddleware(mws...))
+			}
+
+			s, err := New[tripState]("trip", opts...)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
 
@@ -510,7 +525,10 @@ func Test_WithMiddleware(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			tamper()
+
+			if tt.changeAfterNew {
+				clear(mws)
+			}
 
 			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
 			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)

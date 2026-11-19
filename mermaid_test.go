@@ -80,9 +80,24 @@ func Test_Saga_Mermaid(t *testing.T) {
 				"    s1 --> s2\n    s0 --> s2\n",
 		},
 		{
-			name:  "[Success] When: a step name holds a quote ; Should: write the quote as #quot;",
-			steps: []Option{Step(`say "hi"] x`, okAction)},
-			want:  "flowchart TD\n    s0[\"say #quot;hi#quot;] x\"]\n",
+			name:  "[Success] When: a step name holds a double quote ; Should: write it as #quot;",
+			steps: []Option{Step(`a"b`, okAction)},
+			want:  "flowchart TD\n    s0[\"a#quot;b\"]\n",
+		},
+		{
+			name:  "[Success] When: a step name holds a closing bracket ; Should: keep it literal",
+			steps: []Option{Step("a]b", okAction)},
+			want:  "flowchart TD\n    s0[\"a]b\"]\n",
+		},
+		{
+			name:  "[Success] When: a step name holds a hash ; Should: write it as #35;",
+			steps: []Option{Step("a#b", okAction)},
+			want:  "flowchart TD\n    s0[\"a#35;b\"]\n",
+		},
+		{
+			name:  "[Success] When: a step name holds a backtick ; Should: write it as #96;",
+			steps: []Option{Step("a`b", okAction)},
+			want:  "flowchart TD\n    s0[\"a#96;b\"]\n",
 		},
 	}
 
