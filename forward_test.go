@@ -27,7 +27,8 @@ const (
 func trailOf(kind EventKind, step string) string { return strings.TrimSpace(string(kind) + " " + step) }
 func startOf(step string) string                 { return trailOf(EventStepStarted, step) }
 func doneOf(step string) string                  { return trailOf(EventStepSucceeded, step) }
-func failedB() string                            { return trailOf(EventStepFailed, "b") }
+func failedB() string                            { return failedOf("b") }
+func failedOf(step string) string                { return trailOf(EventStepFailed, step) }
 func lostOf(step string) string                  { return trailOf(EventStepUnknown, step) }
 func skipOf(step string) string                  { return trailOf(EventStepSkipped, step) }
 
@@ -93,6 +94,10 @@ func completedGraphRow() runRow {
 			return []Option{rec.step("a"), branch("b"), branch("c"), rec.booking("d", hotelRitz, After("b", "c"))}
 		},
 		wantStatus: StatusCompleted,
+		wantTrail: afterA(
+			together(startOf("b"), startOf("c"), doneOf("b"), doneOf("c")),
+			seq(startOf("d"), doneOf("d"), closed),
+		),
 		wantSteps: map[string]StepStatus{
 			"a": StepSucceeded, "b": StepSucceeded, "c": StepSucceeded, "d": StepSucceeded,
 		},
@@ -114,10 +119,10 @@ func skippedStepRow() runRow {
 		wantStatus: StatusCompleted,
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSkipped, "c": StepSucceeded},
 		wantOrder:  [][2]string{{"a", ifB}, {ifB, "c"}},
-		wantTrail: []string{
+		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), skipOf("b"), startOf("c"), doneOf("c"),
 			closed,
-		},
+		),
 	}
 }
 
@@ -133,7 +138,7 @@ func predicateTrueRow() runRow {
 		wantStatus: StatusCompleted,
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded},
 		wantOrder:  [][2]string{{"a", ifB}, {ifB, "b"}},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed),
 		wantState:  tripState{Hotel: "plaza"},
 	}
 }
@@ -145,6 +150,7 @@ func noPivotZonesRow() runRow {
 			return []Option{rec.step("a"), rec.step("b", After("a"))}
 		},
 		wantStatus: StatusCompleted,
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed),
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded},
 		wantOrder:  [][2]string{{"a", "b"}},
 		wantZones:  []StepZone{{Name: "a", Zone: storedCompText}, {Name: "b", Zone: storedCompText}},
@@ -162,8 +168,11 @@ func pivotZonesRow() runRow {
 			}
 		},
 		wantStatus: StatusCompleted,
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "p": StepSucceeded, "z": StepSucceeded},
-		wantOrder:  [][2]string{{"a", "p"}, {"p", "z"}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), doneOf("z"), closed,
+		),
+		wantSteps: map[string]StepStatus{"a": StepSucceeded, "p": StepSucceeded, "z": StepSucceeded},
+		wantOrder: [][2]string{{"a", "p"}, {"p", "z"}},
 		wantZones: []StepZone{
 			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
 		},
@@ -179,6 +188,7 @@ func givenJournalRow() runRow {
 		journal:       func() Journal { return newMemoryJournal() },
 		runOpts:       []RunOption{WithExecutionID("order-7")},
 		wantStatus:    StatusCompleted,
+		wantTrail:     seq(opened, startOf("a"), doneOf("a"), closed),
 		wantExecution: "order-7",
 		wantSteps:     map[string]StepStatus{"a": StepSucceeded},
 		wantState:     tripState{Hotel: hotelRitz},
@@ -194,6 +204,7 @@ func defaultJournalRow() runRow {
 		runOpts:       []RunOption{WithExecutionID("order-7")},
 		runs:          2,
 		wantStatus:    StatusCompleted,
+		wantTrail:     seq(opened, startOf("a"), doneOf("a"), closed),
 		wantExecution: "order-7",
 		wantSteps:     map[string]StepStatus{"a": StepSucceeded},
 	}
@@ -208,6 +219,7 @@ func concurrentRunsRow() runRow {
 		runs:       8,
 		concurrent: true,
 		wantStatus: StatusCompleted,
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed),
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded},
 		wantState:  tripState{Hotel: hotelRitz},
 	}
@@ -249,10 +261,13 @@ func stepFailsRow() runRow {
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), fails(After("a")), rec.step("c", After("b"))}
 		},
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{errAlwaysFails},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepNotStarted},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a"), startOf("b"), failedB()},
+		wantStatus:     StatusUnfinished,
+		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantAttempts:   map[string]int{"b": 3},
+		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
+		wantErrs:       []error{errAlwaysFails},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepNotStarted},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
 	}
 }
 
@@ -262,11 +277,13 @@ func goexitRow() runRow {
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), exits("b", After("a"))}
 		},
-		wantStatus:  StatusUnfinished,
-		wantErrs:    []error{errGoexit},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
-		wantPending: []string{"b"},
-		wantTrail:   []string{opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")},
+		wantStatus:   StatusUnfinished,
+		wantKinds:    map[string]*KindError{"b": ErrUnknown},
+		wantAttempts: map[string]int{"b": 1},
+		wantErrs:     []error{errGoexit},
+		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantPending:  []string{"b"},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
 	}
 }
 
@@ -278,10 +295,12 @@ func predicatePanicRow() runRow {
 
 			return []Option{rec.step("a"), rec.step("b", After("a"), boom)}
 		},
-		wantStatus: StatusUnfinished,
-		wantText:   []string{"panic: boom"},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a"), failedB()},
+		wantStatus:   StatusUnfinished,
+		wantKinds:    map[string]*KindError{"b": ErrPanic},
+		wantAttempts: map[string]int{"b": 0},
+		wantText:     []string{"panic: boom"},
+		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB()),
 	}
 }
 
@@ -297,10 +316,12 @@ func predicateGoexitRow() runRow {
 
 			return []Option{rec.step("a"), rec.step("b", After("a"), leave)}
 		},
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{errGoexit},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a"), failedB()},
+		wantStatus:   StatusUnfinished,
+		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantAttempts: map[string]int{"b": 0},
+		wantErrs:     []error{errGoexit},
+		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB()),
 	}
 }
 
@@ -316,9 +337,19 @@ func siblingCancelRow() runRow {
 
 			return []Option{rec.step("a"), fails(After("a")), waits, rec.step("d", After("b", "c"))}
 		},
-		wantStatus:  StatusUnfinished,
-		wantErrs:    []error{errAlwaysFails, context.Canceled},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepUnknown, "d": StepNotStarted},
+		wantStatus:     StatusUnfinished,
+		wantKinds:      map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
+		wantAttempts:   map[string]int{"b": 3, "c": 1},
+		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
+		wantCauseText:  map[string]string{"c": quotedB},
+		wantTrail:      afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c"))),
+		wantErrs:       []error{errAlwaysFails, context.Canceled},
+		wantSteps: map[string]StepStatus{
+			"a": StepSucceeded,
+			"b": StepFailed,
+			"c": StepUnknown,
+			"d": StepNotStarted,
+		},
 		wantPending: []string{"c"},
 	}
 }
@@ -333,11 +364,14 @@ func conflictRow() runRow {
 				napping("c", "plaza", After("a")),
 			}
 		},
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{ErrConflict},
-		wantText:   []string{`"b"`, `"c"`},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
-		wantState:  tripState{Hotel: hotelRitz},
+		wantStatus:   StatusUnfinished,
+		wantKinds:    map[string]*KindError{"c": ErrConflict},
+		wantAttempts: map[string]int{"c": 1},
+		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c"))),
+		wantErrs:     []error{ErrConflict},
+		wantText:     []string{`"b"`, `"c"`},
+		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
+		wantState:    tripState{Hotel: hotelRitz},
 	}
 }
 
@@ -353,10 +387,13 @@ func stoppedBeforeStartRow() runRow {
 
 			return []Option{rec.step("a"), fails(After("a")), rec.step("c", After("a"), late)}
 		},
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{errAlwaysFails},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepNotStarted},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a"), startOf("b"), failedB()},
+		wantStatus:     StatusUnfinished,
+		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantAttempts:   map[string]int{"b": 3},
+		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
+		wantErrs:       []error{errAlwaysFails},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepNotStarted},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
 	}
 }
 
@@ -372,7 +409,7 @@ func rejectionRow() runRow {
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]StepStatus{"a": StepUnknown, "b": StepNotStarted},
 		wantPending: []string{"a"},
-		wantTrail:   []string{opened, startOf("a")},
+		wantTrail:   seq(opened, startOf("a")),
 		wantState:   tripState{Hotel: hotelRitz},
 	}
 }
@@ -385,13 +422,11 @@ func lateSiblingRow() runRow {
 		},
 		journal:     scripted(map[int]error{6: ErrConcurrentWriter}),
 		wantStatus:  StatusUnfinished,
+		wantTrail:   afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
 		wantPending: []string{"b", "c"},
-		wantTrail: []string{
-			opened, startOf("a"), doneOf("a"), startOf("b"), startOf("c"),
-		},
 	}
 }
 
@@ -403,12 +438,15 @@ func predicateAppendRow() runRow {
 
 			return []Option{rec.step("a"), rec.step("b", After("a"), boom)}
 		},
-		journal:    scripted(map[int]error{4: errJournalDown}),
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{ErrJournal, errJournalDown},
-		wantText:   []string{"panic: boom"},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepNotStarted},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a")},
+		journal:        scripted(map[int]error{4: errJournalDown}),
+		wantStatus:     StatusUnfinished,
+		wantKinds:      map[string]*KindError{"b": ErrPanic},
+		wantAttempts:   map[string]int{"b": 0},
+		wantUnrecorded: []string{"b"},
+		wantErrs:       []error{ErrJournal, errJournalDown},
+		wantText:       []string{"panic: boom"},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepNotStarted},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a")),
 	}
 }
 
@@ -423,7 +461,7 @@ func outcomeAppendRow() runRow {
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantSteps:   map[string]StepStatus{"a": StepUnknown},
 		wantPending: []string{"a"},
-		wantTrail:   []string{opened, startOf("a")},
+		wantTrail:   seq(opened, startOf("a")),
 		wantState:   tripState{Hotel: hotelRitz},
 	}
 }
@@ -434,12 +472,16 @@ func failureAppendRow() runRow {
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), fails(After("a"))}
 		},
-		journal:     scripted(map[int]error{5: errJournalDown}),
-		wantStatus:  StatusUnfinished,
-		wantErrs:    []error{errAlwaysFails, ErrJournal, errJournalDown},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
-		wantPending: []string{"b"},
-		wantTrail:   []string{opened, startOf("a"), doneOf("a"), startOf("b")},
+		journal:        scripted(map[int]error{5: errJournalDown}),
+		wantStatus:     StatusUnfinished,
+		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantAttempts:   map[string]int{"b": 3},
+		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
+		wantUnrecorded: []string{"b"},
+		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantPending:    []string{"b"},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b")),
 	}
 }
 
@@ -453,7 +495,7 @@ func intentAppendRow() runRow {
 		wantStatus: StatusUnfinished,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]StepStatus{"a": StepNotStarted},
-		wantTrail:  []string{opened},
+		wantTrail:  seq(opened),
 	}
 }
 
@@ -467,7 +509,7 @@ func predicateIntentRow() runRow {
 		wantStatus: StatusUnfinished,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepNotStarted},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a")},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a")),
 	}
 }
 
@@ -481,7 +523,7 @@ func finishedAppendRow() runRow {
 		wantStatus: StatusCompleted,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded},
-		wantTrail:  []string{opened, startOf("a"), doneOf("a")},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a")),
 		wantState:  tripState{Hotel: hotelRitz},
 	}
 }
@@ -494,6 +536,7 @@ func finishedRejectedRow() runRow {
 		},
 		journal:     scripted(map[int]error{4: fmt.Errorf("%w: other writer", ErrConcurrentWriter)}),
 		wantStatus:  StatusUnfinished,
+		wantTrail:   seq(opened, startOf("a"), doneOf("a")),
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]StepStatus{"a": StepSucceeded},
@@ -523,8 +566,9 @@ func Test_judge(t *testing.T) {
 		},
 		{
 			name:      "[Fail] When: the predicate panics ; Should: return a PanicError and no go",
-			pred:      func(*tripState) bool { panic("boom") },
+			pred:      func(*tripState) bool { panic(errBoom) },
 			wantPanic: true,
+			wantErrIs: errBoom,
 			wantLabel: ErrPanic,
 		},
 		{
@@ -553,14 +597,7 @@ func Test_judge(t *testing.T) {
 			var panicked *PanicError
 
 			assert.Equal(t, tt.wantPanic, errors.As(err, &panicked))
-
-			if tt.wantErrIs != nil {
-				require.ErrorIs(t, err, tt.wantErrIs)
-			}
-
-			if !tt.wantPanic && tt.wantErrIs == nil {
-				require.NoError(t, err)
-			}
+			require.ErrorIs(t, err, tt.wantErrIs)
 		})
 	}
 }

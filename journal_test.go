@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"maps"
 	"slices"
 	"strconv"
 	"sync"
@@ -185,8 +186,20 @@ func Test_memoryJournal_Append(t *testing.T) {
 				require.NoError(t, j.Append(t.Context(), &tt.prior[i]))
 			}
 
+			touched := make([]string, 0, len(tt.prior)+1)
+			for i := range tt.prior {
+				touched = append(touched, tt.prior[i].Execution)
+			}
+
+			if tt.event != nil {
+				touched = append(touched, tt.event.Execution)
+			}
+
 			err := j.Append(t.Context(), tt.event)
 			scribbleEvent(tt.event)
+
+			slices.Sort(touched)
+			assert.Equal(t, slices.Compact(touched), slices.Sorted(maps.Keys(tt.want)))
 
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantMsg, errText(err))

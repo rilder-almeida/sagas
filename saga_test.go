@@ -387,15 +387,7 @@ func Test_New(t *testing.T) {
 			t.Parallel()
 
 			err := tt.build()
-			if len(tt.wantErrs) == 0 {
-				require.NoError(t, err)
-
-				return
-			}
-
-			for _, want := range tt.wantErrs {
-				require.ErrorIs(t, err, want)
-			}
+			requireErrs(t, err, tt.wantErrs, nil)
 
 			for _, no := range tt.wantNoErrs {
 				require.NotErrorIs(t, err, no)
@@ -414,7 +406,7 @@ func requireText(t *testing.T, err error, contains, absent []string) {
 	}
 
 	for _, no := range absent {
-		require.NotContains(t, err.Error(), no)
+		require.NotContains(t, errText(err), no)
 	}
 }
 
@@ -453,16 +445,18 @@ func Test_WithJournal(t *testing.T) {
 			t.Parallel()
 
 			s, err := New[tripState]("trip", append([]Option{Step("a", okAction)}, tt.opts...)...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantJournal, s.journal)
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantJournal, sagaOf(s).journal)
 		})
 	}
+}
+
+func sagaOf(s *Saga[tripState]) Saga[tripState] {
+	if s == nil {
+		return Saga[tripState]{}
+	}
+
+	return *s
 }
 
 func middlewaresOf(rec *recorder, names []string) []Middleware {
@@ -530,20 +524,17 @@ func Test_WithMiddleware(t *testing.T) {
 			}
 
 			s, err := New[tripState]("trip", opts...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
+			require.ErrorIs(t, err, tt.wantErr)
 
 			if tt.changeAfterNew {
 				overwrite(mws)
 			}
 
-			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
-			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)
+			if s != nil {
+				require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
+				require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)
+			}
+
 			assert.Equal(t, tt.wantTrace, rec.snapshot())
 		})
 	}
@@ -581,14 +572,8 @@ func Test_WithRecoveryTimeout(t *testing.T) {
 			t.Parallel()
 
 			s, err := New[tripState]("trip", append([]Option{Step("a", okAction)}, tt.opts...)...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, s.recovery)
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.want, sagaOf(s).recovery)
 		})
 	}
 }

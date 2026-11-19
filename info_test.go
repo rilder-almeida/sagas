@@ -143,6 +143,7 @@ func Test_callMeta_closeAttempt(t *testing.T) {
 		meta         *callMeta
 		err          error
 		wantPrevious []error
+		wantCause    error
 	}{
 		{
 			name:         "[Success] When: the attempt failed ; Should: record it and clear the attempt",
@@ -155,6 +156,7 @@ func Test_callMeta_closeAttempt(t *testing.T) {
 			meta:         &callMeta{replaced: []error{errCall}, cause: errStop},
 			err:          errBoom,
 			wantPrevious: []error{errCall, errBoom},
+			wantCause:    errStop,
 		},
 		{
 			name:         "[Success] When: an earlier attempt is recorded ; Should: keep it first",
@@ -175,15 +177,41 @@ func Test_callMeta_closeAttempt(t *testing.T) {
 
 			tt.meta.closeAttempt(tt.err)
 
-			assertPrevious(t, tt.meta.history(), tt.wantPrevious)
+			history := tt.meta.history()
+			assertPrevious(t, history, tt.wantPrevious)
+			assertLastCause(t, history, tt.wantCause)
 
-			if tt.meta != nil {
-				require.NoError(t, tt.meta.cause)
-				assert.Nil(t, tt.meta.label)
-				assert.Empty(t, tt.meta.replaced)
-			}
+			left := metaOf(tt.meta)
+			require.NoError(t, left.cause)
+			assert.Nil(t, left.label)
+			assert.Empty(t, left.replaced)
 		})
 	}
+}
+
+func metaOf(m *callMeta) callMeta {
+	if m == nil {
+		return callMeta{}
+	}
+
+	return *m
+}
+
+func assertLastCause(t *testing.T, history []error, want error) {
+	t.Helper()
+
+	var last error
+	if len(history) > 0 {
+		last = history[len(history)-1]
+	}
+
+	if want == nil {
+		require.NotErrorIs(t, last, errStop)
+
+		return
+	}
+
+	require.ErrorIs(t, last, want)
 }
 
 func Test_callMeta_history(t *testing.T) {
@@ -222,24 +250,33 @@ func Test_callMeta_mark(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		meta *callMeta
-		want *KindError
+		name  string
+		meta  *callMeta
+		label *KindError
+		want  *KindError
 	}{
-		{name: "[Success] When: the meta has no label ; Should: set it", meta: &callMeta{}, want: ErrPanic},
-		{name: "[Success] When: the meta has a label ; Should: replace it", meta: &callMeta{label: ErrPanic}},
-		{name: "[Success] When: the meta is nil ; Should: change nothing", meta: nil, want: ErrPanic},
+		{
+			name: "[Success] When: the meta has no label ; Should: set it",
+			meta: &callMeta{}, label: ErrPanic, want: ErrPanic,
+		},
+		{
+			name: "[Success] When: the meta has a label ; Should: replace it",
+			meta: &callMeta{label: ErrPanic}, label: ErrConflict, want: ErrConflict,
+		},
+		{
+			name: "[Success] When: the meta has a label and the new one is nil ; Should: clear it",
+			meta: &callMeta{label: ErrPanic}, label: nil, want: nil,
+		},
+		{name: "[Success] When: the meta is nil ; Should: change nothing", meta: nil, label: ErrPanic, want: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tt.meta.mark(tt.want)
+			tt.meta.mark(tt.label)
 
-			if tt.meta != nil {
-				assert.Same(t, tt.want, tt.meta.label)
-			}
+			assert.Same(t, tt.want, metaOf(tt.meta).label)
 		})
 	}
 }
@@ -267,9 +304,7 @@ func Test_callMeta_replace(t *testing.T) {
 
 			tt.meta.replace(errA)
 
-			if tt.meta != nil {
-				assertPrevious(t, tt.meta.replaced, tt.want)
-			}
+			assertPrevious(t, metaOf(tt.meta).replaced, tt.want)
 		})
 	}
 }
@@ -293,9 +328,7 @@ func Test_callMeta_end(t *testing.T) {
 
 			tt.meta.end(errA)
 
-			if tt.meta != nil {
-				assert.Same(t, tt.want, tt.meta.cause)
-			}
+			assert.Equal(t, tt.want, metaOf(tt.meta).cause)
 		})
 	}
 }

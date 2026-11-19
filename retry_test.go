@@ -20,30 +20,32 @@ func Test_Permanent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		in          error
-		wantNil     bool
-		wantMessage string
+		name          string
+		in            error
+		wantPermanent bool
+		wantMessage   string
 	}{
 		{
-			name:        "[Success] When: the error is plain ; Should: mark it and keep it in the chain",
-			in:          errBoom,
-			wantMessage: errBoom.Error(),
+			name:          "[Success] When: the error is plain ; Should: mark it and keep it in the chain",
+			in:            errBoom,
+			wantPermanent: true,
+			wantMessage:   errBoom.Error(),
 		},
 		{
-			name:    "[Success] When: the error is nil ; Should: return nil",
-			in:      nil,
-			wantNil: true,
+			name: "[Success] When: the error is nil ; Should: return nil",
+			in:   nil,
 		},
 		{
-			name:        "[Success] When: the error is already permanent ; Should: stay permanent, same message",
-			in:          Permanent(errBoom),
-			wantMessage: errBoom.Error(),
+			name:          "[Success] When: the error is already permanent ; Should: stay permanent, same message",
+			in:            Permanent(errBoom),
+			wantPermanent: true,
+			wantMessage:   errBoom.Error(),
 		},
 		{
-			name:        "[Success] When: a permanent error is wrapped ; Should: still detect it",
-			in:          fmt.Errorf("x: %w", Permanent(errBoom)),
-			wantMessage: "x: boom",
+			name:          "[Success] When: a permanent error is wrapped ; Should: still detect it",
+			in:            fmt.Errorf("x: %w", Permanent(errBoom)),
+			wantPermanent: true,
+			wantMessage:   "x: boom",
 		},
 	}
 
@@ -52,15 +54,10 @@ func Test_Permanent(t *testing.T) {
 			t.Parallel()
 
 			got := Permanent(tt.in)
-			if tt.wantNil {
-				assert.NoError(t, got)
-
-				return
-			}
 
 			require.ErrorIs(t, got, tt.in)
-			assert.True(t, isPermanent(got))
-			assert.Equal(t, tt.wantMessage, got.Error())
+			assert.Equal(t, tt.wantPermanent, isPermanent(got))
+			assert.Equal(t, tt.wantMessage, errText(got))
 		})
 	}
 }

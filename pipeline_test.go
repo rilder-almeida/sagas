@@ -56,19 +56,19 @@ func Test_recoverer(t *testing.T) {
 	tests := []struct {
 		name      string
 		next      Handler
-		wantErr   error
+		wantBoom  bool
 		wantPanic bool
 		wantText  string
 	}{
 		{
-			name:    "[Success] When: the handler returns nil ; Should: return nil",
-			next:    func(context.Context) error { return nil },
-			wantErr: nil,
+			name: "[Success] When: the handler returns nil ; Should: return nil",
+			next: func(context.Context) error { return nil },
 		},
 		{
-			name:    "[Fail] When: the handler returns an error ; Should: pass the same error through",
-			next:    func(context.Context) error { return errBoom },
-			wantErr: errBoom,
+			name:     "[Fail] When: the handler returns an error ; Should: pass the same error through",
+			next:     func(context.Context) error { return errBoom },
+			wantBoom: true,
+			wantText: errBoom.Error(),
 		},
 		{
 			name:      "[Fail] When: the handler panics with a string ; Should: return a PanicError with the value",
@@ -79,6 +79,7 @@ func Test_recoverer(t *testing.T) {
 		{
 			name:      "[Fail] When: the handler panics with an error ; Should: return a PanicError with the value",
 			next:      func(context.Context) error { panic(errBoom) },
+			wantBoom:  true,
 			wantPanic: true,
 			wantText:  "sagas: panic: boom",
 		},
@@ -100,18 +101,12 @@ func Test_recoverer(t *testing.T) {
 
 			err := recoverer(tt.next)(t.Context())
 
-			if !tt.wantPanic {
-				require.Equal(t, tt.wantErr, err)
+			panicked, isPanic := errors.AsType[*PanicError](err)
 
-				return
-			}
-
-			var panicked *PanicError
-
-			require.ErrorAs(t, err, &panicked)
-			assert.Equal(t, tt.wantText, err.Error())
-			assert.NotEmpty(t, panicked.Stack)
-			assert.NotNil(t, panicked.Value)
+			assert.Equal(t, tt.wantText, errText(err))
+			assert.Equal(t, tt.wantBoom, errors.Is(err, errBoom))
+			assert.Equal(t, tt.wantPanic, isPanic)
+			assert.Equal(t, tt.wantPanic, isPanic && len(panicked.Stack) > 0 && panicked.Value != nil)
 		})
 	}
 }
@@ -1120,7 +1115,7 @@ func lostContext(next Handler) Handler {
 	return func(context.Context) error { return next(context.Background()) }
 }
 
-func markedRow(name string, mws []Middleware, label *KindError, wantErrs []error) pipelineRow {
+func markedRow(name string, mws []Middleware, corrupt bool, label *KindError, wantErrs []error) pipelineRow {
 	return pipelineRow{
 		name: name,
 		spec: actionSpec(),
@@ -1128,7 +1123,7 @@ func markedRow(name string, mws []Middleware, label *KindError, wantErrs []error
 			return mws
 		},
 		call:         failWith(errBoom),
-		corruptBase:  label == ErrInvalidState,
+		corruptBase:  corrupt,
 		wantKind:     outcomeFailure,
 		wantLabel:    label,
 		wantAttempts: 1,
@@ -1139,21 +1134,21 @@ func markedRow(name string, mws []Middleware, label *KindError, wantErrs []error
 func pipelineMarkedInvalidStateRow() pipelineRow {
 	return markedRow(
 		"[Fail] When: middleware wraps the decode failure ; Should: keep the marker and the ErrInvalidState label",
-		[]Middleware{marking}, ErrInvalidState, []error{ErrInvalidState},
+		[]Middleware{marking}, true, ErrInvalidState, []error{ErrInvalidState},
 	)
 }
 
 func pipelineMarkedLostContextRow() pipelineRow {
 	return markedRow(
 		"[Fail] When: middleware wraps a lost-context failure ; Should: keep the marker and the label",
-		[]Middleware{marking, lostContext}, ErrCallContextLost, []error{ErrCallContextLost},
+		[]Middleware{marking, lostContext}, false, ErrCallContextLost, []error{ErrCallContextLost},
 	)
 }
 
 func pipelineMarkedPanicRow() pipelineRow {
 	row := markedRow(
 		"[Fail] When: middleware wraps a panic ; Should: keep the marker and the ErrPanic label",
-		[]Middleware{marking}, ErrPanic, []error{errBoom},
+		[]Middleware{marking}, false, ErrPanic, []error{errBoom},
 	)
 	row.call = func(*recorder) func(context.Context, *pipeState) error {
 		return func(context.Context, *pipeState) error { panic(errBoom) }
@@ -1189,20 +1184,6 @@ func baseFor(t *testing.T, row *pipelineRow) snapshot[pipeState] {
 	return baseOf(t, row.base)
 }
 
-func assertCallErr(t *testing.T, got error, want []error) {
-	t.Helper()
-
-	if len(want) == 0 {
-		require.NoError(t, got)
-
-		return
-	}
-
-	for _, w := range want {
-		require.ErrorIs(t, got, w)
-	}
-}
-
 func assertCause(t *testing.T, got error, want []error, text string) {
 	t.Helper()
 
@@ -1227,17 +1208,13 @@ func assertPipelineErr(t *testing.T, tt *pipelineRow, got *outcome[pipeState]) {
 	assertCause(t, got.cause, tt.wantCause, tt.wantCauseTxt)
 	assertPrevious(t, got.previous, tt.wantPrevious)
 
-	if tt.wantPanic {
-		require.ErrorAs(t, got.err, new(*PanicError))
+	_, isPanic := errors.AsType[*PanicError](got.err)
+	assert.Equal(t, tt.wantPanic, isPanic)
+	assert.Equal(t, !tt.wantPanic && len(tt.wantErrs) == 0, got.err == nil, "error %v", got.err)
 
-		for _, w := range tt.wantErrs {
-			require.ErrorIs(t, got.err, w)
-		}
-
-		return
+	for _, w := range tt.wantErrs {
+		require.ErrorIs(t, got.err, w)
 	}
-
-	assertCallErr(t, got.err, tt.wantErrs)
 }
 
 func assertPrevious(t *testing.T, got, want []error) {

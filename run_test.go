@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -184,18 +185,15 @@ func Test_checkRun(t *testing.T) {
 			t.Parallel()
 
 			cfg, err := tt.run()
-			if len(tt.wantErrs) > 0 {
-				for _, want := range tt.wantErrs {
-					require.ErrorIs(t, err, want)
-				}
+			requireErrs(t, err, tt.wantErrs, nil)
+			requireText(t, err, tt.wantContains, nil)
 
-				requireText(t, err, tt.wantContains, nil)
+			if tt.wantExecution == nil {
 				assert.Empty(t, cfg.execution)
 
 				return
 			}
 
-			require.NoError(t, err)
 			assert.Regexp(t, tt.wantExecution, cfg.execution)
 			assert.Empty(t, checkName(cfg.execution))
 		})
@@ -547,7 +545,7 @@ type runRow struct {
 	wantPending        []string
 	wantOrder          [][2]string
 	wantZones          []StepZone
-	wantTrail          []string
+	wantTrail          [][]string
 	wantState          tripState
 }
 
@@ -717,15 +715,67 @@ func assertEvents(t *testing.T, res *Result, tt *runRow, journal Journal) {
 		assert.Equal(t, tt.wantExecution, res.Execution)
 	}
 
-	if tt.wantTrail != nil {
-		assert.Equal(t, tt.wantTrail, trail)
-	}
+	assertTrail(t, trail, tt.wantTrail)
 
 	assertZones(t, events[0].Steps, tt.wantZones)
 
 	if stored, ok := journal.(*memoryJournal); ok {
 		assert.Equal(t, events, stored.events(res.Execution))
 	}
+}
+
+func seq(events ...string) [][]string {
+	groups := make([][]string, len(events))
+	for i, e := range events {
+		groups[i] = []string{e}
+	}
+
+	return groups
+}
+
+func together(events ...string) [][]string {
+	return [][]string{events}
+}
+
+func afterA(rest ...[][]string) [][]string {
+	return slices.Concat(append([][][]string{seq(opened, startOf("a"), doneOf("a"))}, rest...)...)
+}
+
+func assertTrail(t *testing.T, got []string, want [][]string) {
+	t.Helper()
+
+	require.Len(t, got, len(slices.Concat(want...)), "trail %v", got)
+
+	at := 0
+	for _, group := range want {
+		chunk := got[at : at+len(group)]
+		at += len(group)
+
+		assert.ElementsMatch(t, group, chunk, "trail %v", got)
+
+		for _, e := range group {
+			step := stepOf(e)
+			assert.Equal(t, eventsOf(group, step), eventsOf(chunk, step), "step %q in trail %v", step, got)
+		}
+	}
+}
+
+func stepOf(event string) string {
+	_, step, _ := strings.Cut(event, " ")
+
+	return step
+}
+
+func eventsOf(trail []string, step string) []string {
+	var out []string
+
+	for _, e := range trail {
+		if stepOf(e) == step {
+			out = append(out, e)
+		}
+	}
+
+	return out
 }
 
 func assertZones(t *testing.T, got, want []StepZone) {
