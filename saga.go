@@ -22,6 +22,12 @@ var (
 // DefaultRecoveryTimeout is the recovery grace period used when WithRecoveryTimeout is zero or absent.
 const DefaultRecoveryTimeout = 5 * time.Minute
 
+const (
+	keyWithJournal         = "WithJournal"
+	keyWithMiddleware      = "WithMiddleware"
+	keyWithRecoveryTimeout = "WithRecoveryTimeout"
+)
+
 // Option configures a saga. Pass it to New.
 type Option func(*definition)
 
@@ -46,8 +52,6 @@ type Saga[S any] struct {
 type stepNode[S any] struct {
 	name         string
 	pred         func(*S) bool
-	retry        RetryPolicy
-	timeout      time.Duration
 	policy       CompensationFailurePolicy
 	parents      []int
 	children     []int
@@ -108,7 +112,7 @@ func build[S any](name string, d *definition, funcs []stepFuncs[S], g *graph) *S
 
 	for i := range d.steps {
 		sd := &d.steps[i]
-		n := stepNode[S]{name: sd.name, retry: sd.retry, timeout: sd.timeout, policy: sd.policy, parents: g.parents[i]}
+		n := stepNode[S]{name: sd.name, policy: sd.policy, parents: g.parents[i]}
 
 		if n.policy == "" {
 			n.policy = CompensationBlock
@@ -146,21 +150,13 @@ func (n *stepNode[S]) buildCalls(saga string, sd *stepDef, f *stepFuncs[S], midd
 }
 
 func checkSaga(name string, d *definition, nilOptions int) []error {
-	var rules []string
-
-	if name == "" {
-		rules = append(rules, "empty name")
-	}
-
-	if hasControl(name) {
-		rules = append(rules, "name holds a control character")
-	}
+	rules := checkName(name)
 
 	if len(d.steps) == 0 {
 		rules = append(rules, "saga has no steps")
 	}
 
-	if d.given["WithJournal"] > 0 && isNilValue(d.journal) {
+	if d.given[keyWithJournal] > 0 && isNilValue(d.journal) {
 		rules = append(rules, "WithJournal journal is nil")
 	}
 
@@ -190,7 +186,7 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 func WithJournal(j Journal) Option {
 	return func(d *definition) {
 		d.journal = j
-		d.given["WithJournal"]++
+		d.given[keyWithJournal]++
 	}
 }
 
@@ -198,7 +194,7 @@ func WithJournal(j Journal) Option {
 func WithMiddleware(mw ...Middleware) Option {
 	return func(d *definition) {
 		d.middleware = mw
-		d.given["WithMiddleware"]++
+		d.given[keyWithMiddleware]++
 	}
 }
 
@@ -207,7 +203,7 @@ func WithMiddleware(mw ...Middleware) Option {
 func WithRecoveryTimeout(t time.Duration) Option {
 	return func(d *definition) {
 		d.recovery = t
-		d.given["WithRecoveryTimeout"]++
+		d.given[keyWithRecoveryTimeout]++
 	}
 }
 

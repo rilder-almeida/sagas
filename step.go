@@ -8,7 +8,16 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
+)
+
+const (
+	keyCompensate            = "Compensate"
+	keyIf                    = "If"
+	keyTimeout               = "Timeout"
+	keyRetry                 = "Retry"
+	keyOnCompensationFailure = "OnCompensationFailure"
+	keyPivot                 = "Pivot"
+	keyAfter                 = "After"
 )
 
 // StepOption configures one step of a saga. Pass it to Step.
@@ -64,7 +73,7 @@ func Step[S any](name string, do func(context.Context, *S) error, opts ...StepOp
 func Compensate[S any](undo func(context.Context, *S) error) StepOption {
 	return func(s *stepDef) {
 		s.undo = undo
-		s.given["Compensate"]++
+		s.given[keyCompensate]++
 	}
 }
 
@@ -72,7 +81,7 @@ func Compensate[S any](undo func(context.Context, *S) error) StepOption {
 func If[S any](pred func(*S) bool) StepOption {
 	return func(s *stepDef) {
 		s.pred = pred
-		s.given["If"]++
+		s.given[keyIf]++
 	}
 }
 
@@ -80,7 +89,7 @@ func If[S any](pred func(*S) bool) StepOption {
 func Timeout(d time.Duration) StepOption {
 	return func(s *stepDef) {
 		s.timeout = d
-		s.given["Timeout"]++
+		s.given[keyTimeout]++
 	}
 }
 
@@ -88,7 +97,7 @@ func Timeout(d time.Duration) StepOption {
 func Retry(p RetryPolicy) StepOption {
 	return func(s *stepDef) {
 		s.retry = p
-		s.given["Retry"]++
+		s.given[keyRetry]++
 	}
 }
 
@@ -97,7 +106,7 @@ func Retry(p RetryPolicy) StepOption {
 func OnCompensationFailure(p CompensationFailurePolicy) StepOption {
 	return func(s *stepDef) {
 		s.policy = p
-		s.given["OnCompensationFailure"]++
+		s.given[keyOnCompensationFailure]++
 	}
 }
 
@@ -105,7 +114,7 @@ func OnCompensationFailure(p CompensationFailurePolicy) StepOption {
 func Pivot() StepOption {
 	return func(s *stepDef) {
 		s.pivot = true
-		s.given["Pivot"]++
+		s.given[keyPivot]++
 	}
 }
 
@@ -113,7 +122,7 @@ func Pivot() StepOption {
 func After(names ...string) StepOption {
 	return func(s *stepDef) {
 		s.after = names
-		s.given["After"]++
+		s.given[keyAfter]++
 	}
 }
 
@@ -142,15 +151,7 @@ func (f *stepFuncs[S]) convert(d *stepDef) []string {
 }
 
 func checkStep[S any](d *stepDef) (stepFuncs[S], []error) {
-	rules := []string{}
-
-	if d.name == "" {
-		rules = append(rules, "empty name")
-	}
-
-	if hasControl(d.name) {
-		rules = append(rules, "name holds a control character")
-	}
+	rules := checkName(d.name)
 
 	var funcs stepFuncs[S]
 
@@ -174,7 +175,25 @@ func checkStep[S any](d *stepDef) (stepFuncs[S], []error) {
 	return funcs, errs
 }
 
-func hasControl(name string) bool { return strings.ContainsFunc(name, unicode.IsControl) }
+const nameRule = `name may hold only ASCII letters, digits, "-", "_" and "." and must start with a letter or a digit`
+
+func checkName(name string) []string {
+	if name == "" {
+		return []string{"empty name"}
+	}
+
+	valid := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	}
+
+	for i := range len(name) {
+		if c := name[i]; !valid(c) && (i == 0 || !strings.ContainsRune("-_.", rune(c))) {
+			return []string{nameRule}
+		}
+	}
+
+	return nil
+}
 
 func convertFunc[F any](dst *F, v any, label string) []string {
 	if v == nil {
@@ -204,7 +223,7 @@ func checkPolicy(d *stepDef) []string {
 		rules = append(rules, fmt.Sprintf("unknown compensation failure policy %q", string(d.policy)))
 	}
 
-	if d.given["OnCompensationFailure"] > 0 && d.undo == nil {
+	if d.given[keyOnCompensationFailure] > 0 && d.undo == nil {
 		rules = append(rules, "OnCompensationFailure without Compensate")
 	}
 

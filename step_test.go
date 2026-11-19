@@ -359,17 +359,16 @@ func Test_Timeout(t *testing.T) {
 	tests := []struct {
 		name          string
 		opts          []StepOption
-		want          time.Duration
 		wantActionErr error
 		wantErr       error
 	}{
 		{
 			name: "[Success] When: a timeout shorter than the action is given ; Should: end it with DeadlineExceeded",
-			opts: []StepOption{Timeout(time.Second)}, want: time.Second, wantActionErr: context.DeadlineExceeded,
+			opts: []StepOption{Timeout(time.Second)}, wantActionErr: context.DeadlineExceeded,
 		},
 		{
 			name: "[Success] When: a timeout longer than the action is given ; Should: let the action finish",
-			opts: []StepOption{Timeout(time.Minute)}, want: time.Minute,
+			opts: []StepOption{Timeout(time.Minute)},
 		},
 		{
 			name: "[Success] When: the option is absent ; Should: store zero and let the action finish",
@@ -400,7 +399,6 @@ func Test_Timeout(t *testing.T) {
 				}
 
 				require.NoError(t, err)
-				assert.Equal(t, tt.want, s.steps[0].timeout)
 
 				action := callOnce(t, s.steps[0].action)
 				if tt.wantActionErr == nil {
@@ -423,13 +421,12 @@ func Test_Retry(t *testing.T) {
 	tests := []struct {
 		name         string
 		opts         []StepOption
-		want         RetryPolicy
 		wantAttempts int
 		wantErr      error
 	}{
 		{
 			name: "[Success] When: a policy is given ; Should: store it as given",
-			opts: []StepOption{Retry(given)}, want: given, wantAttempts: 5,
+			opts: []StepOption{Retry(given)}, wantAttempts: 5,
 		},
 		{
 			name:         "[Success] When: the option is absent ; Should: store zero and make the default attempts",
@@ -437,15 +434,15 @@ func Test_Retry(t *testing.T) {
 		},
 		{
 			name: "[Success] When: two attempts are given ; Should: stop an always failing action after two",
-			opts: []StepOption{Retry(RetryPolicy{Attempts: 2})}, want: RetryPolicy{Attempts: 2}, wantAttempts: 2,
+			opts: []StepOption{Retry(RetryPolicy{Attempts: 2})}, wantAttempts: 2,
 		},
 		{
 			name: "[Success] When: the zero policy is given ; Should: make the default attempts",
 			opts: []StepOption{Retry(RetryPolicy{})}, wantAttempts: DefaultAttempts,
 		},
 		{
-			name: "[Success] When: the multiplier is exactly one ; Should: accept it",
-			opts: []StepOption{Retry(RetryPolicy{Multiplier: 1})}, want: RetryPolicy{Multiplier: 1},
+			name:         "[Success] When: the multiplier is exactly one ; Should: accept it",
+			opts:         []StepOption{Retry(RetryPolicy{Multiplier: 1})},
 			wantAttempts: DefaultAttempts,
 		},
 		{
@@ -478,7 +475,6 @@ func Test_Retry(t *testing.T) {
 				}
 
 				require.NoError(t, err)
-				assert.Equal(t, tt.want, s.steps[0].retry)
 				assert.Equal(t, tt.wantAttempts, callOnce(t, s.steps[0].action).attempts)
 			})
 		})
@@ -627,9 +623,9 @@ func Test_checkStep(t *testing.T) {
 			wantContains: []string{"empty name"},
 		},
 		{
-			name:         "[Fail] When: the name holds a newline ; Should: report the control character",
+			name:         "[Fail] When: the name is outside the allowed set ; Should: reject it naming the step",
 			step:         Step("a\nb", okAction),
-			wantContains: []string{`step "a\nb"`, "name holds a control character"},
+			wantContains: []string{`step "a\nb"`, "name may hold only ASCII letters"},
 		},
 		{
 			name:         "[Fail] When: the action is nil ; Should: report it naming the step",
@@ -762,6 +758,57 @@ func Test_checkStep(t *testing.T) {
 			for _, want := range tt.wantContains {
 				assert.ErrorContains(t, err, want)
 			}
+		})
+	}
+}
+
+func Test_checkName(t *testing.T) {
+	t.Parallel()
+
+	const badRule = `name may hold only ASCII letters, digits, "-", "_" and "." ` +
+		"and must start with a letter or a digit"
+
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "[Success] When: the name is a plain word ; Should: accept it", input: "pay"},
+		{name: "[Success] When: the name holds a dash ; Should: accept it", input: "book-trip"},
+		{name: "[Success] When: the name holds an underscore ; Should: accept it", input: "hotel_v2"},
+		{name: "[Success] When: the name holds a dot ; Should: accept it", input: "a.b"},
+		{name: "[Success] When: the name starts with a digit ; Should: accept it", input: "9lives"},
+		{
+			name:  "[Fail] When: the name is empty ; Should: report an empty name",
+			input: "", want: []string{"empty name"},
+		},
+		{name: "[Fail] When: the name starts with a dash ; Should: reject it", input: "-a", want: []string{badRule}},
+		{name: "[Fail] When: the name starts with a dot ; Should: reject it", input: ".a", want: []string{badRule}},
+		{name: "[Fail] When: the name holds a space ; Should: reject it", input: "a b", want: []string{badRule}},
+		{name: "[Fail] When: the name holds a slash ; Should: reject it", input: "a/b", want: []string{badRule}},
+		{
+			name:  "[Fail] When: the name holds a non-ASCII letter ; Should: reject it",
+			input: "café", want: []string{badRule},
+		},
+		{name: "[Fail] When: the name holds a double quote ; Should: reject it", input: `a"b`, want: []string{badRule}},
+		{name: "[Fail] When: the name holds a hash ; Should: reject it", input: "a#b", want: []string{badRule}},
+		{name: "[Fail] When: the name holds a backtick ; Should: reject it", input: "a`b", want: []string{badRule}},
+		{name: "[Fail] When: the name holds a newline ; Should: reject it", input: "a\nb", want: []string{badRule}},
+		{
+			name:  "[Fail] When: the name holds a no-break space ; Should: reject it",
+			input: "a b", want: []string{badRule},
+		},
+		{
+			name:  "[Fail] When: the name holds invalid UTF-8 ; Should: reject it",
+			input: "a\xffb", want: []string{badRule},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, checkName(tt.input))
 		})
 	}
 }
