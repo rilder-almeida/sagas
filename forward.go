@@ -99,7 +99,7 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 
 	for {
 		if r.stopped() {
-			cancel(r.errs()[0])
+			cancel(r.stopReason)
 		} else {
 			r.launch(stepCtx, grace, c)
 		}
@@ -198,7 +198,7 @@ func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
 func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, error) {
 	view, err := copyState(base)
 	if err != nil {
-		return false, err
+		return false, kinded(ErrInvalidState, err)
 	}
 
 	var ok bool
@@ -269,7 +269,12 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 
 	changed, err := r.store.commit(name, f.base, *f.out.state)
 	if err != nil {
-		r.fail(grace, i, outcome[S]{kind: outcomeFailure, attempts: f.out.attempts, err: err})
+		label := ErrInvalidState
+		if errors.Is(err, ErrConflict) {
+			label = ErrConflict
+		}
+
+		r.fail(grace, i, outcome[S]{kind: outcomeFailure, attempts: f.out.attempts, err: err, label: label})
 
 		return
 	}
@@ -297,13 +302,19 @@ func (r *runner[S]) refuse(ctx context.Context, i int, out outcome[S]) {
 
 func (r *runner[S]) note(i int, out outcome[S]) Event {
 	name := r.saga.steps[i].name
+
+	if ce, ok := errors.AsType[*callError](out.err); ok {
+		out.err, out.label = ce.err, ce.kind
+	}
+
 	failure := &Error{
-		Kind: kindOf(out.kind, out.err), Step: name, Attempts: out.attempts,
+		Kind: kindOf(out.kind, out.label), Step: name, Attempts: out.attempts,
 		Err: out.err, Cause: out.cause, Previous: out.previous,
 	}
 	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: eventErrorOf(failure)}
 	r.runs[i] = stepRun{status: runFailed, attempts: out.attempts, err: failure}
 	r.failures = append(r.failures, failure)
+	r.stop(fmt.Errorf("%w: step %q", errStepStopped, name))
 
 	if out.kind == outcomeUnknown {
 		e.Kind = EventStepUnknown

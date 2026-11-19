@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,9 +17,11 @@ import (
 )
 
 const (
-	nameFailed  = "failed"
-	nameUnknown = "unknown"
-	keyStep     = "step"
+	nameFailed   = "failed"
+	nameUnknown  = "unknown"
+	keyStep      = "step"
+	namePanic    = "panic"
+	nameConflict = "conflict"
 )
 
 var errLookalike = errors.New("sagas: state conflict")
@@ -420,46 +423,34 @@ func Test_kindOf(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		kind outcomeKind
-		err  error
-		want *KindError
+		name  string
+		kind  outcomeKind
+		label *KindError
+		want  *KindError
 	}{
 		{
-			name: "[Success] When: a caller error failed ; Should: be ErrFailed",
-			kind: outcomeFailure, err: errAlwaysFails, want: ErrFailed,
+			name: "[Success] When: a caller error failed and no label is set ; Should: be ErrFailed",
+			kind: outcomeFailure, want: ErrFailed,
 		},
 		{
-			name: "[Success] When: a caller error left the outcome unknown ; Should: be ErrUnknown",
-			kind: outcomeUnknown, err: context.Canceled, want: ErrUnknown,
+			name: "[Success] When: the outcome is unknown and no label is set ; Should: be ErrUnknown",
+			kind: outcomeUnknown, want: ErrUnknown,
 		},
 		{
-			name: "[Success] When: the call panicked ; Should: be ErrPanic",
-			kind: outcomeUnknown, err: &PanicError{Value: "boom"}, want: ErrPanic,
+			name: "[Success] When: the package labelled a panic ; Should: be ErrPanic",
+			kind: outcomeUnknown, label: ErrPanic, want: ErrPanic,
 		},
 		{
-			name: "[Success] When: the panic value is a package Kind ; Should: still be ErrPanic",
-			kind: outcomeUnknown, err: &PanicError{Value: ErrConflict}, want: ErrPanic,
+			name: "[Success] When: the package labelled a commit conflict ; Should: be ErrConflict",
+			kind: outcomeFailure, label: ErrConflict, want: ErrConflict,
 		},
 		{
-			name: "[Success] When: the commit conflicted ; Should: be ErrConflict",
-			kind: outcomeFailure, err: fmt.Errorf("%w: field", ErrConflict), want: ErrConflict,
+			name: "[Success] When: the package labelled middleware that skipped the call ; Should: be ErrCallNotRun",
+			kind: outcomeFailure, label: ErrCallNotRun, want: ErrCallNotRun,
 		},
 		{
-			name: "[Success] When: the state does not encode ; Should: be ErrInvalidState",
-			kind: outcomeFailure, err: Permanent(fmt.Errorf("%w: NaN", ErrInvalidState)), want: ErrInvalidState,
-		},
-		{
-			name: "[Success] When: middleware skipped the call ; Should: be ErrCallNotRun",
-			kind: outcomeFailure, err: Permanent(ErrCallNotRun), want: ErrCallNotRun,
-		},
-		{
-			name: "[Success] When: middleware left the call running ; Should: be ErrCallUnfinished",
-			kind: outcomeUnknown, err: Permanent(ErrCallUnfinished), want: ErrCallUnfinished,
-		},
-		{
-			name: "[Success] When: the journal failed ; Should: be ErrJournal",
-			kind: outcomeFailure, err: fmt.Errorf("%w: down", ErrJournal), want: ErrJournal,
+			name: "[Success] When: the package labelled a call left running ; Should: be ErrCallUnfinished",
+			kind: outcomeUnknown, label: ErrCallUnfinished, want: ErrCallUnfinished,
 		},
 	}
 
@@ -467,8 +458,66 @@ func Test_kindOf(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Same(t, tt.want, kindOf(tt.kind, tt.err))
+			assert.Same(t, tt.want, kindOf(tt.kind, tt.label))
 		})
+	}
+}
+
+func assertFailures(t *testing.T, tt *runRow, got *ran) {
+	t.Helper()
+
+	for step, kind := range tt.wantKinds {
+		se := failureOf(t, got.err, step)
+		assert.Same(t, kind, se.Kind)
+		require.ErrorIs(t, se, kind)
+	}
+
+	for step, kind := range tt.wantNotKinds {
+		require.NotErrorIs(t, failureOf(t, got.err, step), kind)
+	}
+
+	for step, attempts := range tt.wantAttempts {
+		assert.Equal(t, attempts, failureOf(t, got.err, step).Attempts)
+		assert.Equal(t, attempts, resultOf(t, got, step).Attempts)
+	}
+
+	for step, want := range tt.wantPreviousIs {
+		assertPrevious(t, failureOf(t, got.err, step).Previous, want)
+	}
+
+	for step, cause := range tt.wantCauseIs {
+		require.ErrorIs(t, failureOf(t, got.err, step).Cause, cause)
+	}
+
+	for step, cause := range tt.wantNotCauseIs {
+		require.NotErrorIs(t, failureOf(t, got.err, step).Cause, cause)
+	}
+
+	for step, text := range tt.wantCauseText {
+		require.Error(t, failureOf(t, got.err, step).Cause)
+		assert.Contains(t, failureOf(t, got.err, step).Cause.Error(), text)
+	}
+
+	assertEventErrors(t, tt, got)
+
+	for text, count := range tt.wantTextCount {
+		assert.Equal(t, count, strings.Count(got.err.Error(), text))
+	}
+}
+
+func assertEventErrors(t *testing.T, tt *runRow, got *ran) {
+	t.Helper()
+
+	for step, kind := range tt.wantEventKinds {
+		assert.Equal(t, kind, resultOf(t, got, step).Err.Kind)
+	}
+
+	for step, text := range tt.wantEventCauseText {
+		assert.Contains(t, resultOf(t, got, step).Err.Cause, text)
+	}
+
+	for step, n := range tt.wantEventPrevLn {
+		assert.Len(t, resultOf(t, got, step).Err.Previous, n)
 	}
 }
 
@@ -516,6 +565,9 @@ func errorRows() []runRow {
 		droppedPredicateRow(),
 		droppedOutcomeRow(),
 		callerCauseRow(),
+		callerConflictRow(),
+		callerJournalRow(),
+		callerPanicRow(),
 	}
 }
 
@@ -525,21 +577,14 @@ func failedKindRow() runRow {
 		steps: func(rec *recorder) []Option {
 			return []Option{rec.step("a"), fails(After("a"))}
 		},
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{errAlwaysFails, ErrFailed},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			se := failureOf(t, got.err, "b")
-			assert.Same(t, ErrFailed, se.Kind)
-			assert.Equal(t, 3, se.Attempts)
-			assert.Len(t, se.Previous, 2)
-
-			event := resultOf(t, got, "b").Err
-			assert.Equal(t, nameFailed, event.Kind)
-			assert.Len(t, event.Previous, 2)
-		},
+		wantStatus:      StatusUnfinished,
+		wantErrs:        []error{errAlwaysFails, ErrFailed},
+		wantSteps:       map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantKinds:       map[string]*KindError{"b": ErrFailed},
+		wantAttempts:    map[string]int{"b": 3},
+		wantPreviousIs:  map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
+		wantEventKinds:  map[string]string{"b": nameFailed},
+		wantEventPrevLn: map[string]int{"b": 2},
 	}
 }
 
@@ -551,16 +596,12 @@ func panicKindRow() runRow {
 				panic(errAlwaysFails)
 			}, After("a"))}
 		},
-		wantStatus:  StatusUnfinished,
-		wantErrs:    []error{errAlwaysFails, ErrPanic},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
-		wantPending: []string{"b"},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			assert.Same(t, ErrPanic, failureOf(t, got.err, "b").Kind)
-			assert.Equal(t, "panic", resultOf(t, got, "b").Err.Kind)
-		},
+		wantStatus:     StatusUnfinished,
+		wantErrs:       []error{errAlwaysFails, ErrPanic},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantPending:    []string{"b"},
+		wantKinds:      map[string]*KindError{"b": ErrPanic},
+		wantEventKinds: map[string]string{"b": namePanic},
 	}
 }
 
@@ -574,22 +615,18 @@ func conflictKindRow() runRow {
 				napping("c", "plaza", After("a")),
 			}
 		},
-		wantStatus: StatusUnfinished,
-		wantErrs:   []error{ErrConflict},
-		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
-		wantState:  tripState{Hotel: hotelRitz},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			assert.Same(t, ErrConflict, failureOf(t, got.err, "c").Kind)
-			assert.Equal(t, "conflict", resultOf(t, got, "c").Err.Kind)
-		},
+		wantStatus:     StatusUnfinished,
+		wantErrs:       []error{ErrConflict},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
+		wantState:      tripState{Hotel: hotelRitz},
+		wantKinds:      map[string]*KindError{"c": ErrConflict},
+		wantEventKinds: map[string]string{"c": nameConflict},
 	}
 }
 
 func siblingCauseRow() runRow {
 	return runRow{
-		name: "[Fail] When: a step fails beside a running sibling ; Should: give the sibling the stopper as its cause",
+		name: "[Fail] When: a step fails beside a running sibling ; Should: name the stopper once, without its error",
 		steps: func(rec *recorder) []Option {
 			waits := Step("c", func(ctx context.Context, _ *tripState) error {
 				<-ctx.Done()
@@ -599,20 +636,16 @@ func siblingCauseRow() runRow {
 
 			return []Option{rec.step("a"), fails(After("a")), waits}
 		},
-		wantStatus:  StatusUnfinished,
-		wantErrs:    []error{errAlwaysFails, context.Canceled},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepUnknown},
-		wantPending: []string{"c"},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			sibling := failureOf(t, got.err, "c")
-			assert.Same(t, ErrUnknown, sibling.Kind)
-			require.ErrorIs(t, sibling.Cause, errAlwaysFails)
-			assert.Contains(t, sibling.Cause.Error(), quotedB)
-
-			assert.NotEmpty(t, resultOf(t, got, "c").Err.Cause)
-		},
+		wantStatus:         StatusUnfinished,
+		wantErrs:           []error{errAlwaysFails, context.Canceled},
+		wantSteps:          map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepUnknown},
+		wantPending:        []string{"c"},
+		wantKinds:          map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
+		wantNotKinds:       map[string]*KindError{"c": ErrFailed},
+		wantNotCauseIs:     map[string]error{"c": errAlwaysFails},
+		wantCauseText:      map[string]string{"c": quotedB},
+		wantEventCauseText: map[string]string{"c": quotedB},
+		wantTextCount:      map[string]int{`step "b" failed`: 1},
 	}
 }
 
@@ -632,22 +665,13 @@ func goexitHistoryRow() runRow {
 
 			return []Option{rec.step("a"), leaves}
 		},
-		wantStatus:  StatusUnfinished,
-		wantErrs:    []error{errGoexit, errFirst},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
-		wantPending: []string{"b"},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			se := failureOf(t, got.err, "b")
-			assert.Same(t, ErrUnknown, se.Kind)
-			assert.Equal(t, 2, se.Attempts)
-			require.Len(t, se.Previous, 1)
-			require.ErrorIs(t, se.Previous[0], errFirst)
-			require.NotErrorIs(t, se.Err, errFirst)
-
-			assert.Equal(t, 2, resultOf(t, got, "b").Attempts)
-		},
+		wantStatus:     StatusUnfinished,
+		wantErrs:       []error{errGoexit, errFirst},
+		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantPending:    []string{"b"},
+		wantKinds:      map[string]*KindError{"b": ErrUnknown},
+		wantAttempts:   map[string]int{"b": 2},
+		wantPreviousIs: map[string][]error{"b": {errFirst}},
 	}
 }
 
@@ -671,11 +695,7 @@ func droppedPredicateRow() runRow {
 		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepNotStarted},
 		wantPending: []string{"b"},
 		wantTrail:   []string{opened, startOf("a"), doneOf("a"), startOf("b")},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			assert.Same(t, ErrPanic, failureOf(t, got.err, "c").Kind)
-		},
+		wantKinds:   map[string]*KindError{"c": ErrPanic},
 	}
 }
 
@@ -698,11 +718,7 @@ func droppedOutcomeRow() runRow {
 		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
 		wantPending: []string{"b", "c"},
 		wantTrail:   []string{opened, startOf("a"), doneOf("a"), startOf("b"), startOf("c")},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			assert.Same(t, ErrFailed, failureOf(t, got.err, "c").Kind)
-		},
+		wantKinds:   map[string]*KindError{"c": ErrFailed},
 	}
 }
 
@@ -724,14 +740,48 @@ func callerCauseRow() runRow {
 		wantErrs:    []error{errStop, context.Canceled},
 		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
 		wantPending: []string{"b"},
-		verify: func(t *testing.T, got *ran) {
-			t.Helper()
-
-			se := failureOf(t, got.err, "b")
-			assert.Same(t, ErrUnknown, se.Kind)
-			require.ErrorIs(t, se.Cause, errStop)
-		},
+		wantKinds:   map[string]*KindError{"b": ErrUnknown},
+		wantCauseIs: map[string]error{"b": errStop},
 	}
+}
+
+func callerKindRow(name string, wrapped error, status StepStatus, kind *KindError, pending []string) runRow {
+	return runRow{
+		name: name,
+		steps: func(rec *recorder) []Option {
+			wraps := Step("b", func(context.Context, *tripState) error {
+				return fmt.Errorf("nested run: %w", wrapped)
+			}, After("a"), Retry(RetryPolicy{Attempts: 1}))
+
+			return []Option{rec.step("a"), wraps}
+		},
+		wantStatus:  StatusUnfinished,
+		wantPending: pending,
+		wantErrs:    []error{wrapped},
+		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": status},
+		wantKinds:   map[string]*KindError{"b": kind},
+	}
+}
+
+func callerConflictRow() runRow {
+	return callerKindRow(
+		"[Fail] When: an action returns an error that wraps ErrConflict ; Should: report ErrFailed, not ErrConflict",
+		ErrConflict, StepFailed, ErrFailed, nil,
+	)
+}
+
+func callerJournalRow() runRow {
+	return callerKindRow(
+		"[Fail] When: an action returns an error that wraps ErrJournal ; Should: report ErrFailed, not ErrJournal",
+		ErrJournal, StepFailed, ErrFailed, nil,
+	)
+}
+
+func callerPanicRow() runRow {
+	return callerKindRow(
+		"[Fail] When: an action returns an error that wraps a PanicError ; Should: report ErrUnknown, not ErrPanic",
+		&PanicError{Value: "nested"}, StepUnknown, ErrUnknown, []string{"b"},
+	)
 }
 
 func Test_callError_Error(t *testing.T) {

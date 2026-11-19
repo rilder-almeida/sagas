@@ -87,6 +87,7 @@ type runner[S any] struct {
 	events      []Event
 	journalErrs []error
 	rejected    error
+	stopReason  error
 	store       *store[S]
 	runs        []stepRun
 	failures    []*Error
@@ -104,12 +105,14 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	if err := r.journal.Append(ctx, &stored); err != nil {
 		if errors.Is(err, ErrExecutionExists) || errors.Is(err, ErrConcurrentWriter) {
 			r.rejected = err
+			r.stop(errRejectionStopped)
 
 			return err
 		}
 
 		err = fmt.Errorf("%w: %w", ErrJournal, err)
 		r.journalErrs = append(r.journalErrs, err)
+		r.stop(errJournalStopped)
 
 		return err
 	}
@@ -118,6 +121,12 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	r.events = append(r.events, stored)
 
 	return nil
+}
+
+func (r *runner[S]) stop(reason error) {
+	if r.stopReason == nil {
+		r.stopReason = reason
+	}
 }
 
 func (r *runner[S]) errs() []error {

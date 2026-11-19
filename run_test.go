@@ -519,26 +519,36 @@ func (r *recorder) when(verdict bool, name string) StepOption {
 }
 
 type runRow struct {
-	name          string
-	steps         func(rec *recorder) []Option
-	journal       func() Journal
-	runOpts       []RunOption
-	runs          int
-	concurrent    bool
-	wantStatus    Status
-	wantErrs      []error
-	wantNotErrs   []error
-	wantText      []string
-	cancelAfter   time.Duration
-	cancelCause   error
-	verify        func(t *testing.T, got *ran)
-	wantExecution string
-	wantSteps     map[string]StepStatus
-	wantPending   []string
-	wantOrder     [][2]string
-	wantZones     []StepZone
-	wantTrail     []string
-	wantState     tripState
+	name               string
+	steps              func(rec *recorder) []Option
+	journal            func() Journal
+	runOpts            []RunOption
+	runs               int
+	concurrent         bool
+	wantStatus         Status
+	wantErrs           []error
+	wantNotErrs        []error
+	wantText           []string
+	cancelAfter        time.Duration
+	cancelCause        error
+	wantKinds          map[string]*KindError
+	wantNotKinds       map[string]*KindError
+	wantAttempts       map[string]int
+	wantPreviousIs     map[string][]error
+	wantCauseIs        map[string]error
+	wantNotCauseIs     map[string]error
+	wantCauseText      map[string]string
+	wantEventKinds     map[string]string
+	wantEventCauseText map[string]string
+	wantEventPrevLn    map[string]int
+	wantTextCount      map[string]int
+	wantExecution      string
+	wantSteps          map[string]StepStatus
+	wantPending        []string
+	wantOrder          [][2]string
+	wantZones          []StepZone
+	wantTrail          []string
+	wantState          tripState
 }
 
 func Test_Saga_Run(t *testing.T) {
@@ -588,9 +598,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, journal Journal) {
 	assertSteps(t, res, tt.wantSteps)
 	assertEvents(t, res, tt, journal)
 
-	if tt.verify != nil {
-		tt.verify(t, got)
-	}
+	assertFailures(t, tt, got)
 }
 
 type ran struct {

@@ -292,6 +292,19 @@ func scriptedHandler(script []error, cancel context.CancelFunc, cancelOnCall int
 	}
 }
 
+func assertRetryErr(t *testing.T, err, want error, previous []error) {
+	t.Helper()
+
+	if want == nil {
+		require.NoError(t, err)
+
+		return
+	}
+
+	require.ErrorIs(t, err, want)
+	assertPrevious(t, asCallError(err).previous, previous)
+}
+
 func Test_withRetry(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +319,8 @@ func Test_withRetry(t *testing.T) {
 		wantCalls    int
 		wantElapsed  time.Duration
 		wantErr      error
+		wantPrevious []error
+		wantMeta     []error
 	}{
 		{
 			name:      "[Success] When: the first call succeeds ; Should: call once",
@@ -319,14 +334,17 @@ func Test_withRetry(t *testing.T) {
 			script:      []error{errA, errB, nil},
 			wantCalls:   3,
 			wantElapsed: 600 * time.Millisecond,
+			wantMeta:    []error{errA, errB},
 		},
 		{
-			name:        "[Fail] When: every attempt fails ; Should: stop at the limit with the last error",
-			policy:      fast,
-			script:      []error{errA, errB, errC},
-			wantCalls:   3,
-			wantElapsed: 600 * time.Millisecond,
-			wantErr:     errC,
+			name:         "[Fail] When: every attempt fails ; Should: stop at the limit with the last error",
+			policy:       fast,
+			script:       []error{errA, errB, errC},
+			wantCalls:    3,
+			wantElapsed:  600 * time.Millisecond,
+			wantErr:      errC,
+			wantPrevious: []error{errA, errB},
+			wantMeta:     []error{errA, errB},
 		},
 		{
 			name: "[Success] When: the policy is fully set ; Should: follow its numbers",
@@ -340,6 +358,7 @@ func Test_withRetry(t *testing.T) {
 			script:      []error{errA, errA, errA, nil},
 			wantCalls:   4,
 			wantElapsed: 9 * time.Second,
+			wantMeta:    []error{errA, errA, errA},
 		},
 		{
 			name:      "[Fail] When: the error is permanent ; Should: stop after one call",
@@ -361,6 +380,7 @@ func Test_withRetry(t *testing.T) {
 			script:      []error{errAttemptLimit, nil},
 			wantCalls:   2,
 			wantElapsed: 1200 * time.Millisecond,
+			wantMeta:    []error{context.DeadlineExceeded},
 		},
 		{
 			name:         "[Fail] When: the parent is done after attempt 1 ; Should: stop after one call",
@@ -393,7 +413,9 @@ func Test_withRetry(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(withMeta(t.Context(), &callMeta{execution: infoExecution}))
+				meta := &callMeta{execution: infoExecution}
+
+				ctx, cancel := context.WithCancel(withMeta(t.Context(), meta))
 				defer cancel()
 
 				if tt.cancelAt > 0 {
@@ -405,12 +427,8 @@ func Test_withRetry(t *testing.T) {
 				start := time.Now()
 				err := withRetry(tt.policy)(scriptedHandler(tt.script, cancel, tt.cancelOnCall, &seen))(ctx)
 
-				if tt.wantErr == nil {
-					require.NoError(t, err)
-				} else {
-					require.ErrorIs(t, err, tt.wantErr)
-				}
-
+				assertRetryErr(t, err, tt.wantErr, tt.wantPrevious)
+				assertPrevious(t, meta.previous, tt.wantMeta)
 				assert.Len(t, seen, tt.wantCalls)
 				assert.Equal(t, tt.wantElapsed, time.Since(start))
 

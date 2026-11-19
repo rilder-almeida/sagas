@@ -440,7 +440,6 @@ func pipelineFailureRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 3,
 		wantErrs:     []error{errBoom},
-		wantNoCause:  true,
 		wantPrevious: []error{errBoom, errBoom},
 	}
 }
@@ -471,7 +470,6 @@ func pipelineHistoryRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 3,
 		wantErrs:     []error{errThird},
-		wantNoCause:  true,
 		wantPrevious: []error{errFirst, errSecond},
 	}
 }
@@ -500,7 +498,6 @@ func pipelineReplacedRow() pipelineRow {
 		wantKind:     outcomeFailure,
 		wantAttempts: 1,
 		wantErrs:     []error{errReplaced},
-		wantNoCause:  true,
 		wantPrevious: []error{errBoom},
 	}
 }
@@ -920,7 +917,6 @@ type pipelineRow struct {
 	wantTrace    []string
 	wantCause    []error
 	wantCauseTxt string
-	wantNoCause  bool
 	wantPrevious []error
 	cancelAfter  time.Duration
 	cancelCause  error
@@ -1148,6 +1144,10 @@ func assertCallErr(t *testing.T, got error, want []error) {
 func assertCause(t *testing.T, got error, want []error, text string) {
 	t.Helper()
 
+	if len(want) == 0 && text == "" {
+		require.NoError(t, got)
+	}
+
 	for _, w := range want {
 		require.ErrorIs(t, got, w)
 	}
@@ -1160,10 +1160,6 @@ func assertCause(t *testing.T, got error, want []error, text string) {
 
 func assertPipelineErr(t *testing.T, tt *pipelineRow, got *outcome[pipeState]) {
 	t.Helper()
-
-	if tt.wantNoCause {
-		require.NoError(t, got.cause)
-	}
 
 	assertCause(t, got.cause, tt.wantCause, tt.wantCauseTxt)
 	assertPrevious(t, got.previous, tt.wantPrevious)

@@ -30,56 +30,114 @@ func (k *KindError) Name() string {
 
 var (
 	// ErrInvalidStep is returned by New for a step or saga option that breaks a rule of the definition.
-	ErrInvalidStep = &KindError{name: "invalid_step", message: "sagas: invalid step"}
+	ErrInvalidStep = &KindError{
+		name:    "invalid_step",
+		message: "sagas: invalid step",
+	}
 	// ErrDuplicateStep is returned by New when two steps share a name.
-	ErrDuplicateStep = &KindError{name: "duplicate_step", message: "sagas: duplicate step"}
+	ErrDuplicateStep = &KindError{
+		name:    "duplicate_step",
+		message: "sagas: duplicate step",
+	}
 	// ErrUnknownDependency is returned by New when a step depends on a step that does not exist.
-	ErrUnknownDependency = &KindError{name: "unknown_dependency", message: "sagas: unknown dependency"}
+	ErrUnknownDependency = &KindError{
+		name:    "unknown_dependency",
+		message: "sagas: unknown dependency",
+	}
 	// ErrCycle is returned by New when the steps depend on each other in a loop.
-	ErrCycle = &KindError{name: "cycle", message: "sagas: cycle"}
+	ErrCycle = &KindError{
+		name:    "cycle",
+		message: "sagas: cycle",
+	}
 	// ErrJournal wraps an Append error that is not a rejection; a Journal returns its own failures as is.
-	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
+	ErrJournal = &KindError{
+		name:    "journal",
+		message: "sagas: journal failure",
+	}
 	// ErrExecutionExists is returned when the journal rejects the first event because the execution already exists.
-	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}
+	ErrExecutionExists = &KindError{
+		name:    "execution_exists",
+		message: "sagas: execution exists",
+	}
 	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
-	ErrConcurrentWriter = &KindError{name: "concurrent_writer", message: "sagas: concurrent writer"}
+	ErrConcurrentWriter = &KindError{
+		name:    "concurrent_writer",
+		message: "sagas: concurrent writer",
+	}
 	// ErrInvalidState is returned when the state type or a state value cannot round-trip through its JSON encoding.
-	ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
+	ErrInvalidState = &KindError{
+		name:    "invalid_state",
+		message: "sagas: invalid state",
+	}
 	// ErrConflict is returned when a step changes a field that another step committed after the step's snapshot.
-	ErrConflict = &KindError{name: "conflict", message: "sagas: state conflict"}
+	ErrConflict = &KindError{
+		name:    "conflict",
+		message: "sagas: state conflict",
+	}
 	// ErrCompensated is returned when a run fails and every started compensable step is compensated.
-	ErrCompensated = &KindError{name: "compensated", message: "sagas: compensated"}
+	ErrCompensated = &KindError{
+		name:    "compensated",
+		message: "sagas: compensated",
+	}
 	// ErrCompensationFailed is returned when a run fails and at least one compensation does not succeed.
-	ErrCompensationFailed = &KindError{name: "compensation_failed", message: "sagas: compensation failed"}
+	ErrCompensationFailed = &KindError{
+		name:    "compensation_failed",
+		message: "sagas: compensation failed",
+	}
 	// ErrIncomplete is returned when a run cannot finish forward: the pivot is unknown or forward-only work is undone.
-	ErrIncomplete = &KindError{name: "incomplete", message: "sagas: incomplete"}
+	ErrIncomplete = &KindError{
+		name:    "incomplete",
+		message: "sagas: incomplete",
+	}
 	// ErrInvalidRun is returned by Run for a run option or an execution ID that breaks a rule of the run input.
-	ErrInvalidRun = &KindError{name: "invalid_run", message: "sagas: invalid run"}
+	ErrInvalidRun = &KindError{
+		name:    "invalid_run",
+		message: "sagas: invalid run",
+	}
 	// ErrCallNotRun is the error of a call that middleware returned from without running the action or compensation.
-	ErrCallNotRun = &KindError{name: "call_not_run", message: "sagas: middleware returned without running the call"}
+	ErrCallNotRun = &KindError{
+		name:    "call_not_run",
+		message: "sagas: middleware returned without running the call",
+	}
 	// ErrCallUnfinished is the error of a call that middleware returned from while the call was still running.
 	ErrCallUnfinished = &KindError{
-		name: "call_unfinished", message: "sagas: middleware returned before the call finished",
+		name:    "call_unfinished",
+		message: "sagas: middleware returned before the call finished",
 	}
 	// ErrCallConcurrent is the error of a call that middleware started while another call of the attempt was running.
 	ErrCallConcurrent = &KindError{
-		name: "call_concurrent", message: "sagas: middleware called next while a call was running",
+		name:    "call_concurrent",
+		message: "sagas: middleware called next while a call was running",
 	}
 	// ErrCallContextLost is the error of a call whose context no longer carries the call state.
 	ErrCallContextLost = &KindError{
-		name: "call_context_lost", message: "sagas: middleware passed on a context that lost the call state",
+		name:    "call_context_lost",
+		message: "sagas: middleware passed on a context that lost the call state",
 	}
 	// ErrGraceEnded is the cause of the recovery context when the grace period ends.
-	ErrGraceEnded = &KindError{name: "grace_ended", message: "sagas: recovery grace period ended"}
+	ErrGraceEnded = &KindError{
+		name:    "grace_ended",
+		message: "sagas: recovery grace period ended",
+	}
 	// ErrFailed labels the error of a step whose call failed.
-	ErrFailed = &KindError{name: "failed", message: "sagas: step failed"}
+	ErrFailed = &KindError{
+		name:    "failed",
+		message: "sagas: step failed",
+	}
 	// ErrUnknown labels the error of a step whose outcome is unknown.
-	ErrUnknown = &KindError{name: "unknown", message: "sagas: step outcome unknown"}
+	ErrUnknown = &KindError{
+		name:    "unknown",
+		message: "sagas: step outcome unknown",
+	}
 	// ErrPanic labels the error of a step whose call panicked.
-	ErrPanic = &KindError{name: "panic", message: "sagas: panic"}
+	ErrPanic = &KindError{
+		name:    "panic",
+		message: "sagas: panic",
+	}
 )
 
 // Error reports a step whose action or compensation did not succeed, with its kind, attempts, cause and history.
+// errors.Is also walks Cause and Previous; read the kind of the step itself with errors.As and its Kind field.
 type Error struct {
 	Kind         *KindError
 	Step         string
@@ -176,38 +234,26 @@ func eventErrorOf(e *Error) EventError {
 	return EventError{Kind: e.Kind.Name(), Message: text(e.Err), Cause: text(e.Cause), Previous: texts(e.Previous)}
 }
 
-func kindOf(kind outcomeKind, err error) *KindError {
-	if _, ok := errors.AsType[*PanicError](err); ok {
-		return ErrPanic
-	}
-
-	packageKinds := []*KindError{
-		ErrConflict,
-		ErrInvalidState,
-		ErrJournal,
-		ErrCallNotRun,
-		ErrCallUnfinished,
-		ErrCallConcurrent,
-		ErrCallContextLost,
-	}
-
-	for _, k := range packageKinds {
-		if errors.Is(err, k) {
-			return k
-		}
-	}
-
-	if kind == outcomeUnknown {
+func kindOf(kind outcomeKind, label *KindError) *KindError {
+	switch {
+	case label != nil:
+		return label
+	case kind == outcomeUnknown:
 		return ErrUnknown
+	default:
+		return ErrFailed
 	}
-
-	return ErrFailed
 }
 
 type callError struct {
 	err      error
+	kind     *KindError
 	cause    error
 	previous []error
+}
+
+func kinded(kind *KindError, err error) error {
+	return &callError{err: err, kind: kind}
 }
 
 func (e *callError) Error() string { return e.err.Error() }
@@ -260,3 +306,9 @@ func record(ce *callError) []error {
 
 	return append(slices.Clone(ce.previous), last)
 }
+
+var (
+	errStepStopped      = errors.New("sagas: a step stopped the run")
+	errRejectionStopped = errors.New("sagas: the journal rejected an event and stopped the run")
+	errJournalStopped   = errors.New("sagas: a journal failure stopped the run")
+)

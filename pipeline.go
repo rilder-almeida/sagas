@@ -42,6 +42,7 @@ type outcome[S any] struct {
 	kind     outcomeKind
 	attempts int
 	err      error
+	label    *KindError
 	cause    error
 	previous []error
 	state    *S
@@ -85,7 +86,7 @@ type attemptState[S any] struct {
 
 type attemptStateKey struct{}
 
-func (a *attemptState[S]) start() error {
+func (a *attemptState[S]) start() *KindError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -136,7 +137,7 @@ func classify(err error) outcomeKind {
 func catchPanic(fn func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = &PanicError{Value: r, Stack: debug.Stack()}
+			err = kinded(ErrPanic, &PanicError{Value: r, Stack: debug.Stack()})
 		}
 	}()
 
@@ -187,7 +188,7 @@ func requireRan[S any](next Handler) Handler {
 	return func(ctx context.Context) error {
 		st, ok := stateFrom[S](ctx)
 		if !ok {
-			return Permanent(ErrCallContextLost)
+			return kinded(ErrCallContextLost, Permanent(ErrCallContextLost))
 		}
 
 		at := &attemptState[S]{base: st.base}
@@ -198,7 +199,7 @@ func requireRan[S any](next Handler) Handler {
 		progress := at.close()
 
 		if progress.running {
-			return Permanent(errors.Join(err, ErrCallUnfinished))
+			return kinded(ErrCallUnfinished, Permanent(errors.Join(err, ErrCallUnfinished)))
 		}
 
 		if err != nil {
@@ -206,7 +207,7 @@ func requireRan[S any](next Handler) Handler {
 		}
 
 		if !progress.started {
-			return Permanent(ErrCallNotRun)
+			return kinded(ErrCallNotRun, Permanent(ErrCallNotRun))
 		}
 
 		st.out = progress.last.out
@@ -219,16 +220,16 @@ func runCall[S any](call func(context.Context, *S) error) Handler {
 	return func(ctx context.Context) error {
 		at, ok := attemptFrom[S](ctx)
 		if !ok {
-			return Permanent(ErrCallContextLost)
+			return kinded(ErrCallContextLost, Permanent(ErrCallContextLost))
 		}
 
-		if err := at.start(); err != nil {
-			return Permanent(err)
+		if kind := at.start(); kind != nil {
+			return kinded(kind, Permanent(kind))
 		}
 
 		fresh, err := copyState(at.base)
 		if err != nil {
-			err = Permanent(err)
+			err = kinded(ErrInvalidState, Permanent(err))
 		} else if err = catchPanic(func() error { return call(ctx, fresh) }); err != nil {
 			fresh = nil
 		}
@@ -266,7 +267,7 @@ func pipeline[S any](spec *callSpec, call func(context.Context, *S) error) callF
 		}
 
 		ce := asCallError(err)
-		out.err, out.cause, out.previous = ce.err, ce.cause, ce.previous
+		out.err, out.label, out.cause, out.previous = ce.err, ce.kind, ce.cause, ce.previous
 
 		if out.cause == nil && ctx.Err() != nil {
 			out.cause = context.Cause(ctx)
