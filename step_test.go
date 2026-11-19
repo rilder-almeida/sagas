@@ -416,40 +416,35 @@ func Test_Timeout(t *testing.T) {
 func Test_Retry(t *testing.T) {
 	t.Parallel()
 
-	given := RetryPolicy{Attempts: 5, Initial: time.Second, Max: time.Minute, Multiplier: 1.5, NoJitter: true}
+	given := RetryPolicy{Attempts: 5, Initial: time.Second, Max: 2 * time.Second, Multiplier: 1.5, NoJitter: true}
 
 	tests := []struct {
 		name         string
 		opts         []StepOption
 		wantAttempts int
-		wantMin      time.Duration
 		wantElapsed  time.Duration
 		wantErr      error
 	}{
 		{
 			name: "[Success] When: a policy is given ; Should: wait its exact delays",
 			opts: []StepOption{Retry(given)}, wantAttempts: 5,
-			wantMin: 8125 * time.Millisecond, wantElapsed: 8125 * time.Millisecond,
-		},
-		{
-			name:         "[Success] When: the option is absent ; Should: wait within the jittered default delays",
-			wantAttempts: DefaultAttempts, wantElapsed: 600 * time.Millisecond,
+			wantElapsed: 6500 * time.Millisecond,
 		},
 		{
 			name: "[Success] When: two attempts are given ; Should: stop an always failing action after two",
 			opts: []StepOption{Retry(RetryPolicy{Attempts: 2, NoJitter: true})}, wantAttempts: 2,
-			wantMin: 200 * time.Millisecond, wantElapsed: 200 * time.Millisecond,
+			wantElapsed: 200 * time.Millisecond,
 		},
 		{
 			name: "[Success] When: the zero policy is given ; Should: wait the default delays",
 			opts: []StepOption{Retry(RetryPolicy{NoJitter: true})}, wantAttempts: DefaultAttempts,
-			wantMin: 600 * time.Millisecond, wantElapsed: 600 * time.Millisecond,
+			wantElapsed: 600 * time.Millisecond,
 		},
 		{
 			name:         "[Success] When: the multiplier is exactly one ; Should: accept it",
 			opts:         []StepOption{Retry(RetryPolicy{Multiplier: 1, NoJitter: true})},
 			wantAttempts: DefaultAttempts,
-			wantMin:      400 * time.Millisecond, wantElapsed: 400 * time.Millisecond,
+			wantElapsed:  400 * time.Millisecond,
 		},
 		{
 			name:    "[Fail] When: Attempts is negative ; Should: reject it",
@@ -487,8 +482,35 @@ func Test_Retry(t *testing.T) {
 				elapsed := time.Since(start)
 
 				assert.Equal(t, tt.wantAttempts, got.attempts)
-				assert.GreaterOrEqual(t, elapsed, tt.wantMin)
-				assert.LessOrEqual(t, elapsed, tt.wantElapsed)
+				assert.Equal(t, tt.wantElapsed, elapsed)
+			})
+		})
+	}
+}
+
+func Test_Retry_defaultPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{name: "[Success] When: no Retry option is given ; Should: make the default attempts with jittered delays"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				s, err := New[tripState]("trip", Step("a", alwaysFails))
+				require.NoError(t, err)
+
+				start := time.Now()
+				got := callOnce(t, s.steps[0].action)
+				elapsed := time.Since(start)
+
+				assert.Equal(t, DefaultAttempts, got.attempts)
+				assert.Less(t, elapsed, 600*time.Millisecond)
 			})
 		})
 	}
