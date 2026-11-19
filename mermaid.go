@@ -41,7 +41,7 @@ func (s *Saga[S]) Mermaid() string {
 
 	if len(forwardOnly) > 0 {
 		b.WriteString("    classDef forwardOnly stroke-dasharray: 5 5\n")
-		b.WriteString("    class " + strings.Join(forwardOnly, ",") + " forwardOnly\n")
+		fmt.Fprintf(&b, "    class %s forwardOnly\n", strings.Join(forwardOnly, ","))
 	}
 
 	return b.String()
