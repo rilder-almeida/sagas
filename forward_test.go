@@ -234,6 +234,7 @@ func journalRows() []runRow {
 		rejectionRow(),
 		lateSiblingRow(),
 		latePredicateRow(),
+		predicateAppendRow(),
 		outcomeAppendRow(),
 		failureAppendRow(),
 		intentAppendRow(),
@@ -415,6 +416,23 @@ func latePredicateRow() runRow {
 		wantSteps:     map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepNotStarted},
 		wantPending:   []string{"b"},
 		wantTrail:     []string{opened, startOf("a"), doneOf("a"), startOf("b")},
+	}
+}
+
+func predicateAppendRow() runRow {
+	return runRow{
+		name: "[Fail] When: a predicate fails and its append fails ; Should: keep the step not started",
+		steps: func(rec *recorder) []Option {
+			boom := If(func(*tripState) bool { panic("boom") })
+
+			return []Option{rec.step("a"), rec.step("b", After("a"), boom)}
+		},
+		journal:    scripted(map[int]error{4: errJournalDown}),
+		wantStatus: StatusUnfinished,
+		wantErrs:   []error{ErrJournal, errJournalDown},
+		wantText:   []string{"panic: boom"},
+		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepNotStarted},
+		wantTrail:  []string{opened, startOf("a"), doneOf("a")},
 	}
 }
 
@@ -629,6 +647,10 @@ func Test_ready(t *testing.T) {
 	}
 }
 
+type strayReport struct{}
+
+func (strayReport) isReport() {}
+
 func Test_runner_receive(t *testing.T) {
 	t.Parallel()
 
@@ -638,19 +660,19 @@ func Test_runner_receive(t *testing.T) {
 		wantPanic string
 	}{
 		{
-			name:      "[Fail] When: the report is an int ; Should: panic naming the type",
-			report:    42,
-			wantPanic: "sagas: forward received an unknown report of type int",
-		},
-		{
-			name:      "[Fail] When: the report is a string ; Should: panic naming the type",
-			report:    "late",
-			wantPanic: "sagas: forward received an unknown report of type string",
-		},
-		{
 			name:      "[Fail] When: the report is nil ; Should: panic naming the missing type",
 			report:    nil,
 			wantPanic: "sagas: forward received an unknown report of type <nil>",
+		},
+		{
+			name:      "[Fail] When: the report is a pointer to a verdict ; Should: panic naming the pointer type",
+			report:    &verdict{},
+			wantPanic: "sagas: forward received an unknown report of type *sagas.verdict",
+		},
+		{
+			name:      "[Fail] When: the report is a type the coordinator does not know ; Should: panic naming it",
+			report:    strayReport{},
+			wantPanic: "sagas: forward received an unknown report of type sagas.strayReport",
 		},
 	}
 
@@ -669,6 +691,71 @@ func Test_runner_receive(t *testing.T) {
 			assert.PanicsWithValue(t, tt.wantPanic, func() {
 				r.receive(context.Background(), c)
 			})
+		})
+	}
+}
+
+func Test_runner_fail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		kind         outcomeKind
+		started      bool
+		journalFails bool
+		wantStatus   runStatus
+	}{
+		{
+			name:       "[Success] When: a started step fails and the event is recorded ; Should: be failed",
+			kind:       outcomeFailure,
+			started:    true,
+			wantStatus: runFailed,
+		},
+		{
+			name:       "[Success] When: a started step ends unknown and the event is recorded ; Should: be unknown",
+			kind:       outcomeUnknown,
+			started:    true,
+			wantStatus: runUnknown,
+		},
+		{
+			name:         "[Fail] When: a started step fails and the event is lost ; Should: be unknown",
+			kind:         outcomeFailure,
+			started:      true,
+			journalFails: true,
+			wantStatus:   runUnknown,
+		},
+		{
+			name:         "[Fail] When: a never-started step fails, event lost ; Should: stay failed, not unknown",
+			kind:         outcomeFailure,
+			journalFails: true,
+			wantStatus:   runFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := oneStep()
+			require.NoError(t, err)
+
+			j := &scriptJournal{}
+			if tt.journalFails {
+				j.errs = map[int]error{1: errJournalDown}
+			}
+
+			r := &runner[tripState]{saga: s, journal: j, runs: make([]stepRun, 1)}
+
+			out := outcome[tripState]{kind: tt.kind, err: errAlwaysFails}
+			if tt.started {
+				r.fail(context.Background(), 0, out)
+			} else {
+				r.refuse(context.Background(), 0, out)
+			}
+
+			assert.Equal(t, tt.wantStatus, r.runs[0].status)
+			require.Len(t, r.failures, 1)
+			require.ErrorIs(t, r.failures[0], errAlwaysFails)
 		})
 	}
 }

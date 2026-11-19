@@ -36,7 +36,9 @@ type stepRun struct {
 	err      *StepError
 }
 
-type report any
+type report interface {
+	isReport()
+}
 
 type verdict struct {
 	step int
@@ -49,6 +51,10 @@ type settled[S any] struct {
 	out  outcome[S]
 	base snapshot[S]
 }
+
+func (verdict) isReport() {}
+
+func (settled[S]) isReport() {}
 
 type job[S any] struct {
 	step   int
@@ -209,7 +215,7 @@ func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool)
 	case v.err != nil:
 		answer <- false
 
-		r.fail(grace, i, outcome[S]{kind: outcomeFailure, err: v.err})
+		r.refuse(grace, i, outcome[S]{kind: outcomeFailure, err: v.err})
 	case !v.run:
 		answer <- false
 
@@ -260,6 +266,19 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 }
 
 func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
+	e := r.note(i, out)
+
+	if !r.record(ctx, &e) {
+		r.runs[i].status = runUnknown
+	}
+}
+
+func (r *runner[S]) refuse(ctx context.Context, i int, out outcome[S]) {
+	e := r.note(i, out)
+	r.record(ctx, &e)
+}
+
+func (r *runner[S]) note(i int, out outcome[S]) Event {
 	name := r.saga.steps[i].name
 	failure := &StepError{Step: name, Attempts: out.attempts, Err: out.err}
 	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: out.err.Error()}
@@ -271,7 +290,5 @@ func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
 		r.runs[i].status = runUnknown
 	}
 
-	if !r.record(ctx, &e) {
-		r.runs[i].status = runUnknown
-	}
+	return e
 }
