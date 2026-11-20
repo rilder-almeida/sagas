@@ -69,7 +69,9 @@ func hotelOf(tb testing.TB, out outcome[tripState]) string {
 
 func okPredicate(*tripState) bool { return true }
 
-func okMiddleware(next Handler) Handler { return next }
+func okMiddleware() MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error { return call(ctx) }
+}
 
 type pointerJournal struct{}
 
@@ -326,7 +328,7 @@ func Test_New(t *testing.T) {
 		},
 		{
 			name:         "[Fail] When: WithMiddleware holds a nil entry ; Should: reject it",
-			build:        func() error { return buildTrip(step(), WithMiddleware(okMiddleware, nil)) },
+			build:        func() error { return buildTrip(step(), WithMiddleware(okMiddleware(), nil)) },
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{sagaTrip, "nil Middleware"},
 		},
@@ -347,7 +349,7 @@ func Test_New(t *testing.T) {
 		{
 			name: "[Fail] When: WithMiddleware is given twice ; Should: reject it",
 			build: func() error {
-				return buildTrip(slices.Concat([]Option{step()}, twice(WithMiddleware(okMiddleware)))...)
+				return buildTrip(slices.Concat([]Option{step()}, twice(WithMiddleware(okMiddleware())))...)
 			},
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{"WithMiddleware given more than once"},
@@ -471,7 +473,7 @@ func middlewaresOf(rec *recorder, names []string) []Middleware {
 
 func overwrite(mws []Middleware) {
 	for i := range mws {
-		mws[i] = okMiddleware
+		mws[i] = okMiddleware()
 	}
 }
 
@@ -490,7 +492,7 @@ func Test_WithMiddleware(t *testing.T) {
 		wantErr        error
 	}{
 		{
-			name:  "[Success] When: two middlewares are given in one call ; Should: wrap both phases in order",
+			name:  "[Success] When: two middlewares are given in one call ; Should: wrap each step call in order",
 			names: []string{"outer", "inner"}, calls: 1, wantTrace: both,
 		},
 		{
@@ -518,7 +520,7 @@ func Test_WithMiddleware(t *testing.T) {
 				mws = append(mws, nil)
 			}
 
-			opts := []Option{Step("a", okAction, Compensate(okAction))}
+			opts := []Option{Step("a", okAction), Step("b", okAction, After("a"))}
 			for range tt.calls {
 				opts = append(opts, WithMiddleware(mws...))
 			}
@@ -531,8 +533,8 @@ func Test_WithMiddleware(t *testing.T) {
 			}
 
 			if s != nil {
-				require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
-				require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)
+				_, runErr := s.Run(t.Context(), &tripState{})
+				require.NoError(t, runErr)
 			}
 
 			assert.Equal(t, tt.wantTrace, rec.snapshot())

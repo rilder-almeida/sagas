@@ -136,7 +136,10 @@ func build[S any](name string, d *definition, funcs []stepFuncs[S], g *graph) *S
 
 func (n *stepNode[S]) buildCalls(saga string, sd *stepDef, f *stepFuncs[S], middleware []Middleware) {
 	spec := callSpec{
-		saga: saga, step: sd.name, phase: PhaseAction, retry: sd.retry, timeout: sd.timeout, middleware: middleware,
+		saga: saga, step: sd.name, phase: PhaseExecute, retry: sd.retry, timeout: sd.timeout, middleware: middleware,
+	}
+	if sd.pivot {
+		spec.phase = PhasePivot
 	}
 
 	n.action = pipeline(&spec, f.do)
@@ -145,7 +148,7 @@ func (n *stepNode[S]) buildCalls(saga string, sd *stepDef, f *stepFuncs[S], midd
 		return
 	}
 
-	spec.phase = PhaseCompensation
+	spec.phase = PhaseCompensate
 	n.compensation = pipeline(&spec, f.undo)
 }
 
@@ -190,10 +193,11 @@ func WithJournal(j Journal) Option {
 	}
 }
 
-// WithMiddleware sets the middlewares that wrap every call of the saga. Call it once with every middleware.
+// WithMiddleware sets the middlewares that wrap every call of the saga, the first one outermost. Call it
+// once with every middleware.
 func WithMiddleware(mw ...Middleware) Option {
 	return func(d *definition) {
-		d.middleware = mw
+		d.middleware = slices.Clone(mw)
 		d.given[keyWithMiddleware]++
 	}
 }

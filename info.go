@@ -54,73 +54,52 @@ func (m *callMeta) closeAttempt(err error) {
 	m.replaced, m.cause, m.label = nil, nil, nil
 }
 
-type metaKey struct{}
-
-func withMeta(ctx context.Context, m *callMeta) context.Context {
-	return context.WithValue(ctx, metaKey{}, m)
-}
-
-func metaFrom(ctx context.Context) *callMeta {
-	if m, ok := ctx.Value(metaKey{}).(*callMeta); ok {
-		return m
+func (m *callMeta) kind() *KindError {
+	if m == nil {
+		return nil
 	}
 
-	return nil
+	return m.label
 }
 
-// Phase tells whether a call runs a step's action or its compensation. The empty string means not set.
+// Phase tells which step method a call runs. The empty string means not set.
 type Phase string
 
 // Phase values.
 const (
-	PhaseAction       Phase = "action"
-	PhaseCompensation Phase = "compensation"
+	PhaseExecute    Phase = "execute"
+	PhasePivot      Phase = "pivot"
+	PhaseCompensate Phase = "compensate"
 )
 
-// StepInfo describes the call a handler runs in. Key is the same for the action and the compensation of a step.
-type StepInfo struct {
+// CallInfo describes one call of a step method. Attempt counts from 1.
+type CallInfo struct {
 	Saga      string
 	Execution string
 	Step      string
 	Phase     Phase
 	Attempt   int
-	Key       string
 }
 
-type infoKey struct{}
-
-// Info returns the call metadata in ctx, and false outside a pipeline call.
-func Info(ctx context.Context) (StepInfo, bool) {
-	si, ok := ctx.Value(infoKey{}).(StepInfo)
-
-	return si, ok
+// IdempotencyKey returns the key of the call, the same in every phase of a step in one execution. It equals
+// what the step method reads with the package function IdempotencyKey.
+func (c CallInfo) IdempotencyKey() string {
+	return c.Execution + "/" + c.Step
 }
 
-// Key returns the idempotency key of the call in ctx, and an empty string outside a pipeline call.
-func Key(ctx context.Context) string {
-	si, _ := Info(ctx)
+type idempotencyKey struct{}
 
-	return si.Key
+func withIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKey{}, key)
 }
 
-func withStepInfo(saga, step string, phase Phase) Middleware {
-	return func(next Handler) Handler {
-		return func(ctx context.Context) error {
-			var m callMeta
-			if p := metaFrom(ctx); p != nil {
-				m = *p
-			}
-
-			si := StepInfo{
-				Saga:      saga,
-				Execution: m.execution,
-				Step:      step,
-				Phase:     phase,
-				Attempt:   m.attempt,
-				Key:       m.execution + "/" + step,
-			}
-
-			return next(context.WithValue(ctx, infoKey{}, si))
-		}
+// IdempotencyKey returns the idempotency key of the step call in ctx, and an empty string outside a call.
+// The key is the same in Execute, Pivot and Compensate, so a compensation finds the effect to undo with it.
+// A service that needs its own key on the undo request gets the key plus a suffix, such as "/compensate".
+func IdempotencyKey(ctx context.Context) string {
+	if key, ok := ctx.Value(idempotencyKey{}).(string); ok {
+		return key
 	}
+
+	return ""
 }

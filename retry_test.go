@@ -263,13 +263,13 @@ var (
 	errMarked       = Permanent(errA)
 )
 
-func scriptedHandler(script []error, cancel context.CancelFunc, cancelOnCall int, seen *[]int) Handler {
+func scriptedCall(meta *callMeta, script []error, cancel context.CancelFunc, cancelOnCall int, seen *[]int) Call {
 	calls := 0
 
 	return func(ctx context.Context) error {
 		calls++
 
-		*seen = append(*seen, metaFrom(ctx).attempt)
+		*seen = append(*seen, meta.attempt)
 
 		if calls == cancelOnCall {
 			cancel()
@@ -409,7 +409,7 @@ func Test_withRetry(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				meta := &callMeta{execution: infoExecution}
 
-				ctx, cancel := context.WithCancel(withMeta(t.Context(), meta))
+				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 
 				if tt.cancelAt > 0 {
@@ -419,7 +419,8 @@ func Test_withRetry(t *testing.T) {
 				var seen []int
 
 				start := time.Now()
-				err := withRetry(tt.policy)(scriptedHandler(tt.script, cancel, tt.cancelOnCall, &seen))(ctx)
+				call := scriptedCall(meta, tt.script, cancel, tt.cancelOnCall, &seen)
+				err := withRetry(tt.policy, meta).Wrap(ctx, CallInfo{}, call)
 
 				assertRetryErr(t, err, tt.wantErr)
 				assertPrevious(t, meta.history(), tt.wantPrevious)
@@ -464,17 +465,17 @@ func Test_runAttempts(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				ctx := withMeta(t.Context(), &callMeta{execution: infoExecution})
+				meta := &callMeta{execution: infoExecution}
 
 				var seen []int
 
-				next := scriptedHandler([]error{errA, errB, nil}, nil, 0, &seen)
+				next := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
 
 				start := time.Now()
-				err := runAttempts(ctx, RetryPolicy{}, next, tt.draw)
+				err := runAttempts(t.Context(), RetryPolicy{}, meta, next, tt.draw)
 
 				require.NoError(t, err)
-				assert.Len(t, seen, 3)
+				assert.Equal(t, []int{1, 2, 3}, seen)
 				assert.Equal(t, tt.wantElapsed, time.Since(start))
 			})
 		})

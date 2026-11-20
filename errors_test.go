@@ -98,10 +98,6 @@ func kindErrorRows() []kindRow {
 			ErrCallConcurrent, "sagas: middleware called next while a call was running",
 		},
 		{
-			"[Success] When: the kind is ErrCallContextLost ; Should: return its message",
-			ErrCallContextLost, "sagas: middleware passed on a context that lost the call state",
-		},
-		{
 			"[Success] When: the kind is ErrGraceEnded ; Should: return its message",
 			ErrGraceEnded, "sagas: recovery grace period ended",
 		},
@@ -168,10 +164,6 @@ func Test_KindError_Name(t *testing.T) {
 		{
 			"[Success] When: the kind is ErrCallConcurrent ; Should: return its label",
 			ErrCallConcurrent, "call_concurrent",
-		},
-		{
-			"[Success] When: the kind is ErrCallContextLost ; Should: return its label",
-			ErrCallContextLost, "call_context_lost",
 		},
 		{"[Success] When: the kind is ErrGraceEnded ; Should: return its label", ErrGraceEnded, "grace_ended"},
 		{"[Success] When: the kind is ErrFailed ; Should: return its label", ErrFailed, nameFailed},
@@ -614,7 +606,6 @@ func errorRows() []runRow {
 		rejectionStopRow(),
 		journalStopRow(),
 		markedPanicRow(),
-		nestedLostContextRow(),
 		nestedPermanentRow(),
 	}
 }
@@ -670,9 +661,9 @@ func journalStopRow() runRow {
 
 var errMarker = errors.New("marked by middleware")
 
-func marking(next Handler) Handler {
-	return func(ctx context.Context) error {
-		if err := next(ctx); err != nil {
+func marking() MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error {
+		if err := call(ctx); err != nil {
 			return fmt.Errorf("%w: %w", errMarker, err)
 		}
 
@@ -686,7 +677,7 @@ func markedPanicRow() runRow {
 		steps: func(rec *recorder) []Option {
 			boom := Step("b", func(context.Context, *tripState) error { panic(errAlwaysFails) }, After("a"))
 
-			return []Option{rec.step("a"), boom, WithMiddleware(marking)}
+			return []Option{rec.step("a"), boom, WithMiddleware(marking())}
 		},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"b": 1},
@@ -789,8 +780,9 @@ func goexitHistoryRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action ends by runtime.Goexit on attempt 2 ; Should: keep the attempts and attempt 1",
 		steps: func(rec *recorder) []Option {
-			leaves := Step("b", func(ctx context.Context, _ *tripState) error {
-				if attemptOf(ctx) == 1 {
+			next := counter()
+			leaves := Step("b", func(context.Context, *tripState) error {
+				if next() == 1 {
 					return errFirst
 				}
 
@@ -965,14 +957,6 @@ func nestedRow(name string, inner []Option, attempts int, errText string, wantEr
 		wantAttempts: map[string]int{"b": 1},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
 	}
-}
-
-func nestedLostContextRow() runRow {
-	return nestedRow(
-		"[Fail] When: an action returns a nested run that lost the call context ; Should: report ErrFailed",
-		[]Option{Step("x", func(context.Context, *tripState) error { return nil }), WithMiddleware(lostContext)},
-		1, ErrCallContextLost.Error(), []error{ErrCallContextLost, ErrFailed},
-	)
 }
 
 func nestedPermanentRow() runRow {

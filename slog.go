@@ -6,35 +6,34 @@ import (
 	"time"
 )
 
-// Slog returns middleware that logs each attempt to l: saga, execution, step, phase, attempt, duration,
-// and the error when the attempt fails, at info on success and warn on error. It never logs the state and
-// returns the call error unchanged. Outside a pipeline call the step fields are empty.
-func Slog(l *slog.Logger) Middleware {
-	return func(next Handler) Handler {
-		return func(ctx context.Context) error {
-			start := time.Now()
-			err := next(ctx)
-			info, _ := Info(ctx)
+// Slog is middleware that logs each attempt to Logger: saga, execution, step, phase, attempt, duration,
+// and the error when the attempt fails, at info on success and warn on error. It never logs the state.
+type Slog struct {
+	Logger *slog.Logger
+}
 
-			attrs := []slog.Attr{
-				slog.String("saga", info.Saga),
-				slog.String("execution", info.Execution),
-				slog.String("step", info.Step),
-				slog.String("phase", string(info.Phase)),
-				slog.Int("attempt", info.Attempt),
-				slog.Duration("duration", time.Since(start)),
-			}
+// Wrap runs call, logs the attempt from info, and returns the call error unchanged.
+func (s Slog) Wrap(ctx context.Context, info CallInfo, call Call) error {
+	start := time.Now()
+	err := call(ctx)
 
-			level := slog.LevelInfo
-			if err != nil {
-				level = slog.LevelWarn
-
-				attrs = append(attrs, slog.Any("error", err))
-			}
-
-			l.LogAttrs(ctx, level, "sagas: attempt", attrs...)
-
-			return err
-		}
+	attrs := []slog.Attr{
+		slog.String("saga", info.Saga),
+		slog.String("execution", info.Execution),
+		slog.String("step", info.Step),
+		slog.String("phase", string(info.Phase)),
+		slog.Int("attempt", info.Attempt),
+		slog.Duration("duration", time.Since(start)),
 	}
+
+	level := slog.LevelInfo
+	if err != nil {
+		level = slog.LevelWarn
+
+		attrs = append(attrs, slog.Any("error", err))
+	}
+
+	s.Logger.LogAttrs(ctx, level, "sagas: attempt", attrs...)
+
+	return err
 }
