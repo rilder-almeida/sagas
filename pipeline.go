@@ -280,7 +280,7 @@ func noteCallError[S any](meta *callMeta, err error, progress *attemptProgress[S
 	switch {
 	case progress.last.err != nil && !errors.Is(err, progress.last.err):
 		meta.replace(progress.last.err)
-	case errors.Is(err, contextLostError{}):
+	case !progress.started && errors.Is(err, contextLostError{}):
 		meta.mark(ErrCallContextLost)
 	default:
 		meta.mark(progress.label)

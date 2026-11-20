@@ -77,6 +77,7 @@ func (e *permanentError) Unwrap() error { return e.err }
 func (*permanentError) Is(target error) bool { return target == errPermanent }
 
 // Permanent marks err so that the retry loop stops on it. It returns nil for a nil err.
+// The mark counts anywhere in an error chain, so a nested run's permanent error also stops the outer step.
 func Permanent(err error) error {
 	if err == nil {
 		return nil

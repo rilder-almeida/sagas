@@ -611,6 +611,8 @@ func errorRows() []runRow {
 		rejectionStopRow(),
 		journalStopRow(),
 		markedPanicRow(),
+		nestedLostContextRow(),
+		nestedPermanentRow(),
 	}
 }
 
@@ -921,5 +923,47 @@ func callerPanicRow() runRow {
 	return callerKindRow(
 		"[Fail] When: an action returns an error that wraps a PanicError ; Should: report ErrUnknown, not ErrPanic",
 		&PanicError{Value: "nested"}, StepUnknown, ErrUnknown, lostOf("b"), []string{"b"},
+	)
+}
+
+func nestedRow(name string, inner []Option, attempts int, wantErrs []error) runRow {
+	return runRow{
+		name: name,
+		steps: func(rec *recorder) []Option {
+			nests := Step("b", func(ctx context.Context, _ *tripState) error {
+				s, err := New[tripState]("inner", inner...)
+				if err != nil {
+					return err
+				}
+
+				_, err = s.Run(ctx, &tripState{})
+
+				return err
+			}, After("a"), Retry(RetryPolicy{Attempts: attempts}))
+
+			return []Option{rec.step("a"), nests}
+		},
+		wantStatus:   StatusUnfinished,
+		wantErrs:     wantErrs,
+		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantAttempts: map[string]int{"b": 1},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+	}
+}
+
+func nestedLostContextRow() runRow {
+	return nestedRow(
+		"[Fail] When: an action returns a nested run that lost the call context ; Should: report ErrFailed",
+		[]Option{Step("x", func(context.Context, *tripState) error { return nil }), WithMiddleware(lostContext)},
+		1, []error{ErrCallContextLost, ErrFailed},
+	)
+}
+
+func nestedPermanentRow() runRow {
+	return nestedRow(
+		"[Fail] When: an action returns a nested run that holds a permanent error ; Should: stop after 1 attempt",
+		[]Option{Step("x", func(context.Context, *tripState) error { return Permanent(errAlwaysFails) })},
+		3, []error{errAlwaysFails, ErrFailed},
 	)
 }

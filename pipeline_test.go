@@ -1428,31 +1428,43 @@ func Benchmark_pipeline(b *testing.B) {
 	}
 }
 
+type contextLostRow struct {
+	name     string
+	err      error
+	wantText string
+}
+
+func contextLostRows() []contextLostRow {
+	lost := ErrCallContextLost.Error()
+
+	return []contextLostRow{
+		{
+			name:     "[Success] When: the error is bare ; Should: print and match ErrCallContextLost",
+			err:      contextLostError{},
+			wantText: lost,
+		},
+		{
+			name:     "[Success] When: the error is permanent ; Should: print and match ErrCallContextLost",
+			err:      Permanent(contextLostError{}),
+			wantText: lost,
+		},
+		{
+			name:     "[Success] When: the error is wrapped ; Should: print the wrap and match ErrCallContextLost",
+			err:      fmt.Errorf("wrapped: %w", contextLostError{}),
+			wantText: "wrapped: " + lost,
+		},
+	}
+}
+
 func Test_contextLostError_Error(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		err  contextLostError
-		want string
-	}{
-		{
-			name: "[Success] When: the context lost the call state ; Should: print the ErrCallContextLost message",
-			err:  contextLostError{},
-			want: ErrCallContextLost.Error(),
-		},
-		{
-			name: "[Success] When: the error is permanent ; Should: print the same message",
-			err:  contextLostError{},
-			want: Permanent(contextLostError{}).Error(),
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range contextLostRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, tt.err.Error())
+			assert.Equal(t, tt.wantText, tt.err.Error())
+			require.ErrorIs(t, tt.err, ErrCallContextLost)
 		})
 	}
 }
@@ -1460,20 +1472,12 @@ func Test_contextLostError_Error(t *testing.T) {
 func Test_contextLostError_Unwrap(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		err  error
-	}{
-		{name: "[Success] When: the error is bare ; Should: match ErrCallContextLost", err: contextLostError{}},
-		{name: "[Success] When: the error is permanent ; Should: match it", err: Permanent(contextLostError{})},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range contextLostRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			require.ErrorIs(t, tt.err, ErrCallContextLost)
-			assert.Equal(t, ErrCallContextLost, contextLostError{}.Unwrap())
+			assert.Equal(t, tt.wantText, tt.err.Error())
 		})
 	}
 }
