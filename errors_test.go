@@ -485,6 +485,7 @@ func assertFailures(t *testing.T, tt *runRow, got *ran) {
 		assert.Same(t, kind, se.Kind)
 		require.ErrorIs(t, se, kind)
 		assert.Equal(t, tt.wantAttempts[step], se.Attempts)
+		require.NotEmpty(t, tt.wantErrText[step], "expected error text of step %s", step)
 		assert.Contains(t, se.Err.Error(), tt.wantErrText[step])
 
 		assertPrevious(t, se.Previous, tt.wantPreviousIs[step])
@@ -806,7 +807,7 @@ func goexitHistoryRow() runRow {
 		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
 		wantPending:    []string{"b"},
 		wantKinds:      map[string]*KindError{"b": ErrUnknown},
-		wantErrText:    map[string]string{"b": errGoexit.Error()},
+		wantErrText:    map[string]string{"b": goexitText},
 		wantAttempts:   map[string]int{"b": 2},
 		wantPreviousIs: map[string][]error{"b": {errFirst}},
 	}

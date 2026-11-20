@@ -23,6 +23,7 @@ const (
 	hotelRitz      = "ritz"
 	pause          = time.Second
 	panicBoom      = "panic: boom"
+	goexitText     = "sagas: call ended by runtime.Goexit"
 )
 
 func trailOf(kind EventKind, step string) string { return strings.TrimSpace(string(kind) + " " + step) }
@@ -281,7 +282,7 @@ func goexitRow() runRow {
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrUnknown},
-		wantErrText:  map[string]string{"b": errGoexit.Error()},
+		wantErrText:  map[string]string{"b": goexitText},
 		wantAttempts: map[string]int{"b": 1},
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
@@ -322,7 +323,7 @@ func predicateGoexitRow() runRow {
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
-		wantErrText:  map[string]string{"b": errGoexit.Error()},
+		wantErrText:  map[string]string{"b": goexitText},
 		wantAttempts: map[string]int{"b": 0},
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
