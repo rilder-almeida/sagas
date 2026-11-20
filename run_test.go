@@ -791,3 +791,20 @@ func assertZones(t *testing.T, got, want []StepZone) {
 
 	assert.Equal(t, want, got)
 }
+
+func Benchmark_Saga_Run(b *testing.B) {
+	ok := func(context.Context, *tripState) error { return nil }
+
+	s, err := New[tripState]("trip", Step("a", ok), Step("b", ok, After("a")))
+	require.NoError(b, err)
+
+	ctx := context.Background()
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if _, runErr := s.Run(ctx, &tripState{}); runErr != nil {
+			b.Fatal(runErr)
+		}
+	}
+}
