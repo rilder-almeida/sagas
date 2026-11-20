@@ -57,37 +57,37 @@ func Test_recoverer(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		next      Call
+		call      Call
 		wantBoom  bool
 		wantPanic bool
 		wantText  string
 	}{
 		{
-			name: "[Success] When: the handler returns nil ; Should: return nil",
-			next: func(context.Context) error { return nil },
+			name: "[Success] When: the call returns nil ; Should: return nil",
+			call: func(context.Context) error { return nil },
 		},
 		{
-			name:     "[Fail] When: the handler returns an error ; Should: pass the same error through",
-			next:     func(context.Context) error { return errBoom },
+			name:     "[Fail] When: the call returns an error ; Should: pass the same error through",
+			call:     func(context.Context) error { return errBoom },
 			wantBoom: true,
 			wantText: errBoom.Error(),
 		},
 		{
-			name:      "[Fail] When: the handler panics with a string ; Should: return a PanicError with the value",
-			next:      func(context.Context) error { panic("bad") },
+			name:      "[Fail] When: the call panics with a string ; Should: return a PanicError with the value",
+			call:      func(context.Context) error { panic("bad") },
 			wantPanic: true,
 			wantText:  "sagas: panic: bad",
 		},
 		{
-			name:      "[Fail] When: the handler panics with an error ; Should: return a PanicError with the value",
-			next:      func(context.Context) error { panic(errBoom) },
+			name:      "[Fail] When: the call panics with an error ; Should: return a PanicError with the value",
+			call:      func(context.Context) error { panic(errBoom) },
 			wantBoom:  true,
 			wantPanic: true,
 			wantText:  "sagas: panic: boom",
 		},
 		{
-			name: "[Fail] When: the handler panics with nil ; Should: still return a PanicError",
-			next: func(context.Context) error {
+			name: "[Fail] When: the call panics with nil ; Should: still return a PanicError",
+			call: func(context.Context) error {
 				panicWith(nil)
 
 				return nil
@@ -101,7 +101,7 @@ func Test_recoverer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := recoverer(&callMeta{}).Wrap(t.Context(), CallInfo{}, tt.next)
+			err := recoverer(&callMeta{}).Wrap(t.Context(), CallInfo{}, tt.call)
 
 			panicked, isPanic := errors.AsType[*PanicError](err)
 
@@ -348,10 +348,10 @@ func pipelineFreshCopyRow() pipelineRow {
 		spec: actionSpec(),
 		base: pipeState{A: 1},
 		call: func(*recorder) func(context.Context, *pipeState) error {
-			next := counter()
+			count := counter()
 
 			return func(_ context.Context, s *pipeState) error {
-				if next() == 1 {
+				if count() == 1 {
 					s.A = 7
 
 					return errBoom
@@ -451,9 +451,9 @@ func pipelinePermanentRow() pipelineRow {
 
 func perAttempt(errs ...error) func(*recorder) func(context.Context, *pipeState) error {
 	return func(*recorder) func(context.Context, *pipeState) error {
-		next := counter()
+		count := counter()
 
-		return func(context.Context, *pipeState) error { return errs[next()-1] }
+		return func(context.Context, *pipeState) error { return errs[count()-1] }
 	}
 }
 
@@ -615,7 +615,7 @@ func pipelineMiddlewareSeesPanicRow() pipelineRow {
 
 func pipelineNotRunRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: a middleware returns nil without calling next ; Should: fail with ErrCallNotRun",
+		name: "[Fail] When: a middleware returns nil without running the call ; Should: fail with ErrCallNotRun",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
 			return []Middleware{MiddlewareFunc(func(context.Context, CallInfo, Call) error { return nil })}
@@ -630,7 +630,7 @@ func pipelineNotRunRow() pipelineRow {
 
 func pipelineTwiceRow() pipelineRow {
 	return pipelineRow{
-		name: "[Success] When: a middleware calls next twice ; Should: run the call twice in one attempt",
+		name: "[Success] When: a middleware runs the call twice ; Should: run the call twice in one attempt",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
 			return []Middleware{MiddlewareFunc(func(ctx context.Context, _ CallInfo, call Call) error {
@@ -670,15 +670,16 @@ func abandoning(start, limit time.Duration) MiddlewareFunc {
 const (
 	slowMark = "slow call"
 	callMark = "call"
+	runMark  = "run"
 )
 
 func slowCall(r *recorder) func(context.Context, *pipeState) error {
-	next := counter()
+	count := counter()
 
 	return func(_ context.Context, s *pipeState) error {
 		time.Sleep(20 * time.Millisecond)
 
-		s.A = next()
+		s.A = count()
 
 		r.add(slowMark)
 
@@ -713,8 +714,8 @@ func pipelineAbandonedRow() pipelineRow {
 
 func pipelineAbandonedThenSkipRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: attempt 1's goroutine reaches next after a timeout and attempt 2 returns nil " +
-			"without next ; Should: fail with ErrCallNotRun and run no action",
+		name: "[Fail] When: attempt 1's goroutine runs the call after a timeout and attempt 2 returns nil " +
+			"without the call ; Should: fail with ErrCallNotRun and run no action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
 			first := abandoning(15*time.Millisecond, 10*time.Millisecond)
@@ -740,7 +741,7 @@ func pipelineAbandonedThenSkipRow() pipelineRow {
 
 func pipelineUnfinishedRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: middleware starts next in a goroutine and returns nil while the call runs ; " +
+		name: "[Fail] When: middleware starts the call in a goroutine and returns nil while the call runs ; " +
 			"Should: end unknown with ErrCallUnfinished after 1 attempt",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -763,7 +764,7 @@ func pipelineUnfinishedRow() pipelineRow {
 
 func pipelineLateStartRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: middleware returns nil before its goroutine reaches next ; " +
+		name: "[Fail] When: middleware returns nil before its goroutine runs the call ; " +
 			"Should: fail with ErrCallNotRun and never run the action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -783,7 +784,7 @@ func pipelineLateStartRow() pipelineRow {
 
 func pipelineLateSecondCallRow() pipelineRow {
 	return pipelineRow{
-		name: "[Success] When: middleware runs next, then starts it again in a goroutine and returns ; " +
+		name: "[Success] When: middleware runs the call, then starts it again in a goroutine and returns ; " +
 			"Should: succeed with the first copy and never run the second action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -826,7 +827,7 @@ func hedgedCall(r *recorder) func(context.Context, *pipeState) error {
 
 func pipelineHedgedRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: middleware runs next twice at once and returns the first reply ; " +
+		name: "[Fail] When: middleware runs the call twice at once and returns the first reply ; " +
 			"Should: refuse the second call and end unknown after 1 attempt with one action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -855,7 +856,7 @@ func waitingBoth(ctx context.Context, _ CallInfo, call Call) error {
 
 func pipelineConcurrentWaitRow() pipelineRow {
 	return pipelineRow{
-		name: "[Success] When: middleware runs next twice at once and waits for both ; " +
+		name: "[Success] When: middleware runs the call twice at once and waits for both ; " +
 			"Should: refuse the second call and succeed with the copy of the one action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -871,7 +872,7 @@ func pipelineConcurrentWaitRow() pipelineRow {
 
 func pipelinePanicAfterLateStartRow() pipelineRow {
 	return pipelineRow{
-		name: "[Fail] When: middleware starts a late next in a goroutine and then panics ; " +
+		name: "[Fail] When: middleware starts a late call in a goroutine and then panics ; " +
 			"Should: return a PanicError as unknown and never run the action",
 		spec: actionSpec(),
 		middleware: func(*recorder) []Middleware {
@@ -961,10 +962,10 @@ func pipelineStaleCopyRow() pipelineRow {
 			})}
 		},
 		call: func(*recorder) func(context.Context, *pipeState) error {
-			next := counter()
+			count := counter()
 
 			return func(_ context.Context, s *pipeState) error {
-				if next() == 1 {
+				if count() == 1 {
 					s.B = "stale"
 
 					return nil
@@ -990,7 +991,7 @@ func twiceMiddleware(final func(first, second error) error) func(*recorder) []Mi
 
 func pipelineSecondCallWinsRow() pipelineRow {
 	return pipelineRow{
-		name:       "[Success] When: next runs twice and the first call fails ; Should: succeed with the second copy",
+		name:       "[Success] When: the call runs twice and the first run fails ; Should: succeed with the second one",
 		spec:       actionSpec(),
 		middleware: twiceMiddleware(lastErr),
 		call: func(*recorder) func(context.Context, *pipeState) error {
@@ -1020,7 +1021,7 @@ func pipelineLastCallFailsRow() pipelineRow {
 	spec.retry.Attempts = 1
 
 	return pipelineRow{
-		name: "[Fail] When: next runs twice, the second call fails and middleware returns nil ; " +
+		name: "[Fail] When: the call runs twice, the second run fails and middleware returns nil ; " +
 			"Should: fail with the second call's error",
 		spec: spec,
 		middleware: twiceMiddleware(func(first, second error) error {
@@ -1053,7 +1054,7 @@ func pipelineLaterAttemptSkipRow() pipelineRow {
 	spec.retry.Attempts = 3
 
 	return pipelineRow{
-		name: "[Fail] When: middleware runs next on attempt 1 only ; Should: fail on attempt 2 with ErrCallNotRun",
+		name: "[Fail] When: middleware runs the call on attempt 1 only ; Should: fail on attempt 2 with ErrCallNotRun",
 		spec: spec,
 		middleware: func(*recorder) []Middleware {
 			return []Middleware{MiddlewareFunc(func(ctx context.Context, info CallInfo, call Call) error {
@@ -1180,7 +1181,7 @@ func assertPrevious(t *testing.T, got, want []error) {
 
 type requireRanRow struct {
 	name      string
-	next      func(reached *bool, run func(error) Call) Call
+	call      func(reached *bool, run func(error) Call) Call
 	wantErr   error
 	wantReach bool
 }
@@ -1197,7 +1198,7 @@ func requireRanRows() []requireRanRow {
 	return []requireRanRow{
 		{
 			name: "[Fail] When: the wrapped call returns its own error ; Should: return it unchanged",
-			next: func(reached *bool, _ func(error) Call) Call {
+			call: func(reached *bool, _ func(error) Call) Call {
 				return reaching(reached, func(context.Context) error { return errBoom })
 			},
 			wantErr:   errBoom,
@@ -1205,15 +1206,15 @@ func requireRanRows() []requireRanRow {
 		},
 		{
 			name: "[Fail] When: the wrapped call returns nil and no call ran ; Should: fail with ErrCallNotRun",
-			next: func(reached *bool, _ func(error) Call) Call {
+			call: func(reached *bool, _ func(error) Call) Call {
 				return reaching(reached, func(context.Context) error { return nil })
 			},
 			wantErr:   ErrCallNotRun,
 			wantReach: true,
 		},
 		{
-			name: "[Fail] When: the last call failed and next returns nil ; Should: return the call error",
-			next: func(reached *bool, run func(error) Call) Call {
+			name: "[Fail] When: the last call failed and the wrapped call returns nil ; Should: return the call error",
+			call: func(reached *bool, run func(error) Call) Call {
 				return reaching(reached, func(ctx context.Context) error { return swallow(run(errCall)(ctx)) })
 			},
 			wantErr:   errCall,
@@ -1221,7 +1222,7 @@ func requireRanRows() []requireRanRow {
 		},
 		{
 			name: "[Success] When: the last call succeeded ; Should: return nil",
-			next: func(reached *bool, run func(error) Call) Call {
+			call: func(reached *bool, run func(error) Call) Call {
 				return reaching(reached, run(nil))
 			},
 			wantReach: true,
@@ -1244,7 +1245,7 @@ func Test_requireRan(t *testing.T) {
 			var out *pipeState
 
 			reached := false
-			err := requireRan(at, &callMeta{}, &out).Wrap(t.Context(), CallInfo{}, tt.next(&reached, run))
+			err := requireRan(at, &callMeta{}, &out).Wrap(t.Context(), CallInfo{}, tt.call(&reached, run))
 
 			assert.Equal(t, tt.wantReach, reached)
 
@@ -1310,12 +1311,12 @@ func infoFieldRow(field string, pick func(CallInfo) string, want ...string) pipe
 			})}
 		},
 		call: func(r *recorder) func(context.Context, *pipeState) error {
-			next := counter()
+			count := counter()
 
 			return func(ctx context.Context, _ *pipeState) error {
 				r.add("step:" + IdempotencyKey(ctx))
 
-				if next() < 3 {
+				if count() < 3 {
 					return errBoom
 				}
 
@@ -1599,25 +1600,34 @@ func Test_Chain(t *testing.T) {
 	tests := []struct {
 		name      string
 		mws       func(r *recorder) []Middleware
+		overwrite bool
 		wantTrace []string
 		wantErr   error
 	}{
 		{
 			name:      "[Success] When: no middleware is given ; Should: run the call alone",
 			mws:       func(*recorder) []Middleware { return nil },
-			wantTrace: []string{"run"},
+			wantTrace: []string{runMark},
+		},
+		{
+			name: "[Success] When: the caller overwrites its slice after Chain ; Should: run the original middlewares",
+			mws: func(r *recorder) []Middleware {
+				return []Middleware{tagMiddleware{r, "a"}, tagMiddleware{r, "b"}}
+			},
+			overwrite: true,
+			wantTrace: []string{"a>", "b>", runMark, "<b", "<a"},
 		},
 		{
 			name:      "[Success] When: one middleware is given ; Should: wrap the call",
 			mws:       func(r *recorder) []Middleware { return []Middleware{tagMiddleware{r, "a"}} },
-			wantTrace: []string{"a>", "run", "<a"},
+			wantTrace: []string{"a>", runMark, "<a"},
 		},
 		{
 			name: "[Success] When: three middlewares are given, one a MiddlewareFunc ; Should: run the first outermost",
 			mws: func(r *recorder) []Middleware {
 				return []Middleware{tagMiddleware{r, "a"}, tagged(r, "b"), tagMiddleware{r, "c"}}
 			},
-			wantTrace: []string{"a>", "b>", "c>", "run", "<c", "<b", "<a"},
+			wantTrace: []string{"a>", "b>", "c>", runMark, "<c", "<b", "<a"},
 		},
 		{
 			name: "[Fail] When: a middleware returns an error without calling the call ; Should: stop the rest",
@@ -1636,9 +1646,15 @@ func Test_Chain(t *testing.T) {
 			t.Parallel()
 
 			rec := &recorder{}
+			mws := tt.mws(rec)
+			chain := Chain(mws...)
 
-			err := Chain(tt.mws(rec)...).Wrap(t.Context(), CallInfo{}, func(context.Context) error {
-				rec.add("run")
+			if tt.overwrite {
+				mws[0] = tagged(rec, "changed")
+			}
+
+			err := chain.Wrap(t.Context(), CallInfo{}, func(context.Context) error {
+				rec.add(runMark)
 
 				return nil
 			})

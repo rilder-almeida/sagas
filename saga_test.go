@@ -465,10 +465,28 @@ func middlewaresOf(rec *recorder, names []string) []Middleware {
 	mws := make([]Middleware, 0, len(names))
 
 	for _, n := range names {
-		mws = append(mws, tagged(rec, n))
+		mws = append(mws, phased(rec, n))
 	}
 
 	return mws
+}
+
+const (
+	outerMW  = "outer"
+	closeOut = "<outer"
+	closeMW  = "<mw"
+)
+
+func phased(r *recorder, name string) MiddlewareFunc {
+	return func(ctx context.Context, info CallInfo, call Call) error {
+		r.add(name + ">" + info.Step + ":" + string(info.Phase))
+
+		err := call(ctx)
+
+		r.add("<" + name)
+
+		return err
+	}
 }
 
 func overwrite(mws []Middleware) {
@@ -480,7 +498,10 @@ func overwrite(mws []Middleware) {
 func Test_WithMiddleware(t *testing.T) {
 	t.Parallel()
 
-	both := []string{"outer>", "inner>", "<inner", "<outer", "outer>", "inner>", "<inner", "<outer"}
+	both := []string{
+		"outer>a:execute", "inner>a:execute", "<inner", closeOut,
+		"outer>b:execute", "inner>b:execute", "<inner", closeOut,
+	}
 
 	tests := []struct {
 		name           string
@@ -488,16 +509,22 @@ func Test_WithMiddleware(t *testing.T) {
 		nilEntry       bool
 		calls          int
 		changeAfterNew bool
+		secondOpts     []StepOption
 		wantTrace      []string
 		wantErr        error
 	}{
 		{
+			name:  "[Success] When: the second step is the pivot ; Should: give the middleware the phase pivot for it",
+			names: []string{outerMW}, calls: 1, secondOpts: []StepOption{Pivot()},
+			wantTrace: []string{"outer>a:execute", closeOut, "outer>b:pivot", closeOut},
+		},
+		{
 			name:  "[Success] When: two middlewares are given in one call ; Should: wrap each step call in order",
-			names: []string{"outer", "inner"}, calls: 1, wantTrace: both,
+			names: []string{outerMW, "inner"}, calls: 1, wantTrace: both,
 		},
 		{
 			name:  "[Success] When: the caller changes its slice after New ; Should: run the original ones",
-			names: []string{"outer", "inner"}, calls: 1, changeAfterNew: true, wantTrace: both,
+			names: []string{outerMW, "inner"}, calls: 1, changeAfterNew: true, wantTrace: both,
 		},
 		{
 			name:  "[Fail] When: an entry is nil ; Should: reject it",
@@ -505,7 +532,7 @@ func Test_WithMiddleware(t *testing.T) {
 		},
 		{
 			name:  "[Fail] When: WithMiddleware is called twice ; Should: reject it",
-			names: []string{"outer"}, calls: 2, wantErr: ErrInvalidStep,
+			names: []string{outerMW}, calls: 2, wantErr: ErrInvalidStep,
 		},
 	}
 
@@ -520,7 +547,9 @@ func Test_WithMiddleware(t *testing.T) {
 				mws = append(mws, nil)
 			}
 
-			opts := []Option{Step("a", okAction), Step("b", okAction, After("a"))}
+			second := append([]StepOption{After("a")}, tt.secondOpts...)
+
+			opts := []Option{Step("a", okAction), Step("b", okAction, second...)}
 			for range tt.calls {
 				opts = append(opts, WithMiddleware(mws...))
 			}
@@ -535,6 +564,70 @@ func Test_WithMiddleware(t *testing.T) {
 			if s != nil {
 				_, runErr := s.Run(t.Context(), &tripState{})
 				require.NoError(t, runErr)
+			}
+
+			assert.Equal(t, tt.wantTrace, rec.snapshot())
+		})
+	}
+}
+
+func Test_stepNode_buildCalls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		pivot            bool
+		undo             bool
+		wantCompensation bool
+		wantTrace        []string
+	}{
+		{
+			name:      "[Success] When: a step without a compensation ; Should: run it as execute, no compensation",
+			wantTrace: []string{"mw>pay:execute", "do", closeMW},
+		},
+		{
+			name:      "[Success] When: a pivot step ; Should: run the action as pivot and build no compensation",
+			pivot:     true,
+			wantTrace: []string{"mw>pay:pivot", "do", closeMW},
+		},
+		{
+			name:             "[Success] When: a step with a compensation ; Should: wrap it as compensate",
+			undo:             true,
+			wantCompensation: true,
+			wantTrace:        []string{"mw>pay:execute", "do", closeMW, "mw>pay:compensate", "undo", closeMW},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &recorder{}
+			funcs := &stepFuncs[tripState]{do: func(context.Context, *tripState) error {
+				rec.add("do")
+
+				return nil
+			}}
+
+			if tt.undo {
+				funcs.undo = func(context.Context, *tripState) error {
+					rec.add("undo")
+
+					return nil
+				}
+			}
+
+			sd := &stepDef{name: payStep, pivot: tt.pivot, retry: RetryPolicy{Attempts: 1}}
+
+			var n stepNode[tripState]
+
+			n.buildCalls("trip", sd, funcs, []Middleware{phased(rec, "mw")})
+
+			require.Equal(t, outcomeSuccess, callOnce(t, n.action).kind)
+			require.Equal(t, tt.wantCompensation, n.compensation != nil)
+
+			if n.compensation != nil {
+				require.Equal(t, outcomeSuccess, callOnce(t, n.compensation).kind)
 			}
 
 			assert.Equal(t, tt.wantTrace, rec.snapshot())

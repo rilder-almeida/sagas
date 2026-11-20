@@ -95,7 +95,7 @@ func kindErrorRows() []kindRow {
 		},
 		{
 			"[Success] When: the kind is ErrCallConcurrent ; Should: return its message",
-			ErrCallConcurrent, "sagas: middleware called next while a call was running",
+			ErrCallConcurrent, "sagas: middleware ran the call again while it was running",
 		},
 		{
 			"[Success] When: the kind is ErrGraceEnded ; Should: return its message",
@@ -780,9 +780,9 @@ func goexitHistoryRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action ends by runtime.Goexit on attempt 2 ; Should: keep the attempts and attempt 1",
 		steps: func(rec *recorder) []Option {
-			next := counter()
+			count := counter()
 			leaves := Step("b", func(context.Context, *tripState) error {
-				if next() == 1 {
+				if count() == 1 {
 					return errFirst
 				}
 

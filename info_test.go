@@ -166,15 +166,35 @@ func Test_callMeta_closeAttempt(t *testing.T) {
 			history := tt.meta.history()
 			assertPrevious(t, history, tt.wantPrevious)
 			assertLastCause(t, history, tt.wantCause)
-			assert.Nil(t, tt.meta.kind())
 
 			tt.meta.closeAttempt(errC)
 
 			again := tt.meta.history()
 			assertPrevious(t, again, tt.wantAfter)
 			assertLastCause(t, again, nil)
+
+			assert.Nil(t, pipelineLabel(t, tt.meta))
 		})
 	}
+}
+
+func pipelineLabel(tb testing.TB, m *callMeta) *KindError {
+	tb.Helper()
+
+	if m == nil {
+		return nil
+	}
+
+	spec := &callSpec{
+		saga: infoSaga, step: secondStep, phase: PhaseExecute, retry: RetryPolicy{Attempts: 1},
+		middleware: []Middleware{MiddlewareFunc(replacing)},
+	}
+	call := func(context.Context, *pipeState) error { return errBoom }
+
+	out := pipeline(spec, call)(tb.Context(), m, baseOf(tb, pipeState{}))
+	require.ErrorIs(tb, out.err, errReplaced)
+
+	return out.label
 }
 
 func assertLastCause(t *testing.T, history []error, want error) {
@@ -256,7 +276,7 @@ func Test_callMeta_mark(t *testing.T) {
 
 			tt.meta.mark(tt.label)
 
-			assert.Same(t, tt.want, tt.meta.kind())
+			assert.Same(t, tt.want, pipelineLabel(t, tt.meta))
 		})
 	}
 }

@@ -20,7 +20,7 @@ var ErrCallUnfinished = &KindError{
 
 // ErrCallConcurrent is the error of a call that middleware started while another call of the attempt was running.
 var ErrCallConcurrent = &KindError{
-	name: "call_concurrent", message: "sagas: middleware called next while a call was running",
+	name: "call_concurrent", message: "sagas: middleware ran the call again while it was running",
 }
 
 // PanicError is the error a panic in a call becomes. It holds the panic value and the stack.
@@ -87,8 +87,8 @@ func Chain(mws ...Middleware) MiddlewareFunc {
 
 	return func(ctx context.Context, info CallInfo, call Call) error {
 		for _, mw := range slices.Backward(mws) {
-			next := call
-			call = func(ctx context.Context) error { return mw.Wrap(ctx, info, next) }
+			inner := call
+			call = func(ctx context.Context) error { return mw.Wrap(ctx, info, inner) }
 		}
 
 		return call(ctx)
@@ -296,6 +296,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 		var state *S
 
 		info := CallInfo{Saga: spec.saga, Execution: meta.execution, Step: spec.step, Phase: spec.phase}
+		key := info.IdempotencyKey()
 
 		attempt := func(ctx context.Context) error {
 			at := &attemptState[S]{base: base}
@@ -305,7 +306,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 
 			chain := Chain(attemptLayers(spec, meta, at, &state)...)
 
-			return chain.Wrap(ctx, attemptInfo, runCall(at, call, info.IdempotencyKey()))
+			return chain.Wrap(ctx, attemptInfo, runCall(at, call, key))
 		}
 
 		err := withRetry(spec.retry, meta).Wrap(ctx, info, attempt)
@@ -317,7 +318,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 			return out
 		}
 
-		out.err, out.label, out.cause, out.previous = err, meta.kind(), meta.cause, meta.history()
+		out.err, out.label, out.cause, out.previous = err, meta.label, meta.cause, meta.history()
 
 		if out.cause == nil && ctx.Err() != nil {
 			out.cause = context.Cause(ctx)

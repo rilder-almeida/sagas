@@ -469,10 +469,10 @@ func Test_runAttempts(t *testing.T) {
 
 				var seen []int
 
-				next := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
+				call := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
 
 				start := time.Now()
-				err := runAttempts(t.Context(), RetryPolicy{}, meta, next, tt.draw)
+				err := runAttempts(t.Context(), RetryPolicy{}, meta, call, tt.draw)
 
 				require.NoError(t, err)
 				assert.Equal(t, []int{1, 2, 3}, seen)

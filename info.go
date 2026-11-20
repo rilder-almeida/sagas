@@ -54,14 +54,6 @@ func (m *callMeta) closeAttempt(err error) {
 	m.replaced, m.cause, m.label = nil, nil, nil
 }
 
-func (m *callMeta) kind() *KindError {
-	if m == nil {
-		return nil
-	}
-
-	return m.label
-}
-
 // Phase tells which step method a call runs. The empty string means not set.
 type Phase string
 
