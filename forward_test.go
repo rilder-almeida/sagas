@@ -22,6 +22,7 @@ const (
 	storedCompText = "compensable"
 	hotelRitz      = "ritz"
 	pause          = time.Second
+	panicBoom      = "panic: boom"
 )
 
 func trailOf(kind EventKind, step string) string { return strings.TrimSpace(string(kind) + " " + step) }
@@ -263,6 +264,7 @@ func stepFailsRow() runRow {
 		},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{"b": 3},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantErrs:       []error{errAlwaysFails},
@@ -279,6 +281,7 @@ func goexitRow() runRow {
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrUnknown},
+		wantErrText:  map[string]string{"b": errGoexit.Error()},
 		wantAttempts: map[string]int{"b": 1},
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
@@ -297,8 +300,9 @@ func predicatePanicRow() runRow {
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrPanic},
+		wantErrText:  map[string]string{"b": panicBoom},
 		wantAttempts: map[string]int{"b": 0},
-		wantText:     []string{"panic: boom"},
+		wantText:     []string{panicBoom},
 		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB()),
 	}
@@ -318,6 +322,7 @@ func predicateGoexitRow() runRow {
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantErrText:  map[string]string{"b": errGoexit.Error()},
 		wantAttempts: map[string]int{"b": 0},
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
@@ -339,6 +344,7 @@ func siblingCancelRow() runRow {
 		},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
+		wantErrText:    map[string]string{"b": errAlwaysFails.Error(), "c": context.Canceled.Error()},
 		wantAttempts:   map[string]int{"b": 3, "c": 1},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantCauseText:  map[string]string{"c": quotedB},
@@ -366,6 +372,7 @@ func conflictRow() runRow {
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"c": ErrConflict},
+		wantErrText:  map[string]string{"c": `field Hotel changed by step "c" after step "b"`},
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c"))),
 		wantErrs:     []error{ErrConflict},
@@ -389,6 +396,7 @@ func stoppedBeforeStartRow() runRow {
 		},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{"b": 3},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantErrs:       []error{errAlwaysFails},
@@ -441,10 +449,11 @@ func predicateAppendRow() runRow {
 		journal:        scripted(map[int]error{4: errJournalDown}),
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrPanic},
+		wantErrText:    map[string]string{"b": panicBoom},
 		wantAttempts:   map[string]int{"b": 0},
 		wantUnrecorded: []string{"b"},
 		wantErrs:       []error{ErrJournal, errJournalDown},
-		wantText:       []string{"panic: boom"},
+		wantText:       []string{panicBoom},
 		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepNotStarted},
 		wantTrail:      seq(opened, startOf("a"), doneOf("a")),
 	}
@@ -475,6 +484,7 @@ func failureAppendRow() runRow {
 		journal:        scripted(map[int]error{5: errJournalDown}),
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
+		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{"b": 3},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantUnrecorded: []string{"b"},
