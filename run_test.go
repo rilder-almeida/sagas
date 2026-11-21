@@ -1104,7 +1104,7 @@ func runRows() []runRow {
 func skippedAtGraceEndRow() runRow {
 	return runRow{
 		name: "[Fail] When: the step-skipped append of a forward-only step fails at the grace end ; " +
-			"Should: end ErrIncomplete and match ErrJournal, ErrGraceEnded and the caller cause",
+			"Should: end ErrIncomplete and match ErrGraceEnded and the caller cause, not ErrJournal",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.pivot(), rec.stepIf("z", rec.when(false, "z")))
 		},
@@ -1127,7 +1127,7 @@ func skippedAtGraceEndRow() runRow {
 func forwardIntentAtGraceEndRow() runRow {
 	return runRow{
 		name: "[Fail] When: the intent append of a forward-only step fails at the grace end ; " +
-			"Should: end ErrIncomplete and match ErrJournal, ErrGraceEnded and the caller cause",
+			"Should: end ErrIncomplete and match ErrGraceEnded and the caller cause, not ErrJournal",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
 		},
@@ -1149,7 +1149,7 @@ func forwardIntentAtGraceEndRow() runRow {
 func pivotOutcomeAtGraceEndRow() runRow {
 	return runRow{
 		name: "[Fail] When: the outcome append of the pivot fails at the grace end ; " +
-			"Should: leave the pivot unknown and match ErrJournal, ErrGraceEnded and the caller cause",
+			"Should: leave the pivot unknown and match ErrGraceEnded and the caller cause, not ErrJournal",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
 		},
@@ -1172,7 +1172,7 @@ func pivotOutcomeAtGraceEndRow() runRow {
 func finishedAtGraceEndRow() runRow {
 	return runRow{
 		name: "[Fail] When: the saga-finished append of a compensated run fails at the grace end ; " +
-			"Should: keep ErrCompensated and match ErrJournal, ErrGraceEnded and the caller cause",
+			"Should: keep ErrCompensated and match ErrGraceEnded and the caller cause, not ErrJournal",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), once("b", alwaysFails))
 		},
