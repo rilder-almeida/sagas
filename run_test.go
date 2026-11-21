@@ -1083,6 +1083,7 @@ func runRows() []runRow {
 		forwardOnlyIntentRow(),
 		undoIntentRejectedRow(),
 		undoRunningRejectedRow(),
+		undoOutcomeRejectedRow(),
 		turnAfterRejectionRow(),
 		forwardIntentAtGraceEndRow(),
 		pivotOutcomeAtGraceEndRow(),
@@ -1377,6 +1378,29 @@ func rejectedUndoTrail() [][]string {
 		),
 		seq(startOf("c"), failedOf("c"), compStartOf("d")),
 	)
+}
+
+func undoOutcomeRejectedRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal rejects the outcome append of a successful compensation ; " +
+			"Should: end ErrConcurrentWriter without failing that compensation",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:       map[int]error{9: ErrConcurrentWriter},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
+		wantNotErrs:  []error{ErrJournal},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:  []string{"b"},
+		wantOrder:    [][2]string{{"b", undoB}},
+		wantTrail:    chainTrail(compStartOf("b")),
+	}
 }
 
 func undoRunningRejectedRow() runRow {
