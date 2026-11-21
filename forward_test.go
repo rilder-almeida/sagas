@@ -102,6 +102,68 @@ func pivotRows() []runRow {
 		forwardOnlyCommitFailsRow(),
 		lateAfterRejectionRow(),
 		lateCompensableSiblingRow(),
+		lateForwardOnlyAfterRejectionRow(),
+		lateSuccessAfterRejectionRow(),
+	}
+}
+
+func lateForwardOnlyAfterRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: a forward-only step times out and fails after the grace end once the journal rejected " +
+			"an event ; Should: join ErrGraceEnded to its error and match the caller cause",
+		steps: func(rec *recorder) Flow {
+			z := once("z", lateFailure)
+			z.AttemptTimeout = pause / 2
+
+			return Sequence(rec.undoable("a"), rec.pivot(), Parallel(z, rec.step("y")))
+		},
+		opts:           []Option{WithRecoveryTimeout(pause)},
+		script:         map[int]error{7: ErrConcurrentWriter},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrConcurrentWriter,
+		wantKinds:      map[string]*KindError{"z": ErrFailed},
+		wantFailed:     []string{"z"},
+		wantErrText:    map[string]string{"z": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"z": 1},
+		wantCauseIs:    map[string]error{"z": context.DeadlineExceeded},
+		wantUnrecorded: []string{"z"},
+		wantErrs:       []error{ErrConcurrentWriter, errAlwaysFails, ErrGraceEnded, errStop},
+		wantNotErrs:    []error{ErrJournal},
+		wantTextCount:  map[string]int{ErrGraceEnded.Error(): 1},
+		wantSteps: map[string]stepStatus{
+			"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown, "y": stepNotStarted,
+		},
+		wantPending: []string{"z", "y"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
+		wantZones: []StepZone{
+			{Name: "a", Zone: ZoneCompensable},
+			{Name: "p", Zone: ZonePivot},
+			{Name: "z", Zone: ZoneForwardOnly},
+			{Name: "y", Zone: ZoneForwardOnly},
+		},
+	}
+}
+
+func lateSuccessAfterRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: a step succeeds after the grace end once the journal rejected an event ; " +
+			"Should: end ErrConcurrentWriter without matching the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(rec.step("b"), act("c", lateSuccess)))
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		script:      map[int]error{6: ErrConcurrentWriter},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  StatusUnfinished,
+		wantKind:    ErrConcurrentWriter,
+		wantErrs:    []error{ErrConcurrentWriter},
+		wantNotErrs: []error{ErrJournal, errStop, ErrGraceEnded},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
+		wantPending: []string{"b", "c"},
+		wantTrail:   afterA(together(startOf("b"), startOf("c"))),
 	}
 }
 

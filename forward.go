@@ -50,10 +50,11 @@ type verdict struct {
 }
 
 type settled[S any] struct {
-	step int
-	out  outcome[S]
-	base snapshot[S]
-	late bool
+	step   int
+	out    outcome[S]
+	base   snapshot[S]
+	late   bool
+	graced bool
 }
 
 func (verdict) isReport() {}
@@ -217,7 +218,7 @@ func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j jo
 	}
 
 	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) {
-		done.late = graceEnded(grace)
+		done.late, done.graced = graceEnded(grace), r.saga.steps[j.step].zone != ZoneCompensable
 		reports <- done
 	})
 }
@@ -314,8 +315,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 
 	if r.rejected != nil {
 		if f.out.kind != outcomeSuccess {
-			r.graceHit = r.graceHit || f.late
-			r.note(i, f.out)
+			r.note(i, r.lateResult(f))
 		}
 
 		r.runs[i].status = runUnknown
@@ -324,14 +324,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	}
 
 	if f.out.kind != outcomeSuccess {
-		r.graceHit = r.graceHit || f.late
-
-		out := f.out
-		if f.late && r.saga.steps[i].zone != ZoneCompensable {
-			out = withGraceEnd(out)
-		}
-
-		r.fail(grace, i, out)
+		r.fail(grace, i, r.lateResult(f))
 
 		return
 	}

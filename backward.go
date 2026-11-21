@@ -106,7 +106,7 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 		return
 	}
 
-	r.graceHit = r.graceHit || graceEnded(grace)
+	r.decidedUnrun(grace)
 
 	switch decide(b.halted, blockedBelow) {
 	case compHalted:
@@ -139,14 +139,11 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 			return
 		}
 
-		out := outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal}
-
-		if graceEnded(grace) {
-			r.graceHit = true
-			out = withGraceEnd(out)
+		refused := settled[S]{
+			step: i, out: outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal}, late: graceEnded(grace),
+			graced: true,
 		}
-
-		r.lost(grace, b, i, out)
+		r.lost(grace, b, i, r.lateResult(&refused))
 
 		return
 	}
@@ -156,7 +153,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 
 	b.wg.Go(func() {
 		r.act(grace, j, step.compensation, func(done settled[S]) {
-			done.late = graceEnded(grace)
+			done.late, done.graced = graceEnded(grace), true
 			b.results <- done
 		})
 	})
@@ -189,12 +186,26 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: err, label: res.label}
 	}
 
-	if f.late {
-		r.graceHit = true
-		out = withGraceEnd(out)
+	f.out = out
+	r.lost(grace, b, f.step, r.lateResult(f))
+}
+
+func (r *runner[S]) lateResult(f *settled[S]) outcome[S] {
+	if !f.late || f.out.kind == outcomeSuccess {
+		return f.out
 	}
 
-	r.lost(grace, b, f.step, out)
+	r.graceHit = true
+
+	if f.graced {
+		return withGraceEnd(f.out)
+	}
+
+	return f.out
+}
+
+func (r *runner[S]) decidedUnrun(grace context.Context) {
+	r.graceHit = r.graceHit || graceEnded(grace)
 }
 
 func withGraceEnd[S any](out outcome[S]) outcome[S] {
@@ -236,7 +247,8 @@ func (r *runner[S]) halt(grace context.Context, b *rollback[S]) {
 	for _, i := range slices.Backward(r.saga.order) {
 		if !b.done[i] && !b.begun[i] && r.owes(i) {
 			b.begun[i] = true
-			r.graceHit = r.graceHit || graceEnded(grace)
+
+			r.decidedUnrun(grace)
 			r.skip(grace, b, i, EventCompensationHalted)
 		}
 	}
