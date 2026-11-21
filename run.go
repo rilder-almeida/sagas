@@ -89,7 +89,7 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 
 		failed := settled[S]{
 			out:  outcome[S]{kind: outcomeFailure, err: fmt.Errorf("%w: %w", ErrJournal, err)},
-			late: graceEnded(ctx), graced: true,
+			late: e.Kind != EventSagaStarted && graceEnded(ctx), graced: true,
 		}
 		err = r.lateResult(&failed).err
 		r.journalErrs = append(r.journalErrs, err)

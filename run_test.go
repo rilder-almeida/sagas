@@ -142,6 +142,8 @@ type executionRow struct {
 	id           string
 	script       map[int]error
 	concurrent   bool
+	recovery     time.Duration
+	cancelAfter  time.Duration
 	wantErrs     [][]error
 	wantNotErrs  []error
 	wantExecutes int64
@@ -188,6 +190,16 @@ func Test_Saga_Run_executionID(t *testing.T) {
 			wantErrs: [][]error{{ErrJournal, errJournalDown}},
 		},
 		{
+			name: "[Fail] When: the saga-started append fails at the grace end ; " +
+				"Should: return the journal error as is, without ErrGraceEnded and no RunError",
+			id:          orderID,
+			script:      map[int]error{1: errAwaitDone},
+			recovery:    pause,
+			cancelAfter: pause,
+			wantErrs:    [][]error{{ErrJournal, context.Canceled}},
+			wantNotErrs: []error{ErrGraceEnded, errStop},
+		},
+		{
 			name:        "[Fail] When: the ID breaks the name rule ; Should: return ErrInvalidRun before any event",
 			id:          "order:42",
 			wantErrs:    [][]error{{ErrInvalidRun}},
@@ -209,7 +221,7 @@ func Test_Saga_Run_executionID(t *testing.T) {
 				journal := newScriptJournal(tt.script)
 				step := &orderStep{executes: &atomic.Int64{}}
 
-				s, err := New[orderState]("order", step, WithJournal(journal))
+				s, err := New[orderState]("order", step, WithJournal(journal), WithRecoveryTimeout(tt.recovery))
 				require.NoError(t, err)
 
 				errs := runOrders(t.Context(), s, &tt)
@@ -238,6 +250,13 @@ func Test_Saga_Run_executionID(t *testing.T) {
 
 func runOrders(ctx context.Context, s *Saga[orderState], tt *executionRow) []error {
 	errs := make([]error, len(tt.wantErrs))
+
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
+	if tt.cancelAfter > 0 {
+		time.AfterFunc(tt.cancelAfter, func() { cancel(errStop) })
+	}
 
 	var wg sync.WaitGroup
 
@@ -1039,6 +1058,30 @@ func runRows() []runRow {
 		pivotOutcomeAtGraceEndRow(),
 		finishedAtGraceEndRow(),
 		finishedBeforeGraceEndRow(),
+		skippedAtGraceEndRow(),
+	}
+}
+
+func skippedAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the step-skipped append of a forward-only step fails at the grace end ; " +
+			"Should: end ErrIncomplete and match ErrJournal, ErrGraceEnded and the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), rec.stepIf("z", rec.when(false, "z")))
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		script:      map[int]error{6: errAwaitDone},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  StatusIncomplete,
+		wantKind:    ErrIncomplete,
+		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrCompensated},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
+		wantPending: []string{"z"},
+		wantOrder:   [][2]string{{"p", "if:z"}},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantZones:   pivotZones("z"),
 	}
 }
 
