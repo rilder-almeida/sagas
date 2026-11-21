@@ -285,14 +285,15 @@ func callerDoneRow() runRow {
 
 func callerDoneCauseRow() runRow {
 	return runRow{
-		name: "[Fail] When: the caller's context is done with a cause before Run ; Should: match that cause",
+		name: "[Fail] When: the caller's context is done with a cause before Run ; " +
+			"Should: match that cause and context.Canceled",
 		steps: func(rec *recorder) Flow {
 			return rec.undoable("a")
 		},
 		cancelCause: errStop,
 		wantStatus:  StatusCompensated,
 		wantKind:    ErrCompensated,
-		wantErrs:    []error{errStop},
+		wantErrs:    []error{errStop, context.Canceled},
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepNotStarted},
 		wantTrail:   seq(opened, closed),
@@ -1086,7 +1087,7 @@ func graceTurnAfterReadRow() runRow {
 func graceHaltAfterReadRow() runRow {
 	return runRow{
 		name: "[Fail] When: a Halt failure is read after the grace end ; " +
-			"Should: halt the waiting compensation and match the caller cause",
+			"Should: halt the waiting compensation and match the caller cause and context.Canceled",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
 				failingUndo("b", CompensationHalt, slowUndo(rec, errAlwaysFails)),
@@ -1103,7 +1104,7 @@ func graceHaltAfterReadRow() runRow {
 		wantFailed:   []string{"c", comp("b")},
 		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("b"): errAlwaysFails.Error()},
 		wantAttempts: map[string]int{"c": 1, comp("b"): 1},
-		wantErrs:     []error{errAlwaysFails, errStop},
+		wantErrs:     []error{errAlwaysFails, errStop, context.Canceled},
 		wantNotErrs:  []error{ErrGraceEnded},
 		wantSteps: map[string]stepStatus{
 			"a": stepHalted, "b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated,

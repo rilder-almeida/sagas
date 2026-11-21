@@ -175,7 +175,7 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 	sealed := status != "" && r.record(grace, &Event{Kind: EventSagaFinished, Status: status})
 
 	if r.graceHit && r.interrupted == nil {
-		r.interrupted = context.Cause(ctx)
+		r.interrupted = callerCause(ctx)
 	}
 
 	causes := r.causes()
@@ -207,6 +207,15 @@ func (s runStatus) stepStatus() stepStatus {
 	}
 
 	return stepUnknown
+}
+
+func callerCause(ctx context.Context) error {
+	cause := context.Cause(ctx)
+	if err := ctx.Err(); !errors.Is(cause, err) {
+		return errors.Join(cause, err)
+	}
+
+	return cause
 }
 
 func (r *runner[S]) pending() []string {

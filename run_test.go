@@ -1501,3 +1501,52 @@ func Benchmark_Saga_Run(b *testing.B) {
 		}
 	}
 }
+
+func Test_callerCause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cause   error
+		cancel  bool
+		wantIs  []error
+		wantNil bool
+	}{
+		{
+			name:    "[Success] When: the context is not done ; Should: return nil",
+			wantNil: true,
+		},
+		{
+			name:   "[Success] When: the context is canceled without a cause ; Should: match context.Canceled",
+			cancel: true,
+			wantIs: []error{context.Canceled},
+		},
+		{
+			name: "[Success] When: the context is canceled with a cause ; " +
+				"Should: match the cause and context.Canceled",
+			cause:  errStop,
+			cancel: true,
+			wantIs: []error{errStop, context.Canceled},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+
+			if tt.cancel {
+				cancel(tt.cause)
+			}
+
+			got := callerCause(ctx)
+			assert.Equal(t, tt.wantNil, got == nil)
+
+			for _, want := range tt.wantIs {
+				require.ErrorIs(t, got, want)
+			}
+		})
+	}
+}

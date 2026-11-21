@@ -156,7 +156,7 @@ func (r *runner[S]) callerDone(stepCtx context.Context) bool {
 		return false
 	}
 
-	r.interrupted = context.Cause(stepCtx)
+	r.interrupted = callerCause(stepCtx)
 	r.stop(r.interrupted)
 
 	return true
