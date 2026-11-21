@@ -104,7 +104,7 @@ func backwardRows() []runRow {
 		graceRunningRow(),
 		graceIntentRow(),
 		graceLateConflictRow(),
-		graceReadLateSuccessRow(),
+		graceSuccessCommittedRow(),
 		graceReadLateFailureRow(),
 		graceLateFailureRow(),
 		callerDuringPredicateRow(),
@@ -742,6 +742,7 @@ func graceLateConflictRow() runRow {
 		wantUnrecorded: []string{comp("d")},
 		wantErrs:       []error{ErrConflict, ErrGraceEnded, errStop},
 		wantNotErrs:    []error{ErrCompensated, ErrJournal},
+		wantTextCount:  map[string]int{ErrGraceEnded.Error(): 3},
 		wantSteps:      map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed},
 		wantPending:    []string{"d"},
 		wantTrail: slices.Concat(
@@ -779,10 +780,10 @@ func readLateTrail(bOutcome string) [][]string {
 	)
 }
 
-func graceReadLateSuccessRow() runRow {
+func graceSuccessCommittedRow() runRow {
 	return runRow{
-		name: "[Fail] When: a compensation succeeds before the grace end and is read after it ; " +
-			"Should: commit it as compensated",
+		name: "[Fail] When: a compensation returns success before the grace end ; " +
+			"Should: commit it as compensated and match neither the caller cause nor ErrGraceEnded",
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				undoOnce("b", okAction, slowUndo(rec, nil)), undoOnce("d", okAction, rec.do("undo:d")),
