@@ -180,6 +180,13 @@ func Test_resolve(t *testing.T) {
 			flow: nilGroup,
 		},
 		{
+			name:        "[Fail] When: an item embeds *Step ; Should: report its type and position",
+			flow:        Sequence(a, &sharedA{Step: &Step{}, do: okAction}),
+			wantSteps:   []Flow{a},
+			wantParents: [][]int{{}},
+			wantErr:     "Sequence item at index 1 has type *sagas.sharedA",
+		},
+		{
 			name:        "[Fail] When: a Parallel item is a nil Group ; Should: report its position",
 			flow:        Parallel(a, nilGroup),
 			wantSteps:   []Flow{a},

@@ -19,8 +19,13 @@ func indexSteps(named []namedStep) []error {
 		}
 
 		err := fmt.Errorf("%w: step %q: declared more than once", ErrDuplicateStep, n.name)
-		if n.derived && named[at].derived && n.typ == named[at].typ {
+
+		switch {
+		case !n.derived || !named[at].derived:
+		case n.typ == named[at].typ:
 			err = fmt.Errorf("%w; set Name on each step of type %s", err, n.typ)
+		default:
+			err = fmt.Errorf("%w; set Name on each step of types %s and %s", err, named[at].typ, n.typ)
 		}
 
 		errs = append(errs, err)

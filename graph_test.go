@@ -106,6 +106,13 @@ func Test_indexSteps(t *testing.T) {
 			wantHint:     true,
 		},
 		{
+			name:         "[Fail] When: two instances of one generic type take the type name ; Should: name both types",
+			flow:         Parallel(&Notify[int]{}, &Notify[string]{}),
+			wantErrs:     1,
+			wantContains: "set Name on each step of types *sagas.Notify[int] and *sagas.Notify[string]",
+			wantHint:     true,
+		},
+		{
 			name:         "[Fail] When: a set name equals the type name of another step ; Should: not blame the type",
 			flow:         Parallel(&Reserve{}, act(reserveName, okAction)),
 			wantErrs:     1,

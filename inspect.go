@@ -148,13 +148,9 @@ func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []erro
 	hasEnabled := method(v, "Enabled", &m.enabled, &rules)
 	hasWrap := method(v, "Wrap", &wrap, &rules)
 
-	switch execPresent, pivotPresent := present(v, "Execute"), present(v, "Pivot"); {
-	case !execPresent && !pivotPresent:
-		rules = append(rules, fmt.Sprintf("type %s has neither Execute nor Pivot", v.Type()))
-	case execPresent && pivotPresent:
-		rules = append(rules, fmt.Sprintf("type %s has both Execute and Pivot", v.Type()))
-	default:
-	}
+	ambiguous := ambiguousMethods(v.Type())
+	rules = append(rules, ambiguous.rules...)
+	rules = append(rules, kindRules(v, &ambiguous)...)
 
 	report := StepReport{
 		Name: n.name, Description: settings.Description, Retry: settings.Retry,
@@ -162,7 +158,6 @@ func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []erro
 		Execute: hasExecute, Pivot: hasPivot, Compensate: hasCompensate, Enabled: hasEnabled, Wrap: hasWrap,
 	}
 
-	rules = append(rules, ambiguousWrap(v.Type())...)
 	rules = append(rules, checkSettings(&report)...)
 
 	m.call = execute
@@ -182,8 +177,18 @@ func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []erro
 	return report, m, errs
 }
 
-func present(v reflect.Value, name string) bool {
-	return v.MethodByName(name).IsValid()
+func kindRules(v reflect.Value, a *ambiguity) []string {
+	execute := v.MethodByName("Execute").IsValid() || a.names["Execute"]
+	pivot := v.MethodByName("Pivot").IsValid() || a.names["Pivot"]
+
+	switch {
+	case !execute && !pivot:
+		return []string{fmt.Sprintf("type %s has neither Execute nor Pivot", v.Type())}
+	case execute && pivot:
+		return []string{fmt.Sprintf("type %s has both Execute and Pivot", v.Type())}
+	default:
+		return nil
+	}
 }
 
 func method[F any](v reflect.Value, name string, dst *F, rules *[]string) bool {
@@ -205,29 +210,44 @@ func method[F any](v reflect.Value, name string, dst *F, rules *[]string) bool {
 	return true
 }
 
-func ambiguousWrap(t reflect.Type) []string {
-	if _, ok := t.MethodByName("Wrap"); ok || t.Kind() != reflect.Pointer || t.Elem().Kind() != reflect.Struct {
-		return nil
+type ambiguity struct {
+	names map[string]bool
+	rules []string
+}
+
+func ambiguousMethods(t reflect.Type) ambiguity {
+	a := ambiguity{names: map[string]bool{}}
+
+	for _, name := range []string{"Execute", "Pivot", "Compensate", "Enabled", "Wrap"} {
+		if _, declared := t.MethodByName(name); declared {
+			continue
+		}
+
+		if fields := promoters(t.Elem(), name); len(fields) > 1 {
+			a.names[name] = true
+			a.rules = append(a.rules, fmt.Sprintf("type %s declares no %s and embeds one in %s",
+				t, name, strings.Join(fields, " and ")))
+		}
 	}
 
+	return a
+}
+
+func promoters(t reflect.Type, name string) []string {
 	var fields []string
 
-	for f := range t.Elem().Fields() {
+	for f := range t.Fields() {
 		ft := f.Type
-		if ft.Kind() != reflect.Pointer {
+		if ft.Kind() != reflect.Pointer && ft.Kind() != reflect.Interface {
 			ft = reflect.PointerTo(ft)
 		}
 
-		if _, ok := ft.MethodByName("Wrap"); f.Anonymous && ok {
+		if _, ok := ft.MethodByName(name); f.Anonymous && ok {
 			fields = append(fields, f.Name)
 		}
 	}
 
-	if len(fields) <= 1 {
-		return nil
-	}
-
-	return []string{fmt.Sprintf("type %s declares no Wrap and embeds one in %s", t, strings.Join(fields, " and "))}
+	return fields
 }
 
 func checkExecutionID(t reflect.Type) error {

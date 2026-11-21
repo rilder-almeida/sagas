@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 )
 
@@ -92,12 +93,14 @@ func (r *resolution) visit(f Flow, at string) ends {
 }
 
 func (r *resolution) step(f Flow, at string) ends {
-	s := f.flowStep()
-	if s == nil {
-		r.errs = append(r.errs, fmt.Errorf("%w: %s is nil", ErrInvalidStep, at))
+	if t := reflect.TypeOf(f); !embedsStep(t) {
+		r.errs = append(r.errs,
+			fmt.Errorf("%w: %s has type %s, want a pointer to a struct that embeds Step", ErrInvalidStep, at, t))
 
 		return ends{}
 	}
+
+	s := f.flowStep()
 
 	i, seen := r.index[s]
 	if !seen {
@@ -108,6 +111,27 @@ func (r *resolution) step(f Flow, at string) ends {
 	}
 
 	return ends{heads: []int{i}, tails: []int{i}}
+}
+
+func embedsStep(t reflect.Type) bool {
+	if t.Kind() != reflect.Pointer || t.Elem().Kind() != reflect.Struct {
+		return false
+	}
+
+	f, ok := t.Elem().FieldByName("Step")
+	if !ok || !f.Anonymous || f.Type != reflect.TypeFor[Step]() {
+		return false
+	}
+
+	outer := t.Elem()
+	for _, i := range f.Index[:len(f.Index)-1] {
+		outer = outer.Field(i).Type
+		if outer.Kind() != reflect.Struct {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (r *resolution) link(child int, parents []int) {

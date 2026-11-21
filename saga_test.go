@@ -165,7 +165,7 @@ func Test_New(t *testing.T) {
 			name: "[Fail] When: the saga and a step are both bad ; Should: join both errors",
 			flow: &idleStep{}, opts: []Option{nil},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`saga ""`, "nil Option", "neither Execute nor Pivot"},
+			wantContains: []string{`saga ""`, "nil Option", neitherText},
 		},
 	}
 

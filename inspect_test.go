@@ -70,6 +70,57 @@ type twoWraps struct {
 	otherWrapper
 }
 
+type otherDoer struct{}
+
+func (otherDoer) Execute(context.Context, *tripState) error { return nil }
+
+type otherUndoer struct{}
+
+func (otherUndoer) Compensate(context.Context, *tripState) error { return nil }
+
+type otherChecker struct{}
+
+func (otherChecker) Enabled(*tripState) bool { return true }
+
+type twoDoers struct {
+	Step
+	doer
+	otherDoer
+}
+
+type twoUndoers struct {
+	Step
+	doer
+	undoer
+	otherUndoer
+}
+
+type twoCheckers struct {
+	Step
+	doer
+	checker
+	otherChecker
+}
+
+type ifaceWrap struct {
+	Step
+	doer
+	wrapper
+	Middleware
+}
+
+type sharedA struct {
+	*Step
+	doer
+}
+
+type sharedB struct {
+	*Step
+	doer
+}
+
+type nestedReserve struct{ Reserve }
+
 type ownWrap struct {
 	Step
 	doer
@@ -99,6 +150,7 @@ const (
 	quotedA     = `"a"`
 	negAttempts = "Retry.Attempts is negative"
 	badName     = "name may hold only ASCII letters"
+	neitherText = "neither Execute nor Pivot"
 )
 
 type inspectRow struct {
@@ -180,6 +232,12 @@ func inspectSuccessRows() []inspectRow {
 			},
 		},
 		{
+			name:        "[Success] When: the type embeds Step through a struct by value ; Should: find its methods",
+			inspect:     trip,
+			flow:        &nestedReserve{},
+			wantReports: []StepReport{{Name: "nested-reserve", Execute: true}},
+		},
+		{
 			name:    "[Success] When: the state declares ExecutionID() string ; Should: accept it",
 			inspect: Inspect[goodIDState], flow: &okStep[goodIDState]{},
 			wantReports: []StepReport{{Name: "ok-step", Execute: true}},
@@ -203,12 +261,14 @@ func inspectStepRows() []inspectRow {
 		nilGroup *Group
 	)
 
+	shared := &Step{Name: "shared"}
+
 	return []inspectRow{
 		{
 			name:    "[Fail] When: the type has neither Execute nor Pivot ; Should: name the step and the type",
 			inspect: trip, flow: &idleStep{},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "idle-step"`, "*sagas.idleStep", "neither Execute nor Pivot"},
+			wantContains: []string{`step "idle-step"`, "*sagas.idleStep", neitherText},
 		},
 		{
 			name:    "[Fail] When: the type has both Execute and Pivot ; Should: name the step and the type",
@@ -265,7 +325,7 @@ func inspectStepRows() []inspectRow {
 			name:    "[Fail] When: the type embeds two fields with Wrap and declares none ; Should: name the fields",
 			inspect: trip, flow: &twoWraps{do: okAction, wrap: okMiddleware(), otherWrapper: otherWrapper{}},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "two-wraps"`, "wrapper", "otherWrapper", "declares no Wrap"},
+			wantContains: []string{`step "two-wraps"`, "declares no Wrap and embeds one in wrapper and otherWrapper"},
 		},
 		{
 			name:    "[Fail] When: an explicit name breaks the name rule ; Should: name the step",
@@ -300,6 +360,63 @@ func inspectStepRows() []inspectRow {
 			inspect: trip, flow: Sequence(act("a", okAction), nil),
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{"Sequence item at index 1 is nil"},
+		},
+		{
+			name:     "[Fail] When: the type embeds a struct and an interface with Wrap ; Should: name both fields",
+			inspect:  trip,
+			flow:     &ifaceWrap{do: okAction, wrap: okMiddleware(), Middleware: okMiddleware()},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "iface-wrap"`, "declares no Wrap and embeds one in wrapper and Middleware",
+			},
+		},
+		{
+			name:     "[Fail] When: two embedded fields promote Execute ; Should: name the method and both fields",
+			inspect:  trip,
+			flow:     &twoDoers{do: okAction, otherDoer: otherDoer{}},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "two-doers"`, "declares no Execute and embeds one in doer and otherDoer",
+			},
+			wantAbsent: []string{neitherText},
+		},
+		{
+			name:     "[Fail] When: two embedded fields promote Compensate ; Should: name the method and both fields",
+			inspect:  trip,
+			flow:     &twoUndoers{do: okAction, undo: okAction, otherUndoer: otherUndoer{}},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "two-undoers"`, "declares no Compensate and embeds one in undoer and otherUndoer",
+			},
+		},
+		{
+			name:     "[Fail] When: two embedded fields promote Enabled ; Should: name the method and both fields",
+			inspect:  trip,
+			flow:     &twoCheckers{do: okAction, pred: okPredicate, otherChecker: otherChecker{}},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "two-checkers"`, "declares no Enabled and embeds one in checker and otherChecker",
+			},
+		},
+		{
+			name:     "[Fail] When: two types embed one shared *Step ; Should: reject both items naming type and place",
+			inspect:  trip,
+			flow:     Sequence(&sharedA{Step: shared, do: okAction}, &sharedB{Step: shared, do: okAction}),
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				"Sequence item at index 0 has type *sagas.sharedA", "Sequence item at index 1 has type *sagas.sharedB",
+				"want a pointer to a struct that embeds Step",
+			},
+			wantNoErrs: []error{ErrCycle},
+		},
+		{
+			name:     "[Fail] When: a struct value is an item ; Should: reject it naming type and place",
+			inspect:  trip,
+			flow:     Parallel(act("a", okAction), sharedA{Step: &Step{}, do: okAction}),
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				"Parallel item at index 1 has type sagas.sharedA", "want a pointer to a struct that embeds Step",
+			},
 		},
 		{
 			name:         "[Fail] When: a Sequence item is a nil Group ; Should: reject it without a panic",
@@ -337,7 +454,7 @@ func inspectStepRows() []inspectRow {
 			name:    "[Fail] When: a step and the state type are both bad ; Should: join both errors",
 			inspect: Inspect[chanState], flow: &idleStep{},
 			wantErrs:     []error{ErrInvalidStep, ErrInvalidState},
-			wantContains: []string{"neither Execute nor Pivot", "chanState"},
+			wantContains: []string{neitherText, "chanState"},
 		},
 		{
 			name:         "[Fail] When: the state ExecutionID has another signature ; Should: return ErrInvalidState",
