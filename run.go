@@ -109,7 +109,7 @@ func (r *runner[S]) resend(ctx context.Context) error {
 		return err
 	}
 
-	if e.Kind != EventStepStarted || r.ran(e.Step) {
+	if e.Kind != EventStepStarted {
 		return nil
 	}
 
@@ -117,16 +117,6 @@ func (r *runner[S]) resend(ctx context.Context) error {
 	closing := r.stamp(&Event{Kind: EventStepFailed, Step: e.Step, Err: eventErrorOf(failure)})
 
 	return r.send(ctx, &closing)
-}
-
-func (r *runner[S]) ran(step string) bool {
-	for i := range r.saga.steps {
-		if r.saga.steps[i].name == step {
-			return r.runs[i].started
-		}
-	}
-
-	return false
 }
 
 func (r *runner[S]) send(ctx context.Context, e *Event) error {
