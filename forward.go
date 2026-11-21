@@ -355,7 +355,11 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
 	e := r.note(i, out)
 
-	if !r.record(ctx, &e) && (i != r.saga.pivot || out.kind != outcomeFailure) {
+	switch {
+	case r.record(ctx, &e):
+	case i == r.saga.pivot && out.kind == outcomeFailure:
+		r.record(ctx, &e)
+	default:
 		r.runs[i].status = runUnknown
 	}
 }

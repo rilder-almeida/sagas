@@ -97,6 +97,7 @@ func pivotRows() []runRow {
 		forwardOnlyLateSuccessRow(),
 		pivotCommitFailsRow(),
 		pivotErrorAppendRow(),
+		pivotErrorAppendTwiceRow(),
 		forwardOnlyOwnFailureRow(),
 		lateSiblingAfterOwnFailureRow(),
 		forwardOnlyCommitFailsRow(),
@@ -402,17 +403,44 @@ func pivotCommitFailsRow() runRow {
 	}
 }
 
+func failingPivot() func(*recorder) Flow {
+	return func(rec *recorder) Flow {
+		p := paying("p", alwaysFails)
+		p.Retry = NoRetry()
+
+		return Sequence(rec.undoable("a"), p)
+	}
+}
+
 func pivotErrorAppendRow() runRow {
 	return runRow{
-		name: "[Fail] When: the pivot returns an error and its failure append fails ; " +
-			"Should: still compensate the steps before it and match ErrJournal",
-		steps: func(rec *recorder) Flow {
-			p := paying("p", alwaysFails)
-			p.Retry = NoRetry()
+		name: "[Fail] When: the pivot returns an error and its failure append fails once ; " +
+			"Should: append the failure again before compensating and match ErrJournal",
+		steps:        failingPivot(),
+		script:       map[int]error{5: errJournalDown},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"p": ErrFailed},
+		wantFailed:   []string{"p"},
+		wantErrText:  map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"p": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantNotErrs:  []error{ErrIncomplete},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
+		),
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+	}
+}
 
-			return Sequence(rec.undoable("a"), p)
-		},
-		script:          map[int]error{5: errJournalDown},
+func pivotErrorAppendTwiceRow() runRow {
+	return runRow{
+		name: "[Fail] When: the pivot returns an error and its failure append fails twice ; " +
+			"Should: still compensate the steps before it and match ErrJournal",
+		steps:           failingPivot(),
+		script:          map[int]error{5: failing(errJournalDown, 2)},
 		wantStatus:      StatusCompensated,
 		wantKind:        ErrCompensated,
 		wantKinds:       map[string]*KindError{"p": ErrFailed},
