@@ -26,7 +26,7 @@ type graceKey struct{}
 
 var (
 	errAwaitDone      = errors.New("sagas: test: wait for the context to end")
-	errAwaitThenStore = errors.New("sagas: test: wait for the context to end, then store the event")
+	errAwaitThenStore = errors.New("sagas: test: wait for the context to end, then store this and every later event")
 )
 
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -48,6 +48,7 @@ type scriptJournal struct {
 
 	errs       map[int]error
 	failed     map[int]int
+	breaksCtx  bool
 	ctxs       []context.Context
 	executions []string
 	mu         sync.Mutex
@@ -85,10 +86,18 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 		if errors.Is(err, errAwaitThenStore) {
 			<-ctx.Done()
 
-			return j.MemoryJournal.Append(ctx, e)
+			j.mu.Lock()
+			j.breaksCtx = true
+			j.mu.Unlock()
+
+			return j.MemoryJournal.Append(context.WithoutCancel(ctx), e)
 		}
 
 		return err
+	}
+
+	if j.breaksCtx {
+		ctx = context.WithoutCancel(ctx)
 	}
 
 	j.mu.Unlock()
@@ -1094,14 +1103,14 @@ func skippedAtGraceEndRow() runRow {
 		script:      map[int]error{6: errAwaitDone},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  StatusIncomplete,
+		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrCompensated},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
 		wantPending: []string{"z"},
 		wantOrder:   [][2]string{{"p", "if:z"}},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p")),
 		wantZones:   pivotZones("z"),
 	}
 }
@@ -1117,13 +1126,13 @@ func forwardIntentAtGraceEndRow() runRow {
 		script:      map[int]error{6: errAwaitDone},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  StatusIncomplete,
+		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop, context.Canceled},
 		wantNotErrs: []error{ErrCompensated},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
 		wantPending: []string{"z"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p")),
 		wantZones:   pivotZones("z"),
 	}
 }
@@ -1139,13 +1148,13 @@ func pivotOutcomeAtGraceEndRow() runRow {
 		script:      map[int]error{5: errAwaitDone},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  StatusIncomplete,
+		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrCompensated},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
 		wantPending: []string{"p"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), closed),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p")),
 		wantZones:   pivotZones("z"),
 	}
 }

@@ -24,6 +24,7 @@ var errInvalidEvent = errors.New("sagas: invalid event")
 // never e or its slices, only when its Seq is its execution's last Seq plus one; an equal resend from the same Writer
 // (slices by content, Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected,
 // wrapping ErrExecutionExists at Seq 1 and ErrConcurrentWriter later; a nil e or a Seq below 1 is an invalid event.
+// Append must honor ctx: once ctx is done it stores nothing and returns an error, so a late outcome can go unrecorded.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
@@ -100,7 +101,11 @@ func NewMemoryJournal() *MemoryJournal {
 }
 
 // Append implements Journal.
-func (j *MemoryJournal) Append(_ context.Context, e *Event) error {
+func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if e == nil {
 		return fmt.Errorf("%w: nil event", errInvalidEvent)
 	}

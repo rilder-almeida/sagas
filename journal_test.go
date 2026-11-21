@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"strconv"
@@ -98,13 +99,14 @@ func Test_MemoryJournal_Append(t *testing.T) {
 	stamped := func() Event { return *withEvent(new(journalEvent("a", 1)), stamp) }
 
 	tests := []struct {
-		name    string
-		zero    bool
-		prior   []Event
-		event   *Event
-		wantErr error
-		wantMsg string
-		want    map[string][]Event
+		name     string
+		zero     bool
+		canceled bool
+		prior    []Event
+		event    *Event
+		wantErr  error
+		wantMsg  string
+		want     map[string][]Event
 	}{
 		{
 			name:  "[Success] When: the first event of a new execution ; Should: write it",
@@ -195,6 +197,15 @@ func Test_MemoryJournal_Append(t *testing.T) {
 			want:    map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2)}},
 		},
 		{
+			name:     "[Fail] When: the next Seq with a done context ; Should: return the context error, write nothing",
+			canceled: true,
+			prior:    []Event{journalEvent("a", 1)},
+			event:    new(journalEvent("a", 2)),
+			wantErr:  context.Canceled,
+			wantMsg:  "context canceled",
+			want:     map[string][]Event{"a": {journalEvent("a", 1)}},
+		},
+		{
 			name:  "[Success] When: Seq 1 of another execution ; Should: write it and leave the first one unchanged",
 			prior: []Event{journalEvent("a", 1), journalEvent("a", 2)},
 			event: new(journalEvent("b", 1)),
@@ -217,7 +228,14 @@ func Test_MemoryJournal_Append(t *testing.T) {
 			prime(t, j, tt.prior)
 			touched := touchedBy(tt.prior, tt.event)
 
-			err := j.Append(t.Context(), tt.event)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			if tt.canceled {
+				cancel()
+			}
+
+			err := j.Append(ctx, tt.event)
 			scribbleEvent(tt.event)
 
 			slices.Sort(touched)
