@@ -241,6 +241,15 @@ func withGraceEnd[S any](out outcome[S]) outcome[S] {
 
 func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outcome[S]) {
 	name := r.saga.steps[i].name
+	own := r.unsent != nil && r.unsent.Kind == EventCompensationSucceeded && r.unsent.Step == name
+
+	resendErr := r.resend(grace)
+	if own && resendErr == nil {
+		b.done[i], r.undone[i] = true, stepCompensated
+
+		return
+	}
+
 	failure := &Error{
 		Kind: kindOf(out.kind, out.label), Step: name, Compensation: true, Attempts: out.attempts,
 		Err: out.err, Cause: out.cause, Previous: out.previous,
@@ -249,9 +258,12 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outco
 	b.done[i], r.undone[i] = true, stepCompensationFailed
 
 	r.failures = append(r.failures, failure)
-	r.record(grace, &Event{
-		Kind: EventCompensationFailed, Step: name, Attempt: out.attempts, Err: eventErrorOf(failure),
-	})
+
+	if resendErr == nil {
+		r.record(grace, &Event{
+			Kind: EventCompensationFailed, Step: name, Attempt: out.attempts, Err: eventErrorOf(failure),
+		})
+	}
 
 	policy := r.saga.steps[i].policy
 	b.tainted[i] = policy == CompensationBlock

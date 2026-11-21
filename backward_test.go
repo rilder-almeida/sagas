@@ -100,6 +100,8 @@ func backwardRows() []runRow {
 		undoIntentRow(),
 		journalOutageRow(),
 		undoOutcomeRow(),
+		undoOutcomeTwiceRow(),
+		undoOutcomeDownRow(),
 		graceWaitingRow(),
 		graceRunningRow(),
 		graceIntentRow(),
@@ -610,23 +612,71 @@ func undoIntentRow() runRow {
 
 func undoOutcomeRow() runRow {
 	return runRow{
-		name: "[Fail] When: the outcome append of a successful compensation fails ; " +
-			"Should: fail it with ErrJournal and apply its policy",
+		name: "[Fail] When: the outcome append of a successful compensation fails once ; " +
+			"Should: count it compensated once its resent success lands and go on with the next one",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
 		script:       map[int]error{9: errJournalDown},
-		wantStatus:   StatusCompensationFailed,
-		wantKind:     ErrCompensationFailed,
-		wantKinds:    map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
-		wantFailed:   []string{"c", comp("b")},
-		wantErrText:  map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
 		wantErrs:     []error{ErrJournal, errJournalDown},
-		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
-		wantPending:  []string{"a", "b"},
-		wantOrder:    [][2]string{{"b", undoB}},
-		wantTrail:    chainTrail(compStartOf("b"), undoneOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
+		wantNotErrs:  []error{ErrCompensationFailed},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepCompensated, "c": stepFailed},
+		wantOrder:    [][2]string{{"b", undoB}, {undoB, undoA}},
+		wantTrail:    chainTrail(compStartOf("b"), undoneOf("b"), compStartOf("a"), undoneOf("a"), closed),
+	}
+}
+
+func undoOutcomeTwiceRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of a successful compensation fails and its resend fails ; " +
+			"Should: fail it with ErrJournal and append no failure after the success lands later",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:         map[int]error{9: failing(errJournalDown, 2)},
+		wantStatus:     StatusCompensationFailed,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
+		wantUnrecorded: []string{comp("b")},
+		wantErrs:       []error{ErrJournal, errJournalDown},
+		wantSteps:      map[string]stepStatus{"a": stepBlocked, "b": stepCompensated, "c": stepFailed},
+		wantPending:    []string{"a", "b"},
+		wantRunOnly:    []string{"b"},
+		wantOrder:      [][2]string{{"b", undoB}},
+		wantTrail:      chainTrail(compStartOf("b"), undoneOf("b"), blockedOf("a"), closed),
+	}
+}
+
+func undoOutcomeDownRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of a successful compensation fails and the journal stays down ; " +
+			"Should: fail it with ErrJournal and apply its policy",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:         map[int]error{9: failing(errJournalDown, forever)},
+		wantStatus:     statusUnfinished,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
+		wantUnrecorded: []string{comp("b")},
+		wantErrs:       []error{ErrJournal, errJournalDown},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:    []string{"a", "b"},
+		wantRunOnly:    []string{"a"},
+		wantOrder:      [][2]string{{"b", undoB}},
+		wantTrail:      chainTrail(compStartOf("b")),
 	}
 }
 
