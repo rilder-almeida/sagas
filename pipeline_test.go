@@ -1690,6 +1690,100 @@ func Test_Chain(t *testing.T) {
 	}
 }
 
+func Test_compose(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mws       func(r *recorder) []Middleware
+		change    bool
+		wantTrace []string
+	}{
+		{
+			name:      "[Success] When: no middleware is given ; Should: run the call alone",
+			mws:       func(*recorder) []Middleware { return nil },
+			wantTrace: []string{runMark},
+		},
+		{
+			name: "[Success] When: two middlewares are given ; Should: run the first outermost",
+			mws: func(r *recorder) []Middleware {
+				return []Middleware{tagMiddleware{r, "a"}, tagMiddleware{r, "b"}}
+			},
+			wantTrace: []string{"a>", "b>", runMark, "<b", "<a"},
+		},
+		{
+			name: "[Success] When: the slice changes after compose ; Should: run the changed middleware",
+			mws: func(r *recorder) []Middleware {
+				return []Middleware{tagMiddleware{r, "a"}, tagMiddleware{r, "b"}}
+			},
+			change:    true,
+			wantTrace: []string{"changed>", "b>", runMark, "<b", "<changed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &recorder{}
+			mws := tt.mws(rec)
+			built := compose(mws)
+
+			if tt.change {
+				mws[0] = tagged(rec, "changed")
+			}
+
+			err := built.Wrap(t.Context(), CallInfo{}, func(context.Context) error {
+				rec.add(runMark)
+
+				return nil
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTrace, rec.snapshot())
+		})
+	}
+}
+
+func Test_callSpec_timesOut(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		spec callSpec
+		want bool
+	}{
+		{
+			name: "[Success] When: an execute call has a timeout ; Should: time out",
+			spec: callSpec{phase: PhaseExecute, timeout: time.Second},
+			want: true,
+		},
+		{
+			name: "[Success] When: a pivot call has a timeout ; Should: time out",
+			spec: callSpec{phase: PhasePivot, timeout: time.Second},
+			want: true,
+		},
+		{
+			name: "[Success] When: an execute call has no timeout ; Should: not time out",
+			spec: callSpec{phase: PhaseExecute},
+			want: false,
+		},
+		{
+			name: "[Success] When: a compensate call has a timeout ; Should: not time out",
+			spec: callSpec{phase: PhaseCompensate, timeout: time.Second},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.spec.timesOut())
+		})
+	}
+}
+
 func Test_recoverPanic(t *testing.T) {
 	t.Parallel()
 

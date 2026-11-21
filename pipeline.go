@@ -89,8 +89,10 @@ func Chain(mws ...Middleware) MiddlewareFunc {
 		}
 	}
 
-	mws = slices.Clone(mws)
+	return compose(slices.Clone(mws))
+}
 
+func compose(mws []Middleware) MiddlewareFunc {
 	return func(ctx context.Context, info CallInfo, call Call) error {
 		for _, mw := range slices.Backward(mws) {
 			inner := call
@@ -207,9 +209,7 @@ func recoverer(meta *callMeta) MiddlewareFunc {
 	}
 }
 
-func withTimeout(meta *callMeta, step string, d time.Duration) MiddlewareFunc {
-	cause := fmt.Errorf("sagas: step %q timed out after %v: %w", step, d, context.DeadlineExceeded)
-
+func withTimeout(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error {
 		ctx, cancel := context.WithTimeoutCause(ctx, d, cause)
 		defer cancel()
@@ -298,6 +298,12 @@ func runCall[S any](at *attemptState[S], call func(context.Context, *S) error, k
 func pipeline[S any](given *callSpec, call func(context.Context, *S) error) callFunc[S] {
 	spec := new(*given)
 
+	var timeoutCause error
+	if spec.timesOut() {
+		timeoutCause = fmt.Errorf("sagas: step %q timed out after %v: %w", spec.step, spec.timeout,
+			context.DeadlineExceeded)
+	}
+
 	return func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S] {
 		var state *S
 
@@ -310,9 +316,9 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 			attemptInfo := info
 			attemptInfo.Attempt = meta.attempt
 
-			chain := Chain(attemptLayers(spec, meta, at, &state)...)
+			layers := compose(attemptLayers(spec, meta, at, &state, timeoutCause))
 
-			return chain.Wrap(ctx, attemptInfo, runCall(at, call, key))
+			return layers.Wrap(ctx, attemptInfo, runCall(at, call, key))
 		}
 
 		err := withRetry(spec.retry, meta).Wrap(ctx, info, attempt)
@@ -334,11 +340,19 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 	}
 }
 
-func attemptLayers[S any](spec *callSpec, meta *callMeta, at *attemptState[S], state **S) []Middleware {
-	var layers []Middleware
+const coreLayers = 4
 
-	if spec.phase != PhaseCompensate && spec.timeout > 0 {
-		layers = append(layers, withTimeout(meta, spec.step, spec.timeout))
+func (s *callSpec) timesOut() bool {
+	return s.phase != PhaseCompensate && s.timeout > 0
+}
+
+func attemptLayers[S any](
+	spec *callSpec, meta *callMeta, at *attemptState[S], state **S, timeoutCause error,
+) []Middleware {
+	layers := make([]Middleware, 0, len(spec.middleware)+coreLayers)
+
+	if spec.timesOut() {
+		layers = append(layers, withTimeout(meta, spec.timeout, timeoutCause))
 	}
 
 	layers = append(layers, recoverer(meta), requireRan(at, meta, state))
