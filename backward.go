@@ -102,6 +102,10 @@ func graceEnded(grace context.Context) bool {
 }
 
 func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBelow bool) {
+	if r.rejected != nil {
+		return
+	}
+
 	switch decide(b.halted, blockedBelow) {
 	case compHalted:
 		r.skip(grace, b, i, EventCompensationHalted)
@@ -129,6 +133,10 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 	step := &r.saga.steps[i]
 
 	if err := r.persist(grace, &Event{Kind: EventCompensationStarted, Step: step.name}); err != nil {
+		if r.rejected != nil {
+			return
+		}
+
 		out := outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal}
 		if graceEnded(grace) {
 			out = withGraceEnd(out)
@@ -156,6 +164,10 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 
 	if out.kind == outcomeSuccess && f.late {
 		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: ErrGraceEnded, label: ErrGraceEnded}
+	}
+
+	if out.kind == outcomeSuccess && r.rejected != nil {
+		return
 	}
 
 	if out.kind == outcomeSuccess {

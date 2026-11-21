@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -196,6 +197,104 @@ func Test_Saga_Run_executionID(t *testing.T) {
 			assert.Equal(t, tt.wantEvents, kinds)
 		})
 	}
+}
+
+type sharedStep struct {
+	Step
+
+	executes, undos *atomic.Int64
+}
+
+func (s *sharedStep) Execute(context.Context, *orderState) error {
+	s.executes.Add(1)
+	time.Sleep(pause)
+
+	return nil
+}
+
+func (s *sharedStep) Compensate(context.Context, *orderState) error {
+	s.undos.Add(1)
+
+	return nil
+}
+
+func Test_Saga_Run_sharedExecution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		runs         int
+		wantExecutes int64
+		wantEvents   []EventKind
+	}{
+		{
+			name: "[Fail] When: two runs share one ExecutionID on one journal at once ; " +
+				"Should: complete one and stop the other without running or compensating anything",
+			runs:         2,
+			wantExecutes: 1,
+			wantEvents:   []EventKind{EventSagaStarted, EventStepStarted, EventStepSucceeded, EventSagaFinished},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				journal := NewMemoryJournal()
+				step := &sharedStep{Name: "pay", executes: &atomic.Int64{}, undos: &atomic.Int64{}}
+
+				s, err := New[orderState]("order", step, WithJournal(journal))
+				require.NoError(t, err)
+
+				errs := make([]error, tt.runs)
+
+				var wg sync.WaitGroup
+				for i := range errs {
+					wg.Go(func() { errs[i] = s.Run(t.Context(), &orderState{ID: orderID}) })
+				}
+
+				wg.Wait()
+
+				assert.Equal(t, 1, assertLosers(t, errs), "exactly one run completes: %v", errs)
+				assert.Equal(t, tt.wantExecutes, step.executes.Load())
+				assert.Zero(t, step.undos.Load())
+
+				events := journal.Events(orderID)
+
+				kinds := make([]EventKind, 0, len(events))
+				for _, e := range events {
+					kinds = append(kinds, e.Kind)
+				}
+
+				assert.Equal(t, tt.wantEvents, kinds)
+			})
+		})
+	}
+}
+
+func assertLosers(t *testing.T, errs []error) int {
+	t.Helper()
+
+	completed := 0
+
+	for _, err := range errs {
+		if err == nil {
+			completed++
+
+			continue
+		}
+
+		if runErr, ok := errors.AsType[*RunError](err); ok {
+			assert.Same(t, ErrConcurrentWriter, runErr.Kind)
+
+			continue
+		}
+
+		require.ErrorIs(t, err, ErrExecutionExists)
+	}
+
+	return completed
 }
 
 func Test_Saga_Run_withoutJournal(t *testing.T) {
@@ -684,7 +783,7 @@ type runRow struct {
 func Test_Saga_Run(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows()) {
+	for _, tt := range slices.Concat(forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows(), runRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -939,6 +1038,238 @@ func assertZones(t *testing.T, got, want []StepZone) {
 	}
 
 	assert.Equal(t, want, got)
+}
+
+func runRows() []runRow {
+	return []runRow{
+		finishedAfterCompensatedRow(),
+		finishedAfterCompensationFailedRow(),
+		finishedAfterIncompleteRow(),
+		pivotOutcomeAppendRow(),
+		forwardOnlyIntentRow(),
+		undoIntentRejectedRow(),
+		undoRunningRejectedRow(),
+		turnAfterRejectionRow(),
+	}
+}
+
+func finishedAfterCompensatedRow() runRow {
+	return runRow{
+		name: "[Fail] When: the saga-finished append of a compensated run fails ; " +
+			"Should: keep ErrCompensated and match ErrJournal",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), once("b", alwaysFails))
+		},
+		script:       map[int]error{8: errJournalDown},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantFailed:   []string{"b"},
+		wantErrText:  map[string]string{"b": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"b": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoneOf("a"),
+		),
+	}
+}
+
+func finishedAfterCompensationFailedRow() runRow {
+	return runRow{
+		name: "[Fail] When: the saga-finished append of a compensation-failed run fails ; " +
+			"Should: keep ErrCompensationFailed and match ErrJournal",
+		steps: func(*recorder) Flow {
+			return Sequence(undoOnce("a", okAction, alwaysFails), once("b", alwaysFails))
+		},
+		script:       map[int]error{8: errJournalDown},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{"b": ErrFailed, comp("a"): ErrFailed},
+		wantFailed:   []string{"b", comp("a")},
+		wantErrText:  map[string]string{"b": errAlwaysFails.Error(), comp("a"): errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"b": 1, comp("a"): 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantSteps:    map[string]stepStatus{"a": stepCompensationFailed, "b": stepFailed},
+		wantPending:  []string{"a"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoFailedOf("a"),
+		),
+	}
+}
+
+func pivotZones(forward ...string) []StepZone {
+	zones := make([]StepZone, 0, len(forward)+2)
+	zones = append(zones, StepZone{Name: "a", Zone: ZoneCompensable}, StepZone{Name: "p", Zone: ZonePivot})
+
+	for _, name := range forward {
+		zones = append(zones, StepZone{Name: name, Zone: ZoneForwardOnly})
+	}
+
+	return zones
+}
+
+func finishedAfterIncompleteRow() runRow {
+	return runRow{
+		name: "[Fail] When: the saga-finished append of an incomplete run fails ; " +
+			"Should: keep ErrIncomplete and match ErrJournal",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), once("z", alwaysFails))
+		},
+		script:       map[int]error{8: errJournalDown},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrIncomplete,
+		wantKinds:    map[string]*KindError{"z": ErrFailed},
+		wantFailed:   []string{"z"},
+		wantErrText:  map[string]string{"z": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"z": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepFailed},
+		wantPending:  []string{"z"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"),
+		),
+		wantZones: pivotZones("z"),
+	}
+}
+
+func pivotOutcomeAppendRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of a successful pivot fails ; " +
+			"Should: leave the pivot unknown, compensate nothing and end ErrIncomplete",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
+		},
+		script:      map[int]error{5: errJournalDown},
+		wantStatus:  StatusIncomplete,
+		wantKind:    ErrIncomplete,
+		wantErrs:    []error{ErrJournal, errJournalDown},
+		wantNotErrs: []error{ErrCompensated},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
+		wantPending: []string{"p"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), closed),
+		wantZones:   pivotZones("z"),
+	}
+}
+
+func forwardOnlyIntentRow() runRow {
+	return runRow{
+		name: "[Fail] When: the intent append of a forward-only step fails ; " +
+			"Should: not start it, compensate nothing and end ErrIncomplete",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
+		},
+		script:      map[int]error{6: errJournalDown},
+		wantStatus:  StatusIncomplete,
+		wantKind:    ErrIncomplete,
+		wantErrs:    []error{ErrJournal, errJournalDown},
+		wantNotErrs: []error{ErrCompensated},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
+		wantPending: []string{"z"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantZones:   pivotZones("z"),
+	}
+}
+
+func undoIntentRejectedRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal rejects a compensation intent ; " +
+			"Should: end ErrConcurrentWriter and fail no compensation",
+		steps: func(rec *recorder) Flow {
+			b := failingUndo("b", CompensationContinue, rec.do(undoB))
+
+			return Sequence(rec.undoable("a"), b, once("c", alwaysFails))
+		},
+		script:       map[int]error{8: fmt.Errorf("%w: other writer", ErrConcurrentWriter)},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
+		wantNotErrs:  []error{ErrJournal},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
+		wantTrail:    chainTrail(),
+	}
+}
+
+func rejectedUndoFlow(undo func(context.Context, *tripState) error) func(*recorder) Flow {
+	return func(rec *recorder) Flow {
+		return Sequence(Parallel(
+			Sequence(rec.undoable("x"), rec.undoable("b")),
+			Sequence(rec.undoable("y"), failingUndo("d", CompensationContinue, undo)),
+		), once("c", alwaysFails))
+	}
+}
+
+func rejectedUndoTrail() [][]string {
+	return slices.Concat(
+		seq(opened),
+		together(
+			startOf("x"), startOf("y"), doneOf("x"), doneOf("y"), startOf("b"), startOf("d"), doneOf("b"), doneOf("d"),
+		),
+		seq(startOf("c"), failedOf("c"), compStartOf("d")),
+	)
+}
+
+func undoRunningRejectedRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation succeeds after the journal rejected an event ; " +
+			"Should: commit and append nothing for it",
+		steps: rejectedUndoFlow(func(_ context.Context, s *tripState) error {
+			time.Sleep(pause)
+
+			s.Hotel = undoneHotel
+
+			return nil
+		}),
+		script:       map[int]error{13: ErrConcurrentWriter},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
+		wantNotErrs:  []error{ErrJournal},
+		wantSteps: map[string]stepStatus{
+			"x": stepSucceeded, "y": stepSucceeded, "b": stepSucceeded, "d": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"d"},
+		wantTrail:   rejectedUndoTrail(),
+	}
+}
+
+func turnAfterRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation's turn comes after a rejection and the grace end ; " +
+			"Should: neither run nor fail it",
+		steps: rejectedUndoFlow(func(context.Context, *tripState) error {
+			time.Sleep(3 * pause)
+
+			return nil
+		}),
+		opts:         []Option{WithRecoveryTimeout(pause)},
+		script:       map[int]error{13: ErrConcurrentWriter},
+		cancelAfter:  pause,
+		cancelCause:  errStop,
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrGraceEnded},
+		wantFailed:   []string{"c", comp("d")},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): ErrGraceEnded.Error()},
+		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
+		wantErrs:     []error{ErrConcurrentWriter, ErrGraceEnded},
+		wantNotErrs:  []error{ErrJournal},
+		wantSteps: map[string]stepStatus{
+			"x": stepSucceeded, "y": stepSucceeded, "b": stepSucceeded, "d": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending:    []string{"d"},
+		wantUnrecorded: []string{comp("d")},
+		wantTrail:      rejectedUndoTrail(),
+	}
 }
 
 func Test_endKind(t *testing.T) {
