@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -29,10 +28,6 @@ func runSteps() []StepZone {
 	}
 }
 
-func eventTime(seq int) time.Time {
-	return journalEvent("", seq).Time
-}
-
 func runEvents(tail ...Event) []Event {
 	return runEventsFrom(append([]Event{{Kind: EventSagaStarted, Steps: runSteps()}}, tail...))
 }
@@ -47,16 +42,16 @@ func runEventsFrom(events []Event) []Event {
 	return events
 }
 
-func wantSteps(reached ...StepResult) []StepResult {
+func wantSteps(reached ...stepResult) []stepResult {
 	zones := runSteps()
-	steps := make([]StepResult, len(zones))
+	steps := make([]stepResult, len(zones))
 
 	for i := range zones {
 		steps[i].Name, steps[i].Status = zones[i].Name, "not-started"
 	}
 
 	for i := range reached {
-		k := slices.IndexFunc(steps, func(s StepResult) bool { return s.Name == reached[i].Name })
+		k := slices.IndexFunc(steps, func(s stepResult) bool { return s.Name == reached[i].Name })
 		steps[k] = reached[i]
 	}
 
@@ -76,30 +71,30 @@ func literalEvents(tail ...Event) []Event {
 	return runEventsFrom(append([]Event{{Kind: "saga-started", Steps: steps}}, tail...))
 }
 
-type buildResultRow struct {
+type foldRow struct {
 	name   string
 	events []Event
-	want   Result
+	want   []stepResult
 }
 
 func finished(status Status) Event {
 	return Event{Kind: "saga-finished", Status: status}
 }
 
-func storedTextRows() []buildResultRow {
+func storedTextRows() []foldRow {
 	const compensationFailed = "compensation-failed"
 
-	return []buildResultRow{
+	return []foldRow{
 		{
-			name: "[Success] When: the stored texts say a run completed ; Should: report completed and succeeded",
+			name: "[Success] When: the stored texts say a run completed ; Should: report the step succeeded",
 			events: literalEvents(
 				Event{Kind: "step-started", Step: holdStep},
 				Event{Kind: "step-succeeded", Step: holdStep},
 				finished(StatusCompleted),
 			),
-			want: Result{Execution: "x1", Status: "completed", Steps: wantSteps(
-				StepResult{Name: holdStep, Status: "succeeded", Start: eventTime(2), End: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: "succeeded"},
+			),
 		},
 		{
 			name: "[Success] When: the stored texts say a run was compensated ; Should: report compensated and failed",
@@ -110,10 +105,10 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "compensation-succeeded", Step: holdStep},
 				finished(StatusCompensated),
 			),
-			want: Result{Execution: "x1", Status: "compensated", Steps: wantSteps(
-				StepResult{Name: holdStep, Status: "compensated", End: eventTime(5)},
-				StepResult{Name: bookStep, Status: "failed", End: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: "compensated"},
+				stepResult{Name: bookStep, Status: "failed"},
+			),
 		},
 		{
 			name: "[Fail] When: the stored texts say a compensation failed ; Should: report it and halted",
@@ -122,19 +117,19 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "compensation-halted", Step: holdStep},
 				finished(StatusCompensationFailed),
 			),
-			want: Result{Execution: "x1", Status: compensationFailed, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: "halted", End: eventTime(3)},
-				StepResult{Name: bookStep, Status: compensationFailed, End: eventTime(2)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: "halted"},
+				stepResult{Name: bookStep, Status: compensationFailed},
+			),
 		},
 		{
 			name: "[Fail] When: a stored compensation starts last ; Should: report the step compensation-failed",
 			events: literalEvents(
 				Event{Kind: "compensation-started", Step: holdStep},
 			),
-			want: Result{Execution: "x1", Status: "unfinished", Steps: wantSteps(
-				StepResult{Name: holdStep, Status: compensationFailed},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: compensationFailed},
+			),
 		},
 		{
 			name: "[Fail] When: the stored texts say a run is incomplete ; Should: report unknown, skipped and blocked",
@@ -144,51 +139,45 @@ func storedTextRows() []buildResultRow {
 				Event{Kind: "compensation-blocked", Step: bookStep},
 				finished(StatusIncomplete),
 			),
-			want: Result{Execution: "x1", Status: "incomplete", Steps: wantSteps(
-				StepResult{Name: bookStep, Status: "blocked", End: eventTime(4)},
-				StepResult{Name: payStep, Status: "unknown", End: eventTime(2)},
-				StepResult{Name: shipStep, Status: "skipped"},
-			)},
+			want: wantSteps(
+				stepResult{Name: bookStep, Status: "blocked"},
+				stepResult{Name: payStep, Status: "unknown"},
+				stepResult{Name: shipStep, Status: "skipped"},
+			),
 		},
 		{
-			name:   "[Fail] When: the stored texts hold only saga-started ; Should: report unfinished and not-started",
+			name:   "[Fail] When: the stored texts hold only saga-started ; Should: report not-started",
 			events: literalEvents(),
-			want:   Result{Execution: "x1", Status: "unfinished", Steps: wantSteps()},
+			want:   wantSteps(),
 		},
 	}
 }
 
-func Test_buildResult(t *testing.T) {
+func Test_foldStepStatuses(t *testing.T) {
 	t.Parallel()
 
-	tests := append([]buildResultRow{
+	tests := append([]foldRow{
 		{
-			name: "[Success] When: every step succeeds ; Should: report a completed run with each outcome",
+			name: "[Success] When: every step succeeds ; Should: report each step outcome",
 			events: runEvents(
 				Event{Kind: EventStepStarted, Step: holdStep},
-				Event{Kind: EventStepSucceeded, Step: holdStep, Attempt: 1, Changed: []string{itemsField}},
+				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepStarted, Step: bookStep},
-				Event{Kind: EventStepSucceeded, Step: bookStep, Attempt: 2, Changed: []string{seatsField}},
-				Event{Kind: EventStepSucceeded, Step: payStep, Attempt: 1},
-				Event{Kind: EventStepSucceeded, Step: shipStep, Attempt: 1},
-				Event{Kind: EventStepSucceeded, Step: notifyStep, Attempt: 1},
-				Event{Kind: EventStepSucceeded, Step: archiveStep, Attempt: 3},
+				Event{Kind: EventStepSucceeded, Step: bookStep},
+				Event{Kind: EventStepSucceeded, Step: payStep},
+				Event{Kind: EventStepSucceeded, Step: shipStep},
+				Event{Kind: EventStepSucceeded, Step: notifyStep},
+				Event{Kind: EventStepSucceeded, Step: archiveStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompleted},
 			),
-			want: Result{Execution: "x1", Status: StatusCompleted, Steps: wantSteps(
-				StepResult{
-					Name: holdStep, Status: StepSucceeded, Attempts: 1, Changed: []string{itemsField},
-					Start: eventTime(2), End: eventTime(3),
-				},
-				StepResult{
-					Name: bookStep, Status: StepSucceeded, Attempts: 2, Changed: []string{seatsField},
-					Start: eventTime(4), End: eventTime(5),
-				},
-				StepResult{Name: payStep, Status: StepSucceeded, Attempts: 1, End: eventTime(6)},
-				StepResult{Name: shipStep, Status: StepSucceeded, Attempts: 1, End: eventTime(7)},
-				StepResult{Name: notifyStep, Status: StepSucceeded, Attempts: 1, End: eventTime(8)},
-				StepResult{Name: archiveStep, Status: StepSucceeded, Attempts: 3, End: eventTime(9)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepSucceeded},
+				stepResult{Name: bookStep, Status: stepSucceeded},
+				stepResult{Name: payStep, Status: stepSucceeded},
+				stepResult{Name: shipStep, Status: stepSucceeded},
+				stepResult{Name: notifyStep, Status: stepSucceeded},
+				stepResult{Name: archiveStep, Status: stepSucceeded},
+			),
 		},
 		{
 			name: "[Success] When: steps are skipped ; Should: mark them skipped",
@@ -197,28 +186,25 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventStepSkipped, Step: bookStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompleted},
 			),
-			want: Result{Execution: "x1", Status: StatusCompleted, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: StepSkipped},
-				StepResult{Name: bookStep, Status: StepSkipped},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepSkipped},
+				stepResult{Name: bookStep, Status: stepSkipped},
+			),
 		},
 		{
 			name: "[Success] When: a step fails and an earlier one is compensated ; Should: end it at its compensation",
 			events: runEvents(
 				Event{Kind: EventStepStarted, Step: holdStep},
-				Event{Kind: EventStepSucceeded, Step: holdStep, Attempt: 1, Changed: []string{itemsField}},
-				Event{Kind: EventStepFailed, Step: bookStep, Attempt: 3, Err: "sold out"},
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepFailed, Step: bookStep},
 				Event{Kind: EventCompensationStarted, Step: holdStep},
 				Event{Kind: EventCompensationSucceeded, Step: holdStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompensated},
 			),
-			want: Result{Execution: "x1", Status: StatusCompensated, Steps: wantSteps(
-				StepResult{
-					Name: holdStep, Status: StepCompensated, Attempts: 1, Changed: []string{itemsField},
-					Start: eventTime(2), End: eventTime(6),
-				},
-				StepResult{Name: bookStep, Status: StepFailed, Attempts: 3, Err: "sold out", End: eventTime(4)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepCompensated},
+				stepResult{Name: bookStep, Status: stepFailed},
+			),
 		},
 		{
 			name: "[Success] When: a step ends unknown and is compensated ; Should: report it compensated",
@@ -227,24 +213,22 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventCompensationSucceeded, Step: holdStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompensated},
 			),
-			want: Result{Execution: "x1", Status: StatusCompensated, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: StepCompensated, End: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepCompensated},
+			),
 		},
 		{
-			name: "[Fail] When: a compensation fails ; Should: report it with its compensation error",
+			name: "[Fail] When: a compensation fails ; Should: report it compensation-failed",
 			events: runEvents(
 				Event{Kind: EventStepSucceeded, Step: holdStep},
-				Event{Kind: EventStepFailed, Step: bookStep, Err: "declined"},
-				Event{Kind: EventCompensationFailed, Step: holdStep, Err: "refund down"},
+				Event{Kind: EventStepFailed, Step: bookStep},
+				Event{Kind: EventCompensationFailed, Step: holdStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
 			),
-			want: Result{Execution: "x1", Status: StatusCompensationFailed, Steps: wantSteps(
-				StepResult{
-					Name: holdStep, Status: StepCompensationFailed, CompensationErr: "refund down", End: eventTime(4),
-				},
-				StepResult{Name: bookStep, Status: StepFailed, Err: "declined", End: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepCompensationFailed},
+				stepResult{Name: bookStep, Status: stepFailed},
+			),
 		},
 		{
 			name: "[Fail] When: a compensation is blocked ; Should: report it blocked",
@@ -253,10 +237,10 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventCompensationBlocked, Step: holdStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
 			),
-			want: Result{Execution: "x1", Status: StatusCompensationFailed, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: StepBlocked, End: eventTime(3)},
-				StepResult{Name: bookStep, Status: StepCompensationFailed, End: eventTime(2)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepBlocked},
+				stepResult{Name: bookStep, Status: stepCompensationFailed},
+			),
 		},
 		{
 			name: "[Fail] When: a compensation is halted ; Should: report it halted",
@@ -265,25 +249,25 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventCompensationHalted, Step: holdStep},
 				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
 			),
-			want: Result{Execution: "x1", Status: StatusCompensationFailed, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: StepHalted, End: eventTime(3)},
-				StepResult{Name: bookStep, Status: StepCompensationFailed, End: eventTime(2)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepHalted},
+				stepResult{Name: bookStep, Status: stepCompensationFailed},
+			),
 		},
 		{
 			name:   "[Success] When: only the saga-started event exists ; Should: list every step not started",
 			events: runEvents(),
-			want:   Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps()},
+			want:   wantSteps(),
 		},
 		{
-			name: "[Fail] When: the pivot ends unknown ; Should: report it unknown and the run incomplete",
+			name: "[Fail] When: the pivot ends unknown ; Should: report it unknown",
 			events: runEvents(
-				Event{Kind: EventStepUnknown, Step: payStep, Attempt: 4},
+				Event{Kind: EventStepUnknown, Step: payStep},
 				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
 			),
-			want: Result{Execution: "x1", Status: StatusIncomplete, Steps: wantSteps(
-				StepResult{Name: payStep, Status: StepUnknown, Attempts: 4, End: eventTime(2)},
-			)},
+			want: wantSteps(
+				stepResult{Name: payStep, Status: stepUnknown},
+			),
 		},
 		{
 			name: "[Fail] When: forward-only steps fail, end unknown or never start ; Should: report each one",
@@ -293,22 +277,22 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventStepUnknown, Step: notifyStep},
 				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
 			),
-			want: Result{Execution: "x1", Status: StatusIncomplete, Steps: wantSteps(
-				StepResult{Name: payStep, Status: StepSucceeded, End: eventTime(2)},
-				StepResult{Name: shipStep, Status: StepFailed, End: eventTime(3)},
-				StepResult{Name: notifyStep, Status: StepUnknown, End: eventTime(4)},
-			)},
+			want: wantSteps(
+				stepResult{Name: payStep, Status: stepSucceeded},
+				stepResult{Name: shipStep, Status: stepFailed},
+				stepResult{Name: notifyStep, Status: stepUnknown},
+			),
 		},
 		{
-			name: "[Fail] When: the stream has no saga-finished event ; Should: report the run unfinished",
+			name: "[Fail] When: the stream has no saga-finished event ; Should: report the steps it reached",
 			events: runEvents(
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepSucceeded, Step: bookStep},
 			),
-			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: StepSucceeded, End: eventTime(2)},
-				StepResult{Name: bookStep, Status: StepSucceeded, End: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepSucceeded},
+				stepResult{Name: bookStep, Status: stepSucceeded},
+			),
 		},
 		{
 			name: "[Fail] When: the pivot starts and its outcome is lost ; Should: report it unknown",
@@ -316,10 +300,10 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventStepSucceeded, Step: bookStep},
 				Event{Kind: EventStepStarted, Step: payStep},
 			),
-			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps(
-				StepResult{Name: bookStep, Status: StepSucceeded, End: eventTime(2)},
-				StepResult{Name: payStep, Status: StepUnknown, Start: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: bookStep, Status: stepSucceeded},
+				stepResult{Name: payStep, Status: stepUnknown},
+			),
 		},
 		{
 			name: "[Fail] When: a compensation starts and its outcome is lost ; Should: report it failed",
@@ -328,22 +312,22 @@ func Test_buildResult(t *testing.T) {
 				Event{Kind: EventStepFailed, Step: bookStep},
 				Event{Kind: EventCompensationStarted, Step: holdStep},
 			),
-			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps(
-				StepResult{Name: holdStep, Status: StepCompensationFailed, End: eventTime(2)},
-				StepResult{Name: bookStep, Status: StepFailed, End: eventTime(3)},
-			)},
+			want: wantSteps(
+				stepResult{Name: holdStep, Status: stepCompensationFailed},
+				stepResult{Name: bookStep, Status: stepFailed},
+			),
 		},
 		{
 			name: "[Fail] When: an event names no listed step ; Should: ignore it",
 			events: runEvents(
-				Event{Kind: EventStepFailed, Step: "audit", Attempt: 1},
+				Event{Kind: EventStepFailed, Step: "audit"},
 			),
-			want: Result{Execution: "x1", Status: StatusUnfinished, Steps: wantSteps()},
+			want: wantSteps(),
 		},
 		{
-			name:   "[Fail] When: the stream is empty ; Should: return the zero Result",
+			name:   "[Fail] When: the stream is empty ; Should: return no steps",
 			events: nil,
-			want:   Result{Execution: "", Status: StatusUnfinished, Steps: nil},
+			want:   nil,
 		},
 	}, storedTextRows()...)
 
@@ -351,114 +335,75 @@ func Test_buildResult(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := buildResult(tt.events)
-			scribble(tt.events)
-
-			assert.Equal(t, tt.want.Execution, got.Execution)
-			assert.Equal(t, tt.want.Status, got.Status)
-			assert.Equal(t, tt.want.Steps, got.Steps)
+			assert.Equal(t, tt.want, foldStepStatuses(tt.events))
 		})
 	}
 }
 
-func Test_applyEventSharingChanged(t *testing.T) {
+func Test_nextStatus(t *testing.T) {
 	t.Parallel()
 
-	prior := func() StepResult {
-		return StepResult{
-			Name: holdStep, Status: StepSucceeded, Attempts: 2, Err: "late", CompensationErr: "refund late",
-			Changed: []string{seatsField}, Start: eventTime(1), End: eventTime(2),
-		}
-	}
-	with := func(change func(*StepResult)) StepResult {
-		s := prior()
-		change(&s)
-
-		return s
-	}
-
 	tests := []struct {
-		name  string
-		event Event
-		want  StepResult
+		name    string
+		current stepStatus
+		kind    EventKind
+		want    stepStatus
 	}{
 		{
-			name:  "[Success] When: the step starts ; Should: set Start and the status unknown until an outcome",
-			event: Event{Kind: EventStepStarted, Attempt: 9, Err: "x", Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status, s.Start = StepUnknown, eventTime(9) }),
+			name:    "[Success] When: the step starts ; Should: be unknown until an outcome",
+			current: stepNotStarted, kind: EventStepStarted, want: stepUnknown,
 		},
 		{
-			name: "[Success] When: the step succeeds ; Should: set status, attempts, error, changed fields and End",
-			event: Event{
-				Kind: EventStepSucceeded, Attempt: 3, Changed: []string{itemsField, chargeField}, Time: eventTime(9),
-			},
-			want: with(func(s *StepResult) {
-				s.Status, s.Attempts, s.Err, s.End = StepSucceeded, 3, "", eventTime(9)
-				s.Changed = []string{itemsField, chargeField}
-			}),
+			name:    "[Success] When: the step succeeds ; Should: be succeeded",
+			current: stepUnknown, kind: EventStepSucceeded, want: stepSucceeded,
 		},
 		{
-			name:  "[Success] When: the step fails ; Should: set status, attempts, error, no changed fields and End",
-			event: Event{Kind: EventStepFailed, Attempt: 4, Err: "no stock", Time: eventTime(9)},
-			want: with(func(s *StepResult) {
-				s.Status, s.Attempts, s.Err, s.Changed, s.End = StepFailed, 4, "no stock", nil, eventTime(9)
-			}),
+			name:    "[Success] When: the step fails ; Should: be failed",
+			current: stepUnknown, kind: EventStepFailed, want: stepFailed,
 		},
 		{
-			name:  "[Success] When: the step ends unknown ; Should: set status, attempts, error and End",
-			event: Event{Kind: EventStepUnknown, Attempt: 1, Err: "timeout", Time: eventTime(9)},
-			want: with(func(s *StepResult) {
-				s.Status, s.Attempts, s.Err, s.Changed, s.End = StepUnknown, 1, "timeout", nil, eventTime(9)
-			}),
+			name:    "[Success] When: the step ends unknown ; Should: be unknown",
+			current: stepNotStarted, kind: EventStepUnknown, want: stepUnknown,
 		},
 		{
-			name:  "[Success] When: the step is skipped ; Should: set only the status",
-			event: Event{Kind: EventStepSkipped, Attempt: 9, Err: "x", Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status = StepSkipped }),
+			name:    "[Success] When: the step is skipped ; Should: be skipped",
+			current: stepNotStarted, kind: EventStepSkipped, want: stepSkipped,
 		},
 		{
-			name:  "[Success] When: the compensation succeeds ; Should: set status, compensation error and End",
-			event: Event{Kind: EventCompensationSucceeded, Attempt: 9, Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepCompensated, "", eventTime(9) }),
+			name:    "[Success] When: the compensation starts ; Should: be compensation-failed until an outcome",
+			current: stepSucceeded, kind: EventCompensationStarted, want: stepCompensationFailed,
 		},
 		{
-			name:  "[Success] When: the compensation fails ; Should: set status, compensation error and End",
-			event: Event{Kind: EventCompensationFailed, Err: "refund timeout", Time: eventTime(9)},
-			want: with(func(s *StepResult) {
-				s.Status, s.CompensationErr, s.End = StepCompensationFailed, "refund timeout", eventTime(9)
-			}),
+			name:    "[Success] When: the compensation succeeds ; Should: be compensated",
+			current: stepCompensationFailed, kind: EventCompensationSucceeded, want: stepCompensated,
 		},
 		{
-			name:  "[Success] When: the compensation is blocked ; Should: set status, compensation error and End",
-			event: Event{Kind: EventCompensationBlocked, Err: "waits on book", Time: eventTime(9)},
-			want: with(
-				func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepBlocked, "waits on book", eventTime(9) },
-			),
+			name:    "[Success] When: the compensation fails ; Should: be compensation-failed",
+			current: stepSucceeded, kind: EventCompensationFailed, want: stepCompensationFailed,
 		},
 		{
-			name:  "[Success] When: the compensation is halted ; Should: set status, compensation error and End",
-			event: Event{Kind: EventCompensationHalted, Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status, s.CompensationErr, s.End = StepHalted, "", eventTime(9) }),
+			name:    "[Success] When: the compensation is blocked ; Should: be blocked",
+			current: stepSucceeded, kind: EventCompensationBlocked, want: stepBlocked,
 		},
 		{
-			name:  "[Success] When: the compensation starts ; Should: set only the status failed until an outcome",
-			event: Event{Kind: EventCompensationStarted, Attempt: 9, Err: "x", Time: eventTime(9)},
-			want:  with(func(s *StepResult) { s.Status = StepCompensationFailed }),
+			name:    "[Success] When: the compensation is halted ; Should: be halted",
+			current: stepSucceeded, kind: EventCompensationHalted, want: stepHalted,
 		},
 		{
-			name:  "[Fail] When: the event is a saga event ; Should: change nothing",
-			event: Event{Kind: EventSagaFinished, Status: StatusCompleted, Err: "x", Time: eventTime(9)},
-			want:  prior(),
+			name:    "[Fail] When: the event is saga-started ; Should: keep the current status",
+			current: stepSkipped, kind: EventSagaStarted, want: stepSkipped,
 		},
 		{
-			name:  "[Fail] When: the kind is not set ; Should: change nothing",
-			event: Event{Kind: "", Attempt: 9, Err: "x", Time: eventTime(9)},
-			want:  prior(),
+			name:    "[Fail] When: the event is saga-finished ; Should: keep the current status",
+			current: stepSucceeded, kind: EventSagaFinished, want: stepSucceeded,
 		},
 		{
-			name:  "[Fail] When: the kind is unknown ; Should: change nothing",
-			event: Event{Kind: EventKind("no such kind"), Attempt: 9, Err: "x", Time: eventTime(9)},
-			want:  prior(),
+			name:    "[Fail] When: the kind is not set ; Should: keep the current status",
+			current: stepBlocked, kind: "", want: stepBlocked,
+		},
+		{
+			name:    "[Fail] When: the kind is unknown ; Should: keep the current status",
+			current: stepHalted, kind: EventKind("no such kind"), want: stepHalted,
 		},
 	}
 
@@ -466,15 +411,12 @@ func Test_applyEventSharingChanged(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := prior()
-			applyEventSharingChanged(&got, &tt.event)
-
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want, nextStatus(tt.current, tt.kind))
 		})
 	}
 }
 
-func Test_Result_Pending(t *testing.T) {
+func Test_pendingOf(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -632,70 +574,7 @@ func Test_Result_Pending(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := buildResult(tt.events)
-			slices.Reverse(r.Steps)
-
-			assert.Equal(t, tt.want, r.Pending())
-		})
-	}
-}
-
-func Test_Result_Events(t *testing.T) {
-	t.Parallel()
-
-	stream := func() []Event {
-		return runEvents(
-			Event{Kind: EventStepStarted, Step: holdStep},
-			Event{Kind: EventStepSucceeded, Step: holdStep, Attempt: 1, Changed: []string{itemsField}},
-			Event{Kind: EventSagaFinished, Status: StatusCompleted},
-		)
-	}
-
-	tests := []struct {
-		name   string
-		events []Event
-		mutate func(in []Event, r *Result)
-	}{
-		{
-			name:   "[Success] When: nothing changes ; Should: return the input stream",
-			events: stream(),
-			mutate: func([]Event, *Result) {},
-		},
-		{
-			name:   "[Success] When: the stream is empty ; Should: return no events",
-			events: nil,
-			mutate: func([]Event, *Result) {},
-		},
-		{
-			name:   "[Success] When: the caller changes a returned stream ; Should: return the original next time",
-			events: stream(),
-			mutate: func(_ []Event, r *Result) { scribble(r.Events()) },
-		},
-		{
-			name:   "[Success] When: the caller changes the input after the build ; Should: return the original",
-			events: stream(),
-			mutate: func(in []Event, _ *Result) { scribble(in) },
-		},
-		{
-			name:   "[Success] When: the caller changes a step's Changed ; Should: return the original",
-			events: stream(),
-			mutate: func(_ []Event, r *Result) { r.Steps[0].Changed[0] = "changed" },
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			want := make([]Event, len(tt.events))
-			for i := range tt.events {
-				want[i] = *withEvent(&tt.events[i], func(*Event) {})
-			}
-
-			r := buildResult(tt.events)
-			tt.mutate(tt.events, &r)
-
-			assert.Equal(t, want, r.Events())
+			assert.Equal(t, tt.want, pendingOf(tt.events))
 		})
 	}
 }
@@ -726,18 +605,18 @@ func benchEvents(steps int) []Event {
 	return append(events, Event{Kind: EventSagaFinished, Seq: len(events) + 1, Status: StatusCompleted})
 }
 
-func Benchmark_buildResult(b *testing.B) {
+func Benchmark_foldStepStatuses(b *testing.B) {
 	events := benchEvents(20)
 
 	for b.Loop() {
-		buildResult(events)
+		foldStepStatuses(events)
 	}
 }
 
-func Benchmark_Result_Pending(b *testing.B) {
-	r := buildResult(benchEvents(20))
+func Benchmark_pendingOf(b *testing.B) {
+	events := benchEvents(20)
 
 	for b.Loop() {
-		r.Pending()
+		pendingOf(events)
 	}
 }

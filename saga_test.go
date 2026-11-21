@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +15,7 @@ import (
 
 type tripState struct {
 	Hotel string
+	Rate  float64
 }
 
 type otherState struct {
@@ -21,26 +23,17 @@ type otherState struct {
 }
 
 const (
-	quotedB  = `"b"`
+	tripName = "trip"
 	sagaTrip = `saga "trip"`
-	quotedA  = `"a"`
 	noReach  = "neither before nor after"
+	quotedB  = `"b"`
 
-	hotelBooked = "booked"
-	hotelUndone = "undone"
+	nilOptionText = "nil Option"
 )
 
 var errAlwaysFails = errors.New("sagas: test: the action always fails")
 
-var errNilSaga = errors.New("sagas: test: New returned a nil saga without an error")
-
 func okAction(context.Context, *tripState) error { return nil }
-
-func bookHotel(_ context.Context, s *tripState) error {
-	s.Hotel = hotelBooked
-
-	return nil
-}
 
 func alwaysFails(context.Context, *tripState) error { return errAlwaysFails }
 
@@ -56,20 +49,14 @@ func twoSecondCall(ctx context.Context, _ *tripState) error {
 func callOnce(tb testing.TB, call callFunc[tripState]) outcome[tripState] {
 	tb.Helper()
 
-	return call(context.Background(), "exec-1", baseOf(tb, tripState{}))
-}
-
-func hotelOf(tb testing.TB, out outcome[tripState]) string {
-	tb.Helper()
-
-	require.NotNil(tb, out.state)
-
-	return out.state.Hotel
+	return call(context.Background(), &callMeta{execution: infoExecution}, baseOf(tb, tripState{}))
 }
 
 func okPredicate(*tripState) bool { return true }
 
-func okMiddleware(next Handler) Handler { return next }
+func okMiddleware() MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error { return call(ctx) }
+}
 
 type pointerJournal struct{}
 
@@ -77,331 +64,237 @@ func (*pointerJournal) Append(context.Context, *Event) error { return nil }
 
 func twice[T any](v T) []T { return []T{v, v} }
 
-func buildTrip(opts ...Option) error {
-	s, err := New[tripState]("trip", opts...)
-	if err != nil {
-		return err
-	}
-
-	if s == nil {
-		return errNilSaga
-	}
-
-	return nil
-}
-
-func oneStep(opts ...StepOption) (*Saga[tripState], error) {
-	return New[tripState]("trip", Step("a", okAction, opts...))
-}
-
-type newCase struct {
-	name         string
-	build        func() error
-	wantErrs     []error
-	wantNoErrs   []error
-	wantContains []string
-	wantAbsent   []string
-}
-
-func newGraphCases() []newCase {
-	step := func(opts ...StepOption) Option { return Step("a", okAction, opts...) }
-
-	return []newCase{
-		{
-			name:         "[Fail] When: two steps share a name ; Should: return ErrDuplicateStep naming it",
-			build:        func() error { return buildTrip(twice(step())...) },
-			wantErrs:     []error{ErrDuplicateStep},
-			wantContains: []string{`step "a": declared more than once`},
-		},
-		{
-			name: "[Fail] When: two steps wait for each other ; Should: return ErrCycle naming both",
-			build: func() error {
-				return buildTrip(Step("a", okAction, After("b")), Step("b", okAction, After("a")))
-			},
-			wantErrs:     []error{ErrCycle},
-			wantContains: []string{sagaTrip, quotedA, quotedB, "form a cycle"},
-		},
-		{
-			name: "[Fail] When: a step only waits behind a cycle ; Should: name the cycle steps and not that step",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("b")),
-					Step("b", okAction, After("a")),
-					Step("c", okAction, After("a")),
-				)
-			},
-			wantErrs:     []error{ErrCycle},
-			wantContains: []string{quotedA, quotedB},
-			wantAbsent:   []string{`"c"`},
-		},
-		{
-			name:         "[Fail] When: a step waits for itself ; Should: return ErrCycle naming it",
-			build:        func() error { return buildTrip(Step("a", okAction, After("a"))) },
-			wantErrs:     []error{ErrCycle},
-			wantContains: []string{quotedA},
-		},
-		{
-			name: "[Fail] When: one step has an unknown dependency and two others form a cycle ; Should: return both",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("ghost")),
-					Step("b", okAction, After("c")),
-					Step("c", okAction, After("b")),
-				)
-			},
-			wantErrs:     []error{ErrUnknownDependency, ErrCycle},
-			wantContains: []string{`"ghost"`, quotedB, `"c"`},
-		},
-		{
-			name: "[Fail] When: two steps are pivots ; Should: reject it naming both",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, Pivot(), After("a")))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{sagaTrip, "more than one Pivot", quotedA, quotedB},
-		},
-		{
-			name: "[Fail] When: a cycle exists and two steps are pivots ; Should: report the cycle and the pivot count",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("b")),
-					Step("b", okAction, After("a")),
-					Step("p", okAction, Pivot()),
-					Step("q", okAction, Pivot()),
-				)
-			},
-			wantErrs:     []error{ErrCycle, ErrInvalidStep},
-			wantContains: []string{"more than one Pivot"},
-			wantAbsent:   []string{noReach},
-		},
-		{
-			name: "[Fail] When: two pivots and a step parallel to both exist ; Should: report only the pivot count",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, Pivot()),
-					Step("b", okAction, Pivot(), After("a")),
-					Step("c", okAction),
-				)
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"more than one Pivot"},
-			wantAbsent:   []string{noReach},
-		},
-		{
-			name: "[Fail] When: a dependency is unknown and a step is parallel to the pivot ; Should: report only that",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, Pivot()),
-					Step("b", okAction, After("ghost")),
-					Step("c", okAction),
-				)
-			},
-			wantErrs:     []error{ErrUnknownDependency},
-			wantNoErrs:   []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, `After names unknown step "ghost"`},
-			wantAbsent:   []string{noReach},
-		},
-		{
-			name: "[Fail] When: a step is parallel to the pivot ; Should: reject it naming the step",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, "neither before nor after the pivot"},
-		},
-		{
-			name: "[Fail] When: the pivot has Compensate ; Should: reject it",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot(), Compensate(okAction)))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "a"`, "pivot has Compensate"},
-		},
-		{
-			name:         "[Fail] When: the pivot has If ; Should: reject it",
-			build:        func() error { return buildTrip(Step("a", okAction, Pivot(), If(okPredicate))) },
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "a"`, "pivot has If"},
-		},
-		{
-			name: "[Fail] When: a step after the pivot has Compensate ; Should: reject it naming the step",
-			build: func() error {
-				return buildTrip(Step("a", okAction, Pivot()), Step("b", okAction, After("a"), Compensate(okAction)))
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, "after the pivot has Compensate"},
-		},
-		{
-			name: "[Fail] When: a cycle and one pivot exist ; Should: report only the cycle",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("b")),
-					Step("b", okAction, After("a")),
-					Step("p", okAction, Pivot()),
-				)
-			},
-			wantErrs:   []error{ErrCycle},
-			wantNoErrs: []error{ErrInvalidStep},
-			wantAbsent: []string{noReach},
-		},
-		{
-			name: "[Fail] When: a cycle exists and the pivot has Compensate ; Should: report both errors",
-			build: func() error {
-				return buildTrip(
-					Step("a", okAction, After("b")),
-					Step("b", okAction, After("a")),
-					Step("p", okAction, Pivot(), Compensate(okAction)),
-				)
-			},
-			wantErrs:     []error{ErrCycle, ErrInvalidStep},
-			wantContains: []string{"pivot has Compensate"},
-		},
-	}
+func oneStep() (*Saga[tripState], error) {
+	return New[tripState](tripName, act("a", okAction))
 }
 
 func Test_New(t *testing.T) {
 	t.Parallel()
 
-	step := func(opts ...StepOption) Option { return Step("a", okAction, opts...) }
-	journal := newMemoryJournal()
+	journal := NewMemoryJournal()
+	a := act("a", okAction)
 
-	tests := slices.Concat(newGraphCases(), []newCase{
+	tests := []struct {
+		name         string
+		saga         string
+		flow         Flow
+		opts         []Option
+		wantErrs     []error
+		wantContains []string
+	}{
 		{
-			name:  "[Success] When: the saga is valid ; Should: return a saga",
-			build: func() error { return buildTrip(step()) },
+			name: "[Success] When: the saga is valid ; Should: return a saga",
+			saga: tripName, flow: a,
 		},
 		{
-			name: "[Fail] When: the saga name is empty ; Should: reject it naming the saga",
-			build: func() error {
-				_, err := New[tripState]("", step())
-
-				return err
-			},
+			name:         "[Fail] When: the saga name is empty ; Should: reject it naming the saga",
+			flow:         a,
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{`saga ""`, "empty name"},
 		},
 		{
 			name: "[Fail] When: the saga name is outside the allowed set ; Should: reject it naming the saga",
-			build: func() error {
-				_, err := New[tripState]("a\tb", step())
-
-				return err
-			},
+			saga: "a\tb", flow: a,
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`saga "a\tb"`, "name may hold only ASCII letters"},
+			wantContains: []string{`saga "a\tb"`, badName},
 		},
 		{
-			name:         "[Fail] When: a step name is outside the allowed set ; Should: reject it naming the step",
-			build:        func() error { return buildTrip(Step("a b", okAction)) },
+			name: "[Fail] When: an Option is nil ; Should: reject it",
+			saga: tripName, flow: a, opts: []Option{nil},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "a b"`, "name may hold only ASCII letters"},
+			wantContains: []string{sagaTrip, nilOptionText},
 		},
 		{
-			name: "[Fail] When: the saga has no steps ; Should: reject it",
-			build: func() error {
-				_, err := New[tripState]("trip")
-
-				return err
-			},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{sagaTrip, "no steps"},
-		},
-		{
-			name:         "[Fail] When: an Option is nil ; Should: reject it",
-			build:        func() error { return buildTrip(step(), nil) },
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{sagaTrip, "nil Option"},
-		},
-		{
-			name:         "[Fail] When: a step is invalid ; Should: reject the saga naming the step",
-			build:        func() error { return buildTrip(Step[tripState]("hotel", nil)) },
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"step \"hotel\"", "action is nil"},
-		},
-		{
-			name:         "[Fail] When: WithJournal is nil ; Should: reject it",
-			build:        func() error { return buildTrip(step(), WithJournal(nil)) },
+			name: "[Fail] When: WithJournal is nil ; Should: reject it",
+			saga: tripName, flow: a, opts: []Option{WithJournal(nil)},
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{sagaTrip, "WithJournal journal is nil"},
 		},
 		{
-			name:         "[Fail] When: WithMiddleware holds a nil entry ; Should: reject it",
-			build:        func() error { return buildTrip(step(), WithMiddleware(okMiddleware, nil)) },
+			name: "[Fail] When: WithMiddleware holds a nil entry ; Should: reject it",
+			saga: tripName, flow: a, opts: []Option{WithMiddleware(okMiddleware(), nil)},
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{sagaTrip, "nil Middleware"},
 		},
 		{
-			name:         "[Fail] When: WithRecoveryTimeout is negative ; Should: reject it",
-			build:        func() error { return buildTrip(step(), WithRecoveryTimeout(-time.Second)) },
+			name: "[Fail] When: WithRecoveryTimeout is negative ; Should: reject it",
+			saga: tripName, flow: a, opts: []Option{WithRecoveryTimeout(-time.Second)},
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{sagaTrip, "WithRecoveryTimeout is negative"},
 		},
 		{
 			name: "[Fail] When: WithJournal is given twice ; Should: reject it",
-			build: func() error {
-				return buildTrip(slices.Concat([]Option{step()}, twice(WithJournal(journal)))...)
-			},
+			saga: tripName, flow: a, opts: twice(WithJournal(journal)),
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{"WithJournal given more than once"},
 		},
 		{
 			name: "[Fail] When: WithMiddleware is given twice ; Should: reject it",
-			build: func() error {
-				return buildTrip(slices.Concat([]Option{step()}, twice(WithMiddleware(okMiddleware)))...)
-			},
+			saga: tripName, flow: a, opts: twice(WithMiddleware(okMiddleware())),
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{"WithMiddleware given more than once"},
 		},
 		{
 			name: "[Fail] When: WithRecoveryTimeout is given twice ; Should: reject it",
-			build: func() error {
-				return buildTrip(slices.Concat([]Option{step()}, twice(WithRecoveryTimeout(time.Second)))...)
-			},
+			saga: tripName, flow: a, opts: twice(WithRecoveryTimeout(time.Second)),
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{"WithRecoveryTimeout given more than once"},
 		},
 		{
-			name: "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
-			build: func() error {
-				_, err := New[chanState]("trip", Step("a", func(context.Context, *chanState) error { return nil }))
-
-				return err
-			},
-			wantErrs:     []error{ErrInvalidState},
-			wantContains: []string{"chanState"},
+			name:         "[Fail] When: the flow is nil ; Should: return the Inspect error for a saga without steps",
+			saga:         tripName,
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{noStepsText},
 		},
 		{
-			name: "[Fail] When: a step and the state type are both bad ; Should: join both errors",
-			build: func() error {
-				_, err := New[chanState]("trip", Step[chanState]("a", nil))
-
-				return err
-			},
-			wantErrs:     []error{ErrInvalidStep, ErrInvalidState},
-			wantContains: []string{"action is nil", "chanState"},
+			name: "[Fail] When: a step name breaks the name rule ; Should: return the Inspect error naming the step",
+			saga: tripName, flow: act("a b", okAction),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "a b"`, badName},
 		},
-	})
+		{
+			name: "[Fail] When: the flow holds a cycle ; Should: return the Inspect ErrCycle",
+			saga: tripName, flow: Sequence(a, a),
+			wantErrs:     []error{ErrCycle},
+			wantContains: []string{quotedA, "form a cycle"},
+		},
+		{
+			name: "[Fail] When: two steps share a name ; Should: return the Inspect ErrDuplicateStep",
+			saga: tripName, flow: Parallel(a, act("a", okAction)),
+			wantErrs:     []error{ErrDuplicateStep},
+			wantContains: []string{`step "a": declared more than once`},
+		},
+		{
+			name: "[Fail] When: the saga and a step are both bad ; Should: join both errors",
+			flow: &idleStep{}, opts: []Option{nil},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`saga ""`, nilOptionText, neitherText},
+		},
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tt.build()
-			if len(tt.wantErrs) == 0 {
+			s, err := New[tripState](tt.saga, tt.flow, tt.opts...)
+			_, inspectErr := Inspect[tripState](tt.flow)
+
+			requireErrs(t, err, tt.wantErrs, nil)
+			requireText(t, err, tt.wantContains, nil)
+			assert.Contains(t, errText(err), errText(inspectErr))
+			assert.Equal(t, err == nil, s != nil)
+		})
+	}
+}
+
+func Test_New_stepSettings(t *testing.T) {
+	t.Parallel()
+
+	given := RetryPolicy{Attempts: 5, Initial: time.Second, Max: 2 * time.Second, Multiplier: 1.5, NoJitter: true}
+
+	tests := []struct {
+		name         string
+		settings     Step
+		execute      func(context.Context, *tripState) error
+		changed      Step
+		wantAttempts int
+		wantElapsed  time.Duration
+		wantErr      error
+		wantErrTries int
+	}{
+		{
+			name:     "[Fail] When: Retry is NoRetry and Execute fails ; Should: run it once",
+			settings: Step{Retry: NoRetry()}, execute: alwaysFails,
+			wantAttempts: 1, wantErr: errAlwaysFails, wantErrTries: 1,
+		},
+		{
+			name:     "[Fail] When: Retry gives two attempts ; Should: stop an always failing step after two",
+			settings: Step{Retry: RetryPolicy{Attempts: 2, NoJitter: true}}, execute: alwaysFails,
+			wantAttempts: 2, wantElapsed: 200 * time.Millisecond, wantErr: errAlwaysFails, wantErrTries: 2,
+		},
+		{
+			name:     "[Fail] When: Retry sets every field ; Should: wait its exact delays",
+			settings: Step{Retry: given}, execute: alwaysFails,
+			wantAttempts: 5, wantElapsed: 6500 * time.Millisecond, wantErr: errAlwaysFails, wantErrTries: 5,
+		},
+		{
+			name:         "[Fail] When: Retry is zero apart from NoJitter ; Should: wait the default delays",
+			settings:     Step{Retry: RetryPolicy{NoJitter: true}},
+			execute:      alwaysFails,
+			wantAttempts: DefaultAttempts,
+			wantElapsed:  600 * time.Millisecond,
+			wantErr:      errAlwaysFails,
+			wantErrTries: DefaultAttempts,
+		},
+		{
+			name:         "[Fail] When: the multiplier is exactly one ; Should: wait a constant delay",
+			settings:     Step{Retry: RetryPolicy{Multiplier: 1, NoJitter: true}},
+			execute:      alwaysFails,
+			wantAttempts: DefaultAttempts,
+			wantElapsed:  400 * time.Millisecond,
+			wantErr:      errAlwaysFails,
+			wantErrTries: DefaultAttempts,
+		},
+		{
+			name:     "[Fail] When: AttemptTimeout is shorter than Execute ; Should: end it with DeadlineExceeded",
+			settings: Step{Retry: NoRetry(), AttemptTimeout: time.Second}, execute: twoSecondCall,
+			wantAttempts: 1, wantElapsed: time.Second, wantErr: context.DeadlineExceeded, wantErrTries: 1,
+		},
+		{
+			name:     "[Success] When: AttemptTimeout is longer than Execute ; Should: let it finish",
+			settings: Step{AttemptTimeout: time.Minute}, execute: twoSecondCall,
+			wantAttempts: 1, wantElapsed: 2 * time.Second,
+		},
+		{
+			name:     "[Success] When: AttemptTimeout is zero ; Should: set no limit",
+			settings: Step{}, execute: twoSecondCall,
+			wantAttempts: 1, wantElapsed: 2 * time.Second,
+		},
+		{
+			name:     "[Fail] When: the step value changes after New ; Should: run with the settings New copied",
+			settings: Step{Retry: NoRetry()}, execute: alwaysFails,
+			changed: Step{
+				Name: "x", Retry: RetryPolicy{Attempts: 9, NoJitter: true}, AttemptTimeout: time.Nanosecond,
+			},
+			wantAttempts: 1, wantErr: errAlwaysFails, wantErrTries: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				step := act("a", tt.execute)
+				step.Retry, step.AttemptTimeout = tt.settings.Retry, tt.settings.AttemptTimeout
+
+				journal := newScriptJournal(nil)
+
+				s, err := New[tripState](tripName, step, WithJournal(journal))
 				require.NoError(t, err)
 
-				return
-			}
+				step.Step = tt.changed
 
-			for _, want := range tt.wantErrs {
-				require.ErrorIs(t, err, want)
-			}
+				start := time.Now()
+				runErr := s.Run(t.Context(), &tripState{})
+				elapsed := time.Since(start)
 
-			for _, no := range tt.wantNoErrs {
-				require.NotErrorIs(t, err, no)
-			}
+				res := journal.results()[0]
 
-			requireText(t, err, tt.wantContains, tt.wantAbsent)
+				require.ErrorIs(t, runErr, tt.wantErr)
+				assert.Equal(t, tt.wantErr == nil, runErr == nil)
+				require.Len(t, res.Steps, 1)
+				assert.Equal(t, "a", res.Steps[0].Name)
+				assert.Equal(t, tt.wantAttempts, outcomeOf(journal.Events(res.Execution), "a").Attempt)
+				assert.Equal(t, tt.wantElapsed, elapsed)
+
+				errTries := 0
+				if stepErr, ok := errors.AsType[*Error](runErr); ok {
+					errTries = stepErr.Attempts
+				}
+
+				assert.Equal(t, tt.wantErrTries, errTries)
+			})
 		})
 	}
 }
@@ -414,37 +307,39 @@ func requireText(t *testing.T, err error, contains, absent []string) {
 	}
 
 	for _, no := range absent {
-		require.NotContains(t, err.Error(), no)
+		require.NotContains(t, errText(err), no)
 	}
 }
 
 func Test_WithJournal(t *testing.T) {
 	t.Parallel()
 
-	journal := newMemoryJournal()
-
 	var nilJournal *pointerJournal
 
 	tests := []struct {
 		name        string
-		opts        []Option
-		wantJournal Journal
+		opts        func(j *scriptJournal) []Option
+		wantAppends int
 		wantErr     error
 	}{
 		{
-			name: "[Success] When: a journal is given ; Should: store it",
-			opts: []Option{WithJournal(journal)}, wantJournal: journal,
+			name:        "[Success] When: a journal is given ; Should: append every event of the run to it",
+			opts:        func(j *scriptJournal) []Option { return []Option{WithJournal(j)} },
+			wantAppends: 4,
 		},
 		{
-			name: "[Success] When: no journal is given ; Should: leave it nil",
+			name: "[Success] When: no journal is given ; Should: run on a journal of its own",
+			opts: func(*scriptJournal) []Option { return nil },
 		},
 		{
-			name: "[Fail] When: the journal is nil ; Should: reject it",
-			opts: []Option{WithJournal(nil)}, wantErr: ErrInvalidStep,
+			name:    "[Fail] When: the journal is nil ; Should: reject it",
+			opts:    func(*scriptJournal) []Option { return []Option{WithJournal(nil)} },
+			wantErr: ErrInvalidStep,
 		},
 		{
-			name: "[Fail] When: the journal holds a nil pointer ; Should: reject it",
-			opts: []Option{WithJournal(nilJournal)}, wantErr: ErrInvalidStep,
+			name:    "[Fail] When: the journal holds a nil pointer ; Should: reject it",
+			opts:    func(*scriptJournal) []Option { return []Option{WithJournal(nilJournal)} },
+			wantErr: ErrInvalidStep,
 		},
 	}
 
@@ -452,123 +347,59 @@ func Test_WithJournal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := New[tripState]("trip", append([]Option{Step("a", okAction)}, tt.opts...)...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
+			j := newScriptJournal(nil)
 
-				return
+			s, err := New[tripState](tripName, act("a", okAction), tt.opts(j)...)
+			require.ErrorIs(t, err, tt.wantErr)
+
+			if s != nil {
+				runErr := s.Run(t.Context(), &tripState{})
+				require.NoError(t, runErr)
 			}
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantJournal, s.journal)
+			assert.Len(t, j.ctxs, tt.wantAppends)
 		})
 	}
 }
 
-func middlewaresOf(rec *recorder, names []string) []Middleware {
-	mws := make([]Middleware, 0, len(names))
-
-	for _, n := range names {
-		mws = append(mws, tagged(rec, n))
-	}
-
-	return mws
+type graceJournal struct {
+	waited time.Duration
 }
 
-func overwrite(mws []Middleware) {
-	for i := range mws {
-		mws[i] = okMiddleware
-	}
-}
-
-func Test_WithMiddleware(t *testing.T) {
-	t.Parallel()
-
-	both := []string{"outer>", "inner>", "<inner", "<outer", "outer>", "inner>", "<inner", "<outer"}
-
-	tests := []struct {
-		name           string
-		names          []string
-		nilEntry       bool
-		calls          int
-		changeAfterNew bool
-		wantTrace      []string
-		wantErr        error
-	}{
-		{
-			name:  "[Success] When: two middlewares are given in one call ; Should: wrap both phases in order",
-			names: []string{"outer", "inner"}, calls: 1, wantTrace: both,
-		},
-		{
-			name:  "[Success] When: the caller changes its slice after New ; Should: run the original ones",
-			names: []string{"outer", "inner"}, calls: 1, changeAfterNew: true, wantTrace: both,
-		},
-		{
-			name:  "[Fail] When: an entry is nil ; Should: reject it",
-			calls: 1, nilEntry: true, wantErr: ErrInvalidStep,
-		},
-		{
-			name:  "[Fail] When: WithMiddleware is called twice ; Should: reject it",
-			names: []string{"outer"}, calls: 2, wantErr: ErrInvalidStep,
-		},
+func (j *graceJournal) Append(ctx context.Context, e *Event) error {
+	if e.Kind != EventStepUnknown {
+		return nil
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	start := time.Now()
 
-			rec := &recorder{}
+	<-ctx.Done()
 
-			mws := middlewaresOf(rec, tt.names)
-			if tt.nilEntry {
-				mws = append(mws, nil)
-			}
+	j.waited = max(j.waited, time.Since(start))
 
-			opts := []Option{Step("a", okAction, Compensate(okAction))}
-			for range tt.calls {
-				opts = append(opts, WithMiddleware(mws...))
-			}
-
-			s, err := New[tripState]("trip", opts...)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
-
-			if tt.changeAfterNew {
-				overwrite(mws)
-			}
-
-			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].action).kind)
-			require.Equal(t, outcomeSuccess, callOnce(t, s.steps[0].compensation).kind)
-			assert.Equal(t, tt.wantTrace, rec.snapshot())
-		})
-	}
+	return context.Cause(ctx)
 }
 
 func Test_WithRecoveryTimeout(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		opts    []Option
-		want    time.Duration
-		wantErr error
+		name     string
+		opts     []Option
+		wantWait time.Duration
+		wantErr  error
 	}{
 		{
-			name: "[Success] When: a timeout is given ; Should: store it",
-			opts: []Option{WithRecoveryTimeout(time.Second)}, want: time.Second,
+			name: "[Success] When: a timeout is given ; Should: keep the journal context alive for it",
+			opts: []Option{WithRecoveryTimeout(time.Second)}, wantWait: time.Second,
 		},
 		{
-			name: "[Success] When: the option is absent ; Should: use the default",
-			want: DefaultRecoveryTimeout,
+			name:     "[Success] When: the option is absent ; Should: use the default",
+			wantWait: DefaultRecoveryTimeout,
 		},
 		{
 			name: "[Success] When: the timeout is zero ; Should: use the default",
-			opts: []Option{WithRecoveryTimeout(0)}, want: DefaultRecoveryTimeout,
+			opts: []Option{WithRecoveryTimeout(0)}, wantWait: DefaultRecoveryTimeout,
 		},
 		{
 			name: "[Fail] When: the timeout is negative ; Should: reject it",
@@ -580,15 +411,269 @@ func Test_WithRecoveryTimeout(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := New[tripState]("trip", append([]Option{Step("a", okAction)}, tt.opts...)...)
-			if tt.wantErr != nil {
+			synctest.Test(t, func(t *testing.T) {
+				j := &graceJournal{}
+				waits := once("a", func(ctx context.Context, _ *tripState) error {
+					<-ctx.Done()
+
+					return ctx.Err()
+				})
+
+				s, err := New[tripState](tripName, waits, append([]Option{WithJournal(j)}, tt.opts...)...)
 				require.ErrorIs(t, err, tt.wantErr)
 
-				return
+				if s != nil {
+					ctx, cancel := context.WithCancel(t.Context())
+					time.AfterFunc(pause, cancel)
+
+					runErr := s.Run(ctx, &tripState{})
+					require.ErrorIs(t, runErr, ErrGraceEnded)
+				}
+
+				assert.Equal(t, tt.wantWait, j.waited)
+			})
+		})
+	}
+}
+
+func middlewaresOf(rec *recorder, names []string) []Middleware {
+	mws := make([]Middleware, 0, len(names))
+
+	for _, n := range names {
+		mws = append(mws, phased(rec, n))
+	}
+
+	return mws
+}
+
+const (
+	outerMW   = "outer"
+	closeOut  = "<outer"
+	closeMW   = "<mw"
+	mwExecute = "mw>pay:execute"
+)
+
+func phased(r *recorder, name string) MiddlewareFunc {
+	return func(ctx context.Context, info CallInfo, call Call) error {
+		r.add(name + ">" + info.Step + ":" + string(info.Phase))
+
+		err := call(ctx)
+
+		r.add("<" + name)
+
+		return err
+	}
+}
+
+func overwrite(mws []Middleware) {
+	for i := range mws {
+		mws[i] = okMiddleware()
+	}
+}
+
+func Test_WithMiddleware(t *testing.T) {
+	t.Parallel()
+
+	both := []string{
+		"outer>a:execute", "inner>a:execute", "<inner", closeOut,
+		"outer>b:execute", "inner>b:execute", "<inner", closeOut,
+	}
+
+	tests := []struct {
+		name           string
+		names          []string
+		extra          []Middleware
+		calls          int
+		changeAfterNew bool
+		pivot          bool
+		wantTrace      []string
+		wantErr        error
+	}{
+		{
+			name:  "[Success] When: the second step is the pivot ; Should: give the middleware the phase pivot for it",
+			names: []string{outerMW}, calls: 1, pivot: true,
+			wantTrace: []string{"outer>a:execute", closeOut, "outer>b:pivot", closeOut},
+		},
+		{
+			name:  "[Success] When: two middlewares are given in one call ; Should: wrap each step call in order",
+			names: []string{outerMW, "inner"}, calls: 1, wantTrace: both,
+		},
+		{
+			name:  "[Success] When: the caller changes its slice after New ; Should: run the original ones",
+			names: []string{outerMW, "inner"}, calls: 1, changeAfterNew: true, wantTrace: both,
+		},
+		{
+			name:  "[Fail] When: an entry is nil ; Should: reject it",
+			calls: 1, extra: []Middleware{nil}, wantErr: ErrInvalidStep,
+		},
+		{
+			name:  "[Fail] When: an entry is a nil MiddlewareFunc ; Should: reject it",
+			calls: 1, extra: []Middleware{MiddlewareFunc(nil)}, wantErr: ErrInvalidStep,
+		},
+		{
+			name:  "[Fail] When: an entry is a nil pointer middleware ; Should: reject it",
+			calls: 1, extra: []Middleware{(*tagMiddleware)(nil)}, wantErr: ErrInvalidStep,
+		},
+		{
+			name:  "[Fail] When: WithMiddleware is called twice ; Should: reject it",
+			names: []string{outerMW}, calls: 2, wantErr: ErrInvalidStep,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &recorder{}
+
+			mws := append(middlewaresOf(rec, tt.names), tt.extra...)
+
+			var second Flow = act("b", okAction)
+			if tt.pivot {
+				second = paying("b", okAction)
 			}
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, s.recovery)
+			opts := slices.Repeat([]Option{WithMiddleware(mws...)}, tt.calls)
+
+			s, err := New[tripState](tripName, Sequence(act("a", okAction), second), opts...)
+			require.ErrorIs(t, err, tt.wantErr)
+
+			if tt.changeAfterNew {
+				overwrite(mws)
+			}
+
+			if s != nil {
+				runErr := s.Run(t.Context(), &tripState{})
+				require.NoError(t, runErr)
+			}
+
+			assert.Equal(t, tt.wantTrace, rec.snapshot())
+		})
+	}
+}
+
+func Test_stepNode_buildCalls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		pivot            bool
+		undo             bool
+		wrap             bool
+		wantCompensation bool
+		wantTrace        []string
+	}{
+		{
+			name:      "[Success] When: a step without a compensation ; Should: run it as execute, no compensation",
+			wantTrace: []string{mwExecute, "do", closeMW},
+		},
+		{
+			name:      "[Success] When: a pivot step ; Should: run the action as pivot and build no compensation",
+			pivot:     true,
+			wantTrace: []string{"mw>pay:pivot", "do", closeMW},
+		},
+		{
+			name:             "[Success] When: a step with a compensation ; Should: wrap it as compensate",
+			undo:             true,
+			wantCompensation: true,
+			wantTrace:        []string{mwExecute, "do", closeMW, "mw>pay:compensate", "undo", closeMW},
+		},
+		{
+			name:      "[Success] When: a step has its own Wrap ; Should: run it inside the saga middleware",
+			wrap:      true,
+			wantTrace: []string{mwExecute, "own>pay:execute", "do", "<own", closeMW},
+		},
+		{
+			name:             "[Success] When: a step with a compensation has its own Wrap ; Should: wrap both calls",
+			undo:             true,
+			wrap:             true,
+			wantCompensation: true,
+			wantTrace: []string{
+				mwExecute, "own>pay:execute", "do", "<own", closeMW,
+				"mw>pay:compensate", "own>pay:compensate", "undo", "<own", closeMW,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &recorder{}
+			methods := &stepMethods[tripState]{call: func(context.Context, *tripState) error {
+				rec.add("do")
+
+				return nil
+			}}
+
+			if tt.undo {
+				methods.compensate = func(context.Context, *tripState) error {
+					rec.add("undo")
+
+					return nil
+				}
+			}
+
+			if tt.wrap {
+				methods.wrap = phased(rec, "own")
+			}
+
+			report := &StepReport{Name: payStep, Pivot: tt.pivot, Retry: NoRetry()}
+
+			var n stepNode[tripState]
+
+			n.buildCalls(tripName, report, methods, []Middleware{phased(rec, "mw")})
+
+			require.Equal(t, outcomeSuccess, callOnce(t, n.action).kind)
+			require.Equal(t, tt.wantCompensation, n.compensation != nil)
+
+			if n.compensation != nil {
+				require.Equal(t, outcomeSuccess, callOnce(t, n.compensation).kind)
+			}
+
+			assert.Equal(t, tt.wantTrace, rec.snapshot())
+		})
+	}
+}
+
+func Test_checkRepeats(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		given      map[string]int
+		nilOptions int
+		want       []string
+	}{
+		{
+			name:  "[Success] When: each option is given once ; Should: find nothing",
+			given: map[string]int{"WithJournal": 1, "WithMiddleware": 1},
+			want:  nil,
+		},
+		{
+			name:       "[Fail] When: an option is nil ; Should: report a nil Option",
+			given:      map[string]int{},
+			nilOptions: 2,
+			want:       []string{nilOptionText},
+		},
+		{
+			name:  "[Fail] When: two options repeat ; Should: report each one in name order",
+			given: map[string]int{"WithRecoveryTimeout": 2, "WithJournal": 3, "WithMiddleware": 1},
+			want:  []string{"WithJournal given more than once", "WithRecoveryTimeout given more than once"},
+		},
+		{
+			name:       "[Fail] When: an option is nil and another repeats ; Should: report the nil Option first",
+			given:      map[string]int{"WithJournal": 2},
+			nilOptions: 1,
+			want:       []string{nilOptionText, "WithJournal given more than once"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, checkRepeats(tt.given, tt.nilOptions))
 		})
 	}
 }
@@ -665,33 +750,33 @@ func decodeFuzzGraph(b []byte) fuzzGraph {
 	return g
 }
 
-func (g fuzzGraph) options() []Option {
-	opts := make([]Option, 0, len(g.deps))
+func (g fuzzGraph) items() []Flow {
+	steps := make([]Flow, len(g.deps))
 
-	for i, deps := range g.deps {
-		var stepOpts []StepOption
+	for i := range g.deps {
+		name := fmt.Sprintf("s%d", i)
 
-		if len(deps) > 0 {
-			names := make([]string, 0, len(deps))
-			for _, j := range deps {
-				names = append(names, fmt.Sprintf("s%d", j))
-			}
-
-			stepOpts = append(stepOpts, After(names...))
+		switch {
+		case g.pivot[i] && g.comp[i]:
+			steps[i] = &pivotUndoStep{Name: name, pay: okAction, undo: okAction}
+		case g.pivot[i]:
+			steps[i] = paying(name, okAction)
+		case g.comp[i]:
+			steps[i] = undoing(name, okAction, okAction)
+		default:
+			steps[i] = act(name, okAction)
 		}
-
-		if g.pivot[i] {
-			stepOpts = append(stepOpts, Pivot())
-		}
-
-		if g.comp[i] {
-			stepOpts = append(stepOpts, Compensate(okAction))
-		}
-
-		opts = append(opts, Step(fmt.Sprintf("s%d", i), okAction, stepOpts...))
 	}
 
-	return opts
+	items := slices.Clone(steps)
+
+	for i, deps := range g.deps {
+		for _, j := range deps {
+			items = append(items, Sequence(steps[j], steps[i]))
+		}
+	}
+
+	return items
 }
 
 func (g fuzzGraph) reaches(from, to int) bool {
@@ -778,7 +863,7 @@ func FuzzNew(f *testing.F) {
 	f.Fuzz(func(t *testing.T, b []byte) {
 		g := decodeFuzzGraph(b)
 
-		_, err := New[tripState]("trip", g.options()...)
+		_, err := New[tripState](tripName, Parallel(g.items()...))
 
 		cyclic := g.cyclic()
 		assert.Equal(t, cyclic || g.pivotBroken(), err != nil, "error: %v", err)

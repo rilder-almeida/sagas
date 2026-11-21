@@ -1367,6 +1367,7 @@ func Test_store_commit(t *testing.T) {
 		secondSnapshotAfterFirst bool
 		wantChanged              []string
 		wantErr                  error
+		wantLabel                *KindError
 		wantInMsg                []string
 		wantMoved                []string
 		wantState                testState
@@ -1389,6 +1390,7 @@ func Test_store_commit(t *testing.T) {
 			earlier:      []func(*testState){reserved},
 			secondMutate: func(s *testState) { s.Seats = 6 },
 			wantErr:      ErrConflict,
+			wantLabel:    ErrConflict,
 			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
 			wantMoved:    []string{seatsField},
 			wantState:    committed,
@@ -1415,6 +1417,7 @@ func Test_store_commit(t *testing.T) {
 				s.Seats = 6
 			},
 			wantErr:   ErrConflict,
+			wantLabel: ErrConflict,
 			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
 			wantMoved: []string{seatsField},
 			wantState: committed,
@@ -1458,6 +1461,7 @@ func Test_store_commit(t *testing.T) {
 			},
 			secondSnapshotAfterFirst: true,
 			wantErr:                  ErrInvalidState,
+			wantLabel:                ErrInvalidState,
 			wantInMsg:                []string{"sagas: invalid state: Charge: ", "Total"},
 			wantState: func() testState {
 				s := baseState()
@@ -1504,6 +1508,7 @@ func Test_store_commit(t *testing.T) {
 			earlier:      []func(*testState){reserved, func(s *testState) { s.Seats = 2 }},
 			secondMutate: func(s *testState) { s.Seats = 6 },
 			wantErr:      ErrConflict,
+			wantLabel:    ErrConflict,
 			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
 			wantMoved:    []string{seatsField},
 			wantState:    baseState(),
@@ -1518,6 +1523,7 @@ func Test_store_commit(t *testing.T) {
 			},
 			secondSnapshotAfterFirst: true,
 			wantErr:                  ErrInvalidState,
+			wantLabel:                ErrInvalidState,
 			wantInMsg:                []string{"sagas: invalid state: Link: "},
 			wantState:                committed,
 		},
@@ -1553,10 +1559,11 @@ func Test_store_commit(t *testing.T) {
 
 			tt.secondMutate(attempt)
 
-			changed, err := st.commit(secondStep, second, *attempt)
+			res, err := st.commit(secondStep, second, *attempt)
 			require.ErrorIs(t, err, tt.wantErr)
+			assert.Same(t, tt.wantLabel, res.label)
 			assertInOrder(t, errText(err), tt.wantInMsg)
-			assert.Equal(t, tt.wantChanged, changed)
+			assert.Equal(t, tt.wantChanged, res.changed)
 
 			var got testState
 			require.NoError(t, st.writeBack(&got))

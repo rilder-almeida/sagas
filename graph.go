@@ -5,48 +5,33 @@ import (
 	"slices"
 )
 
-func indexSteps(defs []stepDef) (map[string]int, []error) {
-	index := make(map[string]int, len(defs))
+func indexSteps(named []namedStep) []error {
+	first := make(map[string]int, len(named))
 
 	var errs []error
 
-	for i := range defs {
-		if _, seen := index[defs[i].name]; seen {
-			errs = append(errs, fmt.Errorf("%w: step %q: declared more than once", ErrDuplicateStep, defs[i].name))
+	for i, n := range named {
+		at, seen := first[n.name]
+		if !seen {
+			first[n.name] = i
 
 			continue
 		}
 
-		index[defs[i].name] = i
-	}
+		err := fmt.Errorf("%w: step %q: declared more than once", ErrDuplicateStep, n.name)
 
-	return index, errs
-}
-
-func link(defs []stepDef, index map[string]int) ([][]int, []error) {
-	parents := make([][]int, len(defs))
-
-	var errs []error
-
-	for i := range defs {
-		parents[i] = []int{}
-
-		for _, name := range defs[i].after {
-			p, ok := index[name]
-			if !ok {
-				errs = append(errs,
-					fmt.Errorf("%w: step %q: After names unknown step %q", ErrUnknownDependency, defs[i].name, name))
-
-				continue
-			}
-
-			if !slices.Contains(parents[i], p) {
-				parents[i] = append(parents[i], p)
-			}
+		switch {
+		case !n.derived || !named[at].derived:
+		case n.typ == named[at].typ:
+			err = fmt.Errorf("%w; set Name on each step of type %s", err, n.typ)
+		default:
+			err = fmt.Errorf("%w; set Name on each step of types %s and %s", err, named[at].typ, n.typ)
 		}
+
+		errs = append(errs, err)
 	}
 
-	return parents, errs
+	return errs
 }
 
 func childrenOf(parents [][]int) [][]int {
@@ -149,11 +134,11 @@ func zones(children [][]int, pivot int) []Zone {
 	return out
 }
 
-func pivotsOf(defs []stepDef) []int {
+func pivotsOf(reports []StepReport) []int {
 	var pivots []int
 
-	for i := range defs {
-		if defs[i].pivot {
+	for i := range reports {
+		if reports[i].Pivot {
 			pivots = append(pivots, i)
 		}
 	}
@@ -161,16 +146,16 @@ func pivotsOf(defs []stepDef) []int {
 	return pivots
 }
 
-func checkPivot(saga string, defs []stepDef, pivots []int, g *graph, graphErrs []error) []error {
+func checkPivot(reports []StepReport, pivots []int, g *graph, graphErrs []error) []error {
 	var errs []error
 
 	for _, p := range pivots {
-		if defs[p].undo != nil {
-			errs = append(errs, fmt.Errorf("%w: step %q: pivot has Compensate", ErrInvalidStep, defs[p].name))
+		if reports[p].Compensate {
+			errs = append(errs, fmt.Errorf("%w: step %q: pivot has Compensate", ErrInvalidStep, reports[p].Name))
 		}
 
-		if defs[p].pred != nil {
-			errs = append(errs, fmt.Errorf("%w: step %q: pivot has If", ErrInvalidStep, defs[p].name))
+		if reports[p].Enabled {
+			errs = append(errs, fmt.Errorf("%w: step %q: pivot has Enabled", ErrInvalidStep, reports[p].Name))
 		}
 	}
 
@@ -178,33 +163,32 @@ func checkPivot(saga string, defs []stepDef, pivots []int, g *graph, graphErrs [
 	case len(pivots) > 1:
 		names := make([]string, 0, len(pivots))
 		for _, p := range pivots {
-			names = append(names, fmt.Sprintf("%q", defs[p].name))
+			names = append(names, fmt.Sprintf("%q", reports[p].Name))
 		}
 
-		errs = append(errs,
-			fmt.Errorf("%w: saga %q: more than one Pivot, on steps %v", ErrInvalidStep, saga, names))
+		errs = append(errs, fmt.Errorf("%w: more than one Pivot, on steps %v", ErrInvalidStep, names))
 	case len(pivots) == 1 && len(graphErrs) == 0:
-		errs = append(errs, checkReach(defs, g, pivots[0])...)
+		errs = append(errs, checkReach(reports, g, pivots[0])...)
 	default:
 	}
 
 	return errs
 }
 
-func checkReach(defs []stepDef, g *graph, pivot int) []error {
+func checkReach(reports []StepReport, g *graph, pivot int) []error {
 	before := reach(g.parents, pivot)
 	after := reach(g.children, pivot)
 
 	var errs []error
 
-	for i := range defs {
+	for i := range reports {
 		switch {
 		case i != pivot && !before[i] && !after[i]:
 			errs = append(errs, fmt.Errorf("%w: step %q: neither before nor after the pivot %q",
-				ErrInvalidStep, defs[i].name, defs[pivot].name))
-		case after[i] && defs[i].undo != nil:
+				ErrInvalidStep, reports[i].Name, reports[pivot].Name))
+		case after[i] && reports[i].Compensate:
 			errs = append(errs, fmt.Errorf("%w: step %q: a step after the pivot has Compensate",
-				ErrInvalidStep, defs[i].name))
+				ErrInvalidStep, reports[i].Name))
 		default:
 		}
 	}
@@ -219,38 +203,36 @@ type graph struct {
 	pivot    int
 }
 
-func checkGraph(saga string, defs []stepDef) (graph, []error) {
-	index, errs := indexSteps(defs)
-	parents, linkErrs := link(defs, index)
-	errs = append(errs, linkErrs...)
-
+func checkGraph(reports []StepReport, parents [][]int) (graph, []error) {
 	g := graph{parents: parents, children: childrenOf(parents), pivot: -1}
 
 	o := topoOrder(g.parents, g.children)
 	g.order = o.order
 
+	var errs []error
+
 	if len(o.cycle) > 0 {
-		errs = append(errs, cycleError(saga, defs, g.children, o.cycle))
+		errs = append(errs, cycleError(reports, g.children, o.cycle))
 	}
 
-	pivots := pivotsOf(defs)
+	pivots := pivotsOf(reports)
 	if len(pivots) == 1 {
 		g.pivot = pivots[0]
 	}
 
-	errs = append(errs, checkPivot(saga, defs, pivots, &g, errs)...)
+	errs = append(errs, checkPivot(reports, pivots, &g, errs)...)
 
 	return g, errs
 }
 
-func cycleError(saga string, defs []stepDef, children [][]int, left []int) error {
+func cycleError(reports []StepReport, children [][]int, left []int) error {
 	names := make([]string, 0, len(left))
 
 	for _, i := range left {
 		if reach(children, i)[i] {
-			names = append(names, fmt.Sprintf("%q", defs[i].name))
+			names = append(names, fmt.Sprintf("%q", reports[i].Name))
 		}
 	}
 
-	return fmt.Errorf("%w: saga %q: steps %v form a cycle", ErrCycle, saga, names)
+	return fmt.Errorf("%w: steps %v form a cycle", ErrCycle, names)
 }

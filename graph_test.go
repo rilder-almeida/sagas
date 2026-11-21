@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,21 +82,41 @@ func Test_indexSteps(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		names     []string
-		wantIndex map[string]int
-		wantErrs  int
+		name         string
+		flows        []Flow
+		wantErrs     int
+		wantContains string
+		wantHint     bool
 	}{
 		{
-			name:      "[Success] When: every name is unique ; Should: index each by position",
-			names:     []string{"a", "b"},
-			wantIndex: map[string]int{"a": 0, "b": 1},
+			name:  "[Success] When: every name is unique ; Should: report nothing",
+			flows: []Flow{act("a", okAction), &Reserve{}, &Reserve{Name: "b"}},
 		},
 		{
-			name:      "[Fail] When: a name repeats ; Should: keep the first index and report each extra one",
-			names:     []string{"a", "b", "a", "a"},
-			wantIndex: map[string]int{"a": 0, "b": 1},
-			wantErrs:  2,
+			name:         "[Fail] When: a set name repeats ; Should: report each extra one",
+			flows:        []Flow{act("a", okAction), act("b", okAction), act("a", okAction), act("a", okAction)},
+			wantErrs:     2,
+			wantContains: `step "a": declared more than once`,
+		},
+		{
+			name:         "[Fail] When: two steps of one type take the type name ; Should: say to set Name on each",
+			flows:        []Flow{&Reserve{}, &Reserve{}},
+			wantErrs:     1,
+			wantContains: "set Name on each step of type *sagas.Reserve",
+			wantHint:     true,
+		},
+		{
+			name:         "[Fail] When: two instances of one generic type take the type name ; Should: name both types",
+			flows:        []Flow{&Notify[int]{}, &Notify[string]{}},
+			wantErrs:     1,
+			wantContains: "set Name on each step of types *sagas.Notify[int] and *sagas.Notify[string]",
+			wantHint:     true,
+		},
+		{
+			name:         "[Fail] When: a set name equals the type name of another step ; Should: not blame the type",
+			flows:        []Flow{&Reserve{}, act(reserveName, okAction)},
+			wantErrs:     1,
+			wantContains: `step "reserve": declared more than once`,
 		},
 	}
 
@@ -103,62 +124,18 @@ func Test_indexSteps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			defs := make([]stepDef, 0, len(tt.names))
-			for _, n := range tt.names {
-				defs = append(defs, stepDef{name: n})
+			named := make([]namedStep, 0, len(tt.flows))
+			for _, f := range tt.flows {
+				named = append(named, nameStep(f))
 			}
 
-			index, errs := indexSteps(defs)
-			assert.Equal(t, tt.wantIndex, index)
+			errs := indexSteps(named)
 			require.Len(t, errs, tt.wantErrs)
 
 			for _, err := range errs {
 				require.ErrorIs(t, err, ErrDuplicateStep)
-			}
-		})
-	}
-}
-
-func Test_link(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		defs        []stepDef
-		wantParents [][]int
-		wantErrs    int
-	}{
-		{
-			name:        "[Success] When: steps name known dependencies ; Should: link each to its parents in order",
-			defs:        []stepDef{{name: "a"}, {name: "b"}, {name: "c", after: []string{"b", "a"}}},
-			wantParents: [][]int{{}, {}, {1, 0}},
-		},
-		{
-			name:        "[Success] When: a name repeats in one list ; Should: add one edge",
-			defs:        []stepDef{{name: "a"}, {name: "b", after: []string{"a", "a"}}},
-			wantParents: [][]int{{}, {0}},
-		},
-		{
-			name:        "[Fail] When: a dependency is unknown ; Should: skip its edge and report it",
-			defs:        []stepDef{{name: "a"}, {name: "b", after: []string{"ghost", "a"}}},
-			wantParents: [][]int{{}, {0}},
-			wantErrs:    1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			index, indexErrs := indexSteps(tt.defs)
-			require.Empty(t, indexErrs)
-
-			parents, errs := link(tt.defs, index)
-			assert.Equal(t, tt.wantParents, parents)
-			require.Len(t, errs, tt.wantErrs)
-
-			for _, err := range errs {
-				require.ErrorIs(t, err, ErrUnknownDependency)
+				require.ErrorContains(t, err, tt.wantContains)
+				assert.Equal(t, tt.wantHint, strings.Contains(err.Error(), setName))
 			}
 		})
 	}

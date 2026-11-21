@@ -20,30 +20,32 @@ func Test_Permanent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		in          error
-		wantNil     bool
-		wantMessage string
+		name          string
+		in            error
+		wantPermanent bool
+		wantMessage   string
 	}{
 		{
-			name:        "[Success] When: the error is plain ; Should: mark it and keep it in the chain",
-			in:          errBoom,
-			wantMessage: errBoom.Error(),
+			name:          "[Success] When: the error is plain ; Should: mark it and keep it in the chain",
+			in:            errBoom,
+			wantPermanent: true,
+			wantMessage:   errBoom.Error(),
 		},
 		{
-			name:    "[Success] When: the error is nil ; Should: return nil",
-			in:      nil,
-			wantNil: true,
+			name: "[Success] When: the error is nil ; Should: return nil",
+			in:   nil,
 		},
 		{
-			name:        "[Success] When: the error is already permanent ; Should: stay permanent, same message",
-			in:          Permanent(errBoom),
-			wantMessage: errBoom.Error(),
+			name:          "[Success] When: the error is already permanent ; Should: stay permanent, same message",
+			in:            Permanent(errBoom),
+			wantPermanent: true,
+			wantMessage:   errBoom.Error(),
 		},
 		{
-			name:        "[Success] When: a permanent error is wrapped ; Should: still detect it",
-			in:          fmt.Errorf("x: %w", Permanent(errBoom)),
-			wantMessage: "x: boom",
+			name:          "[Success] When: a permanent error is wrapped ; Should: still detect it",
+			in:            fmt.Errorf("x: %w", Permanent(errBoom)),
+			wantPermanent: true,
+			wantMessage:   "x: boom",
 		},
 	}
 
@@ -52,15 +54,10 @@ func Test_Permanent(t *testing.T) {
 			t.Parallel()
 
 			got := Permanent(tt.in)
-			if tt.wantNil {
-				assert.NoError(t, got)
-
-				return
-			}
 
 			require.ErrorIs(t, got, tt.in)
-			assert.True(t, isPermanent(got))
-			assert.Equal(t, tt.wantMessage, got.Error())
+			assert.Equal(t, tt.wantPermanent, isPermanent(got))
+			assert.Equal(t, tt.wantMessage, errText(got))
 		})
 	}
 }
@@ -266,13 +263,13 @@ var (
 	errMarked       = Permanent(errA)
 )
 
-func scriptedHandler(script []error, cancel context.CancelFunc, cancelOnCall int, seen *[]int) Handler {
+func scriptedCall(meta *callMeta, script []error, cancel context.CancelFunc, cancelOnCall int, seen *[]int) Call {
 	calls := 0
 
 	return func(ctx context.Context) error {
 		calls++
 
-		*seen = append(*seen, metaFrom(ctx).attempt)
+		*seen = append(*seen, meta.attempt)
 
 		if calls == cancelOnCall {
 			cancel()
@@ -292,6 +289,18 @@ func scriptedHandler(script []error, cancel context.CancelFunc, cancelOnCall int
 	}
 }
 
+func assertRetryErr(t *testing.T, err, want error) {
+	t.Helper()
+
+	if want == nil {
+		require.NoError(t, err)
+
+		return
+	}
+
+	require.ErrorIs(t, err, want)
+}
+
 func Test_withRetry(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +315,7 @@ func Test_withRetry(t *testing.T) {
 		wantCalls    int
 		wantElapsed  time.Duration
 		wantErr      error
+		wantPrevious []error
 	}{
 		{
 			name:      "[Success] When: the first call succeeds ; Should: call once",
@@ -314,19 +324,21 @@ func Test_withRetry(t *testing.T) {
 			wantCalls: 1,
 		},
 		{
-			name:        "[Success] When: the third call succeeds ; Should: retry twice with growing waits",
-			policy:      fast,
-			script:      []error{errA, errB, nil},
-			wantCalls:   3,
-			wantElapsed: 600 * time.Millisecond,
+			name:         "[Success] When: the third call succeeds ; Should: retry twice with growing waits",
+			policy:       fast,
+			script:       []error{errA, errB, nil},
+			wantCalls:    3,
+			wantElapsed:  600 * time.Millisecond,
+			wantPrevious: []error{errA, errB},
 		},
 		{
-			name:        "[Fail] When: every attempt fails ; Should: stop at the limit with the last error",
-			policy:      fast,
-			script:      []error{errA, errB, errC},
-			wantCalls:   3,
-			wantElapsed: 600 * time.Millisecond,
-			wantErr:     errC,
+			name:         "[Fail] When: every attempt fails ; Should: stop at the limit with the last error",
+			policy:       fast,
+			script:       []error{errA, errB, errC},
+			wantCalls:    3,
+			wantElapsed:  600 * time.Millisecond,
+			wantErr:      errC,
+			wantPrevious: []error{errA, errB},
 		},
 		{
 			name: "[Success] When: the policy is fully set ; Should: follow its numbers",
@@ -337,9 +349,10 @@ func Test_withRetry(t *testing.T) {
 				Multiplier: 3,
 				NoJitter:   true,
 			},
-			script:      []error{errA, errA, errA, nil},
-			wantCalls:   4,
-			wantElapsed: 9 * time.Second,
+			script:       []error{errA, errA, errA, nil},
+			wantCalls:    4,
+			wantElapsed:  9 * time.Second,
+			wantPrevious: []error{errA, errA, errA},
 		},
 		{
 			name:      "[Fail] When: the error is permanent ; Should: stop after one call",
@@ -356,11 +369,12 @@ func Test_withRetry(t *testing.T) {
 			wantErr:   errPanicked,
 		},
 		{
-			name:        "[Success] When: an attempt hits its own deadline ; Should: retry it",
-			policy:      fast,
-			script:      []error{errAttemptLimit, nil},
-			wantCalls:   2,
-			wantElapsed: 1200 * time.Millisecond,
+			name:         "[Success] When: an attempt hits its own deadline ; Should: retry it",
+			policy:       fast,
+			script:       []error{errAttemptLimit, nil},
+			wantCalls:    2,
+			wantElapsed:  1200 * time.Millisecond,
+			wantPrevious: []error{context.DeadlineExceeded},
 		},
 		{
 			name:         "[Fail] When: the parent is done after attempt 1 ; Should: stop after one call",
@@ -393,7 +407,9 @@ func Test_withRetry(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(withMeta(t.Context(), &callMeta{execution: infoExecution}))
+				meta := &callMeta{execution: infoExecution}
+
+				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 
 				if tt.cancelAt > 0 {
@@ -403,14 +419,11 @@ func Test_withRetry(t *testing.T) {
 				var seen []int
 
 				start := time.Now()
-				err := withRetry(tt.policy)(scriptedHandler(tt.script, cancel, tt.cancelOnCall, &seen))(ctx)
+				call := scriptedCall(meta, tt.script, cancel, tt.cancelOnCall, &seen)
+				err := withRetry(tt.policy, meta).Wrap(ctx, CallInfo{}, call)
 
-				if tt.wantErr == nil {
-					require.NoError(t, err)
-				} else {
-					require.ErrorIs(t, err, tt.wantErr)
-				}
-
+				assertRetryErr(t, err, tt.wantErr)
+				assertPrevious(t, meta.history(), tt.wantPrevious)
 				assert.Len(t, seen, tt.wantCalls)
 				assert.Equal(t, tt.wantElapsed, time.Since(start))
 
@@ -452,19 +465,56 @@ func Test_runAttempts(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				ctx := withMeta(t.Context(), &callMeta{execution: infoExecution})
+				meta := &callMeta{execution: infoExecution}
 
 				var seen []int
 
-				next := scriptedHandler([]error{errA, errB, nil}, nil, 0, &seen)
+				call := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
 
 				start := time.Now()
-				err := runAttempts(ctx, RetryPolicy{}, next, tt.draw)
+				err := runAttempts(t.Context(), RetryPolicy{}, meta, call, tt.draw)
 
 				require.NoError(t, err)
-				assert.Len(t, seen, 3)
+				assert.Equal(t, []int{1, 2, 3}, seen)
 				assert.Equal(t, tt.wantElapsed, time.Since(start))
 			})
+		})
+	}
+}
+
+func Test_NoRetry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		change       func(*RetryPolicy)
+		wantPolicy   RetryPolicy
+		wantAttempts int
+	}{
+		{
+			name:         "[Success] When: NoRetry is called ; Should: return one attempt and defaults for the rest",
+			change:       func(*RetryPolicy) {},
+			wantPolicy:   RetryPolicy{Attempts: 1},
+			wantAttempts: 1,
+		},
+		{
+			name:         "[Success] When: a caller changes a returned policy ; Should: leave the next call unchanged",
+			change:       func(p *RetryPolicy) { p.Attempts = 9 },
+			wantPolicy:   RetryPolicy{Attempts: 1},
+			wantAttempts: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			first := NoRetry()
+			tt.change(&first)
+
+			got := NoRetry()
+			assert.Equal(t, tt.wantPolicy, got)
+			assert.Equal(t, tt.wantAttempts, got.attempts())
 		})
 	}
 }

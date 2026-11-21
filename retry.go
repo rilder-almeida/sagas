@@ -66,6 +66,9 @@ func (p RetryPolicy) multiplier() float64 {
 	return DefaultMultiplier
 }
 
+// NoRetry returns the policy of a step that makes one attempt and never retries.
+func NoRetry() RetryPolicy { return RetryPolicy{Attempts: 1} }
+
 var errPermanent = errors.New("sagas: permanent")
 
 type permanentError struct{ err error }
@@ -77,6 +80,7 @@ func (e *permanentError) Unwrap() error { return e.err }
 func (*permanentError) Is(target error) bool { return target == errPermanent }
 
 // Permanent marks err so that the retry loop stops on it. It returns nil for a nil err.
+// The mark counts anywhere in an error chain, so a nested run's permanent error also stops the outer step.
 func Permanent(err error) error {
 	if err == nil {
 		return nil
@@ -102,30 +106,22 @@ func backoff(p RetryPolicy, attempt int, r func(int64) int64) time.Duration {
 	return time.Duration(r(int64(delay)))
 }
 
-func withRetry(p RetryPolicy) Middleware {
-	return func(next Handler) Handler {
-		return func(ctx context.Context) error {
-			return runAttempts(ctx, p, next, rand.Int64N)
-		}
+func withRetry(p RetryPolicy, meta *callMeta) MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error {
+		return runAttempts(ctx, p, meta, call, rand.Int64N)
 	}
 }
 
-func runAttempts(ctx context.Context, p RetryPolicy, next Handler, draw func(int64) int64) error {
-	meta := metaFrom(ctx)
-
+func runAttempts(ctx context.Context, p RetryPolicy, meta *callMeta, call Call, draw func(int64) int64) error {
 	for attempt := 1; ; attempt++ {
-		if meta != nil {
-			meta.attempt = attempt
-		}
+		meta.attempt = attempt
 
-		err := next(ctx)
-		if err == nil || !retryable(err) || attempt >= p.attempts() {
+		err := call(ctx)
+		if err == nil || !retryable(err) || attempt >= p.attempts() || !sleep(ctx, backoff(p, attempt, draw)) {
 			return err
 		}
 
-		if !sleep(ctx, backoff(p, attempt, draw)) {
-			return err
-		}
+		meta.closeAttempt(err)
 	}
 }
 

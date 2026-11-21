@@ -1,19 +1,18 @@
 package sagas
 
 import (
-	"errors"
 	"slices"
-	"time"
 )
 
 var (
-	// ErrCompensated is returned when a run fails and every started compensable step is compensated.
-	ErrCompensated = errors.New("sagas: compensated")
-	// ErrCompensationFailed is returned when a run fails and at least one compensation does not succeed.
-	ErrCompensationFailed = errors.New("sagas: compensation failed")
-	// ErrIncomplete is returned when a run cannot finish forward: the pivot's outcome stays unknown, or
-	// forward-only work is left undone after the pivot succeeds.
-	ErrIncomplete = errors.New("sagas: incomplete")
+	// ErrCompensated is returned when a run stops before the pivot applies, a pivot error included, and every
+	// started compensation succeeds.
+	ErrCompensated = &KindError{name: "compensated", message: "sagas: compensated"}
+	// ErrCompensationFailed is returned when a run stops before the pivot applies, a pivot error included, and a
+	// compensation fails for good, is blocked or is halted.
+	ErrCompensationFailed = &KindError{name: "compensation_failed", message: "sagas: compensation failed"}
+	// ErrIncomplete is returned when a run cannot finish forward: the pivot is unknown or forward-only work is undone.
+	ErrIncomplete = &KindError{name: "incomplete", message: "sagas: incomplete"}
 )
 
 // Status is the outcome of a run. The empty string means not set.
@@ -21,64 +20,43 @@ type Status string
 
 // Status values.
 const (
-	StatusUnfinished         Status = "unfinished"
+	statusUnfinished         Status = "unfinished"
 	StatusCompleted          Status = "completed"
 	StatusCompensated        Status = "compensated"
 	StatusCompensationFailed Status = "compensation-failed"
 	StatusIncomplete         Status = "incomplete"
 )
 
-// StepStatus is where one step of a run ended. The empty string means not set.
-type StepStatus string
+type stepStatus string
 
-// StepStatus values.
 const (
-	StepNotStarted         StepStatus = "not-started"
-	StepSucceeded          StepStatus = "succeeded"
-	StepFailed             StepStatus = "failed"
-	StepUnknown            StepStatus = "unknown"
-	StepSkipped            StepStatus = "skipped"
-	StepCompensated        StepStatus = "compensated"
-	StepCompensationFailed StepStatus = "compensation-failed"
-	StepBlocked            StepStatus = "blocked"
-	StepHalted             StepStatus = "halted"
+	stepNotStarted         stepStatus = "not-started"
+	stepSucceeded          stepStatus = "succeeded"
+	stepFailed             stepStatus = "failed"
+	stepUnknown            stepStatus = "unknown"
+	stepSkipped            stepStatus = "skipped"
+	stepCompensated        stepStatus = "compensated"
+	stepCompensationFailed stepStatus = "compensation-failed"
+	stepBlocked            stepStatus = "blocked"
+	stepHalted             stepStatus = "halted"
 )
 
-// StepResult is where one step of a run ended, with its attempts, errors, committed fields and times.
-type StepResult struct {
-	Name            string
-	Status          StepStatus
-	Attempts        int
-	Err             string
-	CompensationErr string
-	Changed         []string
-	Start           time.Time
-	End             time.Time
+type stepResult struct {
+	Name   string
+	Status stepStatus
 }
 
-// Result is the outcome of one execution, built from its journal events. It describes a run that ended: a step
-// still running looks unknown, and a compensation still running looks failed.
-type Result struct {
-	Execution string
-	Status    Status
-	Steps     []StepResult
-	events    []Event
-}
-
-// Pending lists, in step order and from the events alone, every step that needs action: an unknown step; a failed,
-// blocked or halted compensation; and, once the pivot succeeded, a forward-only step that failed or did not start.
-// During a journal outage, the error Run returns is the complete list: the journal holds only what it recorded.
-func (r *Result) Pending() []string {
+func pendingOf(events []Event) []string {
 	var zones []StepZone
 
-	for i := range r.events {
-		if r.events[i].Kind == EventSagaStarted {
-			zones = r.events[i].Steps
+	for i := range events {
+		if events[i].Kind == EventSagaStarted {
+			zones = events[i].Steps
 		}
 	}
 
-	steps := foldStepsSharingChanged(r.events)
-	pivot := StepNotStarted
+	steps := foldStepStatuses(events)
+	pivot := stepNotStarted
 
 	for i, z := range zones {
 		if z.Zone == ZonePivot {
@@ -97,101 +75,76 @@ func (r *Result) Pending() []string {
 	return pending
 }
 
-// Events returns a copy of the run's events that the caller may change freely.
-func (r *Result) Events() []Event {
-	return copyEvents(r.events)
-}
-
-func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
+func owed(status stepStatus, zone Zone, pivot stepStatus) bool {
 	switch status {
-	case StepUnknown, StepCompensationFailed, StepBlocked, StepHalted:
+	case stepUnknown, stepCompensationFailed, stepBlocked, stepHalted:
 		return true
-	case StepFailed, StepNotStarted:
-		return zone == ZoneForwardOnly && pivot == StepSucceeded
-	case StepSucceeded, StepSkipped, StepCompensated:
+	case stepFailed, stepNotStarted:
+		return zone == ZoneForwardOnly && pivot == stepSucceeded
+	case stepSucceeded, stepSkipped, stepCompensated:
 		return false
 	}
 
 	return false
 }
 
-func buildResult(events []Event) Result {
-	r := Result{Status: StatusUnfinished, events: copyEvents(events)}
-	r.Steps = foldStepsSharingChanged(r.events)
-
-	for k := range r.Steps {
-		r.Steps[k].Changed = slices.Clone(r.Steps[k].Changed)
-	}
-
-	for i := range r.events {
-		if r.events[i].Kind == EventSagaStarted {
-			r.Execution = r.events[i].Execution
-		}
-
-		if r.events[i].Kind == EventSagaFinished {
-			r.Status = r.events[i].Status
-		}
-	}
-
-	return r
-}
-
-func foldStepsSharingChanged(events []Event) []StepResult {
-	var steps []StepResult
+func foldStepStatuses(events []Event) []stepResult {
+	var steps []stepResult
 
 	for i := range events {
 		e := &events[i]
 
 		if e.Kind == EventSagaStarted {
-			steps = make([]StepResult, len(e.Steps))
+			steps = make([]stepResult, len(e.Steps))
 
 			for k := range e.Steps {
-				steps[k].Name, steps[k].Status = e.Steps[k].Name, StepNotStarted
+				steps[k].Name, steps[k].Status = e.Steps[k].Name, stepNotStarted
 			}
 		}
 
-		if k := slices.IndexFunc(steps, func(s StepResult) bool { return s.Name == e.Step }); k >= 0 {
-			applyEventSharingChanged(&steps[k], e)
+		if k := slices.IndexFunc(steps, func(s stepResult) bool { return s.Name == e.Step }); k >= 0 {
+			steps[k].Status = nextStatus(steps[k].Status, e.Kind)
 		}
 	}
 
 	return steps
 }
 
-func applyEventSharingChanged(s *StepResult, e *Event) {
-	switch e.Kind {
+func nextStatus(current stepStatus, k EventKind) stepStatus {
+	switch k {
 	case EventStepStarted:
-		s.Status, s.Start = StepUnknown, e.Time
-	case EventStepSucceeded, EventStepFailed, EventStepUnknown:
-		s.Status, s.Attempts, s.Err, s.Changed, s.End = outcomeStatus(e.Kind), e.Attempt, e.Err, e.Changed, e.Time
+		return stepUnknown
+	case EventStepSucceeded, EventStepFailed, EventStepUnknown, EventCompensationSucceeded, EventCompensationFailed,
+		EventCompensationBlocked, EventCompensationHalted:
+		return outcomeStatus(k)
 	case EventStepSkipped:
-		s.Status = StepSkipped
-	case EventCompensationSucceeded, EventCompensationFailed, EventCompensationBlocked, EventCompensationHalted:
-		s.Status, s.CompensationErr, s.End = outcomeStatus(e.Kind), e.Err, e.Time
+		return stepSkipped
 	case EventCompensationStarted:
-		s.Status = StepCompensationFailed
+		return stepCompensationFailed
 	case "", EventSagaStarted, EventSagaFinished:
-		return
+		return current
 	default:
 	}
+
+	return current
 }
 
-func outcomeStatus(k EventKind) StepStatus {
+func outcomeStatus(k EventKind) stepStatus {
 	switch k {
 	case EventStepSucceeded:
-		return StepSucceeded
+		return stepSucceeded
 	case EventStepFailed:
-		return StepFailed
+		return stepFailed
 	case EventStepUnknown:
-		return StepUnknown
+		return stepUnknown
 	case EventCompensationSucceeded:
-		return StepCompensated
+		return stepCompensated
 	case EventCompensationFailed:
-		return StepCompensationFailed
+		return stepCompensationFailed
 	case EventCompensationBlocked:
-		return StepBlocked
+		return stepBlocked
 	case EventCompensationHalted:
-		return StepHalted
+		return stepHalted
 	case "", EventSagaStarted, EventStepStarted, EventStepSkipped, EventCompensationStarted, EventSagaFinished:
 		return ""
 	default:

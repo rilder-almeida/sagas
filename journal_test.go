@@ -1,6 +1,8 @@
 package sagas
 
 import (
+	"context"
+	"maps"
 	"slices"
 	"strconv"
 	"sync"
@@ -20,10 +22,10 @@ func journalEvent(execution string, seq int) Event {
 		Kind:      EventStepSucceeded,
 		Step:      "reserve",
 		Attempt:   1,
-		Err:       "",
+		Err:       EventError{Kind: nameFailed, Message: "declined", Cause: "stopped", Previous: []string{"first"}},
 		Changed:   []string{"Seats"},
 		Steps:     []StepZone{{Name: "reserve", Zone: ZoneCompensable}},
-		Status:    StatusUnfinished,
+		Status:    statusUnfinished,
 		Time:      time.Date(2026, 11, 17, 10, 0, seq, 0, time.UTC),
 	}
 }
@@ -32,10 +34,13 @@ func withEvent(e *Event, change func(*Event)) *Event {
 	out := *e
 	out.Changed = slices.Clone(out.Changed)
 	out.Steps = slices.Clone(out.Steps)
+	out.Err.Previous = slices.Clone(out.Err.Previous)
 	change(&out)
 
 	return &out
 }
+
+const scribbled = "scribbled"
 
 func scribble(events []Event) {
 	for i := range events {
@@ -48,19 +53,44 @@ func scribbleEvent(e *Event) {
 		return
 	}
 
-	e.Step = "scribbled"
+	e.Step = scribbled
 	e.Seq = 99
 
 	for k := range e.Changed {
-		e.Changed[k] = "scribbled"
+		e.Changed[k] = scribbled
 	}
 
 	for k := range e.Steps {
-		e.Steps[k].Name = "scribbled"
+		e.Steps[k].Name = scribbled
+	}
+
+	for k := range e.Err.Previous {
+		e.Err.Previous[k] = scribbled
 	}
 }
 
-func Test_memoryJournal_Append(t *testing.T) {
+func prime(t *testing.T, j *MemoryJournal, prior []Event) {
+	t.Helper()
+
+	for i := range prior {
+		require.NoError(t, j.Append(t.Context(), &prior[i]))
+	}
+}
+
+func touchedBy(prior []Event, event *Event) []string {
+	touched := make([]string, 0, len(prior)+1)
+	for i := range prior {
+		touched = append(touched, prior[i].Execution)
+	}
+
+	if event != nil {
+		touched = append(touched, event.Execution)
+	}
+
+	return touched
+}
+
+func Test_MemoryJournal_Append(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -69,15 +99,23 @@ func Test_memoryJournal_Append(t *testing.T) {
 	stamped := func() Event { return *withEvent(new(journalEvent("a", 1)), stamp) }
 
 	tests := []struct {
-		name    string
-		prior   []Event
-		event   *Event
-		wantErr error
-		wantMsg string
-		want    map[string][]Event
+		name     string
+		zero     bool
+		canceled bool
+		prior    []Event
+		event    *Event
+		wantErr  error
+		wantMsg  string
+		want     map[string][]Event
 	}{
 		{
 			name:  "[Success] When: the first event of a new execution ; Should: write it",
+			event: new(journalEvent("a", 1)),
+			want:  map[string][]Event{"a": {journalEvent("a", 1)}},
+		},
+		{
+			name:  "[Success] When: the journal is a zero value ; Should: write the first event",
+			zero:  true,
 			event: new(journalEvent("a", 1)),
 			want:  map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
@@ -159,6 +197,15 @@ func Test_memoryJournal_Append(t *testing.T) {
 			want:    map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2)}},
 		},
 		{
+			name:     "[Fail] When: the next Seq with a done context ; Should: return the context error, write nothing",
+			canceled: true,
+			prior:    []Event{journalEvent("a", 1)},
+			event:    new(journalEvent("a", 2)),
+			wantErr:  context.Canceled,
+			wantMsg:  "context canceled",
+			want:     map[string][]Event{"a": {journalEvent("a", 1)}},
+		},
+		{
 			name:  "[Success] When: Seq 1 of another execution ; Should: write it and leave the first one unchanged",
 			prior: []Event{journalEvent("a", 1), journalEvent("a", 2)},
 			event: new(journalEvent("b", 1)),
@@ -173,21 +220,128 @@ func Test_memoryJournal_Append(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			j := newMemoryJournal()
-			for i := range tt.prior {
-				require.NoError(t, j.Append(t.Context(), &tt.prior[i]))
+			j := NewMemoryJournal()
+			if tt.zero {
+				j = &MemoryJournal{}
 			}
 
-			err := j.Append(t.Context(), tt.event)
+			prime(t, j, tt.prior)
+			touched := touchedBy(tt.prior, tt.event)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			if tt.canceled {
+				cancel()
+			}
+
+			err := j.Append(ctx, tt.event)
 			scribbleEvent(tt.event)
+
+			slices.Sort(touched)
+			assert.Equal(t, slices.Compact(touched), slices.Sorted(maps.Keys(tt.want)))
 
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantMsg, errText(err))
 
 			for execution, want := range tt.want {
-				scribble(j.events(execution))
-				assert.Equal(t, want, j.events(execution), execution)
+				scribble(j.Events(execution))
+				assert.Equal(t, want, j.Events(execution), execution)
 			}
+		})
+	}
+}
+
+func Test_NewMemoryJournal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		seed       []Event
+		readSecond bool
+		want       []Event
+	}{
+		{
+			name: "[Success] When: nothing was appended ; Should: hold no events",
+			want: []Event{},
+		},
+		{
+			name: "[Success] When: an event went to the first journal ; Should: hold it there",
+			seed: []Event{journalEvent("a", 1)},
+			want: []Event{journalEvent("a", 1)},
+		},
+		{
+			name:       "[Success] When: an event went to the first journal ; Should: leave a second journal empty",
+			seed:       []Event{journalEvent("a", 1)},
+			readSecond: true,
+			want:       []Event{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			first, second := NewMemoryJournal(), NewMemoryJournal()
+			for i := range tt.seed {
+				require.NoError(t, first.Append(t.Context(), &tt.seed[i]))
+			}
+
+			read := first
+			if tt.readSecond {
+				read = second
+			}
+
+			assert.Equal(t, tt.want, read.Events("a"))
+		})
+	}
+}
+
+func Test_MemoryJournal_Events(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		stored    []Event
+		execution string
+		scribble  bool
+		want      []Event
+	}{
+		{
+			name:      "[Success] When: the execution has events ; Should: return them in Seq order",
+			stored:    []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			execution: "a",
+			want:      []Event{journalEvent("a", 1), journalEvent("a", 2)},
+		},
+		{
+			name:      "[Success] When: the execution is unknown ; Should: return no events",
+			stored:    []Event{journalEvent("a", 1)},
+			execution: "b",
+			want:      []Event{},
+		},
+		{
+			name:      "[Success] When: the caller changes a returned event ; Should: return the stored ones",
+			stored:    []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			execution: "a",
+			scribble:  true,
+			want:      []Event{journalEvent("a", 1), journalEvent("a", 2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			j := NewMemoryJournal()
+			for i := range tt.stored {
+				require.NoError(t, j.Append(t.Context(), &tt.stored[i]))
+			}
+
+			if tt.scribble {
+				scribble(j.Events(tt.execution))
+			}
+
+			assert.Equal(t, tt.want, j.Events(tt.execution))
 		})
 	}
 }
@@ -256,8 +410,24 @@ func Test_sameEvent(t *testing.T) {
 			a:    &base, b: withEvent(&base, func(e *Event) { e.Attempt = 2 }),
 		},
 		{
-			name: "[Fail] When: Err differs ; Should: return false",
-			a:    &base, b: withEvent(&base, func(e *Event) { e.Err = "boom" }),
+			name: "[Fail] When: the Err kind differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Kind = nameUnknown }),
+		},
+		{
+			name: "[Fail] When: the Err message differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Message = "boom" }),
+		},
+		{
+			name: "[Fail] When: the Err cause differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Cause = "other" }),
+		},
+		{
+			name: "[Fail] When: an Err previous text differs ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Previous[0] = "second" }),
+		},
+		{
+			name: "[Fail] When: Err has one more previous text ; Should: return false",
+			a:    &base, b: withEvent(&base, func(e *Event) { e.Err.Previous = append(e.Err.Previous, "second") }),
 		},
 		{
 			name: "[Fail] When: a Changed name differs ; Should: return false",
@@ -294,7 +464,7 @@ func Test_sameEvent(t *testing.T) {
 	}
 }
 
-func Test_memoryJournal_Append_concurrent(t *testing.T) {
+func Test_MemoryJournal_Append_concurrent(t *testing.T) {
 	t.Parallel()
 
 	const seqs = 20
@@ -322,7 +492,7 @@ func Test_memoryJournal_Append_concurrent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			j := newMemoryJournal()
+			j := NewMemoryJournal()
 			results := make([][][]error, tt.executions)
 
 			var wg sync.WaitGroup
@@ -336,13 +506,13 @@ func Test_memoryJournal_Append_concurrent(t *testing.T) {
 			wg.Wait()
 
 			for x := range tt.executions {
-				assertRaceOutcome(t, j.events(strconv.Itoa(x)), results[x])
+				assertRaceOutcome(t, j.Events(strconv.Itoa(x)), results[x])
 			}
 		})
 	}
 }
 
-func raceExecution(t *testing.T, j *memoryJournal, execution string, results [][]error, writers int) {
+func raceExecution(t *testing.T, j *MemoryJournal, execution string, results [][]error, writers int) {
 	t.Helper()
 
 	for i := range results {
@@ -390,10 +560,10 @@ func assertRaceOutcome(t *testing.T, events []Event, results [][]error) {
 	}
 }
 
-func Benchmark_memoryJournal_Append(b *testing.B) {
+func Benchmark_MemoryJournal_Append(b *testing.B) {
 	const streamLen = 64
 
-	j := newMemoryJournal()
+	j := NewMemoryJournal()
 	e := journalEvent("", 0)
 	n := 0
 

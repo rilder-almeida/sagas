@@ -11,16 +11,17 @@ import (
 )
 
 // ErrCallNotRun is the error of a call that middleware returned from without running the action or compensation.
-var ErrCallNotRun = errors.New("sagas: middleware returned without running the call")
+var ErrCallNotRun = &KindError{name: "call_not_run", message: "sagas: middleware returned without running the call"}
 
 // ErrCallUnfinished is the error of a call that middleware returned from while the call was still running.
-var ErrCallUnfinished = errors.New("sagas: middleware returned before the call finished")
+var ErrCallUnfinished = &KindError{
+	name: "call_unfinished", message: "sagas: middleware returned before the call finished",
+}
 
 // ErrCallConcurrent is the error of a call that middleware started while another call of the attempt was running.
-var ErrCallConcurrent = errors.New("sagas: middleware called next while a call was running")
-
-// ErrCallContextLost is the error of a call whose context no longer carries the call state.
-var ErrCallContextLost = errors.New("sagas: middleware passed on a context that lost the call state")
+var ErrCallConcurrent = &KindError{
+	name: "call_concurrent", message: "sagas: middleware ran the call again while it was running",
+}
 
 // PanicError is the error a panic in a call becomes. It holds the panic value and the stack.
 type PanicError struct {
@@ -31,6 +32,15 @@ type PanicError struct {
 // Error returns the panic value in a message.
 func (e *PanicError) Error() string {
 	return "sagas: panic: " + fmt.Sprint(e.Value)
+}
+
+// Unwrap returns the panic value when it is an error.
+func (e *PanicError) Unwrap() error {
+	if err, ok := e.Value.(error); ok {
+		return err
+	}
+
+	return nil
 }
 
 type outcomeKind string
@@ -45,10 +55,13 @@ type outcome[S any] struct {
 	kind     outcomeKind
 	attempts int
 	err      error
+	label    *KindError
+	cause    error
+	previous []error
 	state    *S
 }
 
-type callFunc[S any] func(ctx context.Context, execution string, base snapshot[S]) outcome[S]
+type callFunc[S any] func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S]
 
 type callSpec struct {
 	saga       string
@@ -57,14 +70,42 @@ type callSpec struct {
 	retry      RetryPolicy
 	timeout    time.Duration
 	middleware []Middleware
+	wrap       Middleware
 }
 
-type callState[S any] struct {
-	base snapshot[S]
-	out  *S
+// MiddlewareFunc adapts a function with the signature of Wrap to Middleware.
+type MiddlewareFunc func(ctx context.Context, info CallInfo, call Call) error
+
+// Wrap calls f.
+func (f MiddlewareFunc) Wrap(ctx context.Context, info CallInfo, call Call) error {
+	return f(ctx, info, call)
 }
 
-type callStateKey struct{}
+// Chain returns middleware that runs mws around a call, the first one outermost. It panics if an item is nil.
+func Chain(mws ...Middleware) MiddlewareFunc {
+	checkChain(mws)
+
+	return compose(slices.Clone(mws))
+}
+
+func checkChain(mws []Middleware) {
+	for i, mw := range mws {
+		if isNilValue(mw) {
+			panic(fmt.Sprintf("sagas: Chain item %d is nil", i))
+		}
+	}
+}
+
+func compose(mws []Middleware) MiddlewareFunc {
+	return func(ctx context.Context, info CallInfo, call Call) error {
+		for _, mw := range slices.Backward(mws) {
+			inner := call
+			call = func(ctx context.Context) error { return mw.Wrap(ctx, info, inner) }
+		}
+
+		return call(ctx)
+	}
+}
 
 type callResult[S any] struct {
 	out *S
@@ -74,6 +115,7 @@ type callResult[S any] struct {
 type attemptProgress[S any] struct {
 	started bool
 	running bool
+	label   *KindError
 	last    callResult[S]
 }
 
@@ -84,9 +126,7 @@ type attemptState[S any] struct {
 	progress attemptProgress[S]
 }
 
-type attemptStateKey struct{}
-
-func (a *attemptState[S]) start() error {
+func (a *attemptState[S]) start() *KindError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -103,12 +143,20 @@ func (a *attemptState[S]) start() error {
 	return nil
 }
 
-func (a *attemptState[S]) finish(out *S, err error) {
+func (a *attemptState[S]) finish(out *S, err error, label *KindError) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.progress.running = false
+	a.progress.label = label
 	a.progress.last = callResult[S]{out: out, err: err}
+}
+
+func (a *attemptState[S]) refuse(label *KindError) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.progress.label = label
 }
 
 func (a *attemptState[S]) close() attemptProgress[S] {
@@ -134,130 +182,189 @@ func classify(err error) outcomeKind {
 	}
 }
 
-func catchPanic(fn func() error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = &PanicError{Value: r, Stack: debug.Stack()}
-		}
+func recoverPanic(fn func() error) (bool, error) {
+	var caught *PanicError
+
+	err := func() error {
+		defer func() {
+			if r := recover(); r != nil {
+				caught = &PanicError{Value: r, Stack: debug.Stack()}
+			}
+		}()
+
+		return fn()
 	}()
 
-	return fn()
-}
-
-func recoverer(next Handler) Handler {
-	return func(ctx context.Context) error {
-		return catchPanic(func() error { return next(ctx) })
+	if caught != nil {
+		return true, caught
 	}
+
+	return false, err
 }
 
-func withTimeout(d time.Duration) Middleware {
-	return func(next Handler) Handler {
-		return func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, d)
-			defer cancel()
-
-			return next(ctx)
+func recoverer(meta *callMeta) MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error {
+		panicked, err := recoverPanic(func() error { return call(ctx) })
+		if panicked {
+			meta.mark(ErrPanic)
 		}
-	}
-}
-
-func withCallState[S any](ctx context.Context, st *callState[S]) context.Context {
-	return context.WithValue(ctx, callStateKey{}, st)
-}
-
-func stateFrom[S any](ctx context.Context) (*callState[S], bool) {
-	st, ok := ctx.Value(callStateKey{}).(*callState[S])
-
-	return st, ok
-}
-
-func attemptFrom[S any](ctx context.Context) (*attemptState[S], bool) {
-	at, ok := ctx.Value(attemptStateKey{}).(*attemptState[S])
-
-	return at, ok
-}
-
-func requireRan[S any](next Handler) Handler {
-	return func(ctx context.Context) error {
-		st, ok := stateFrom[S](ctx)
-		if !ok {
-			return Permanent(ErrCallContextLost)
-		}
-
-		at := &attemptState[S]{base: st.base}
-
-		defer at.close()
-
-		err := next(context.WithValue(ctx, attemptStateKey{}, at))
-		progress := at.close()
-
-		if progress.running {
-			return Permanent(errors.Join(err, ErrCallUnfinished))
-		}
-
-		if err != nil {
-			return err
-		}
-
-		if !progress.started {
-			return Permanent(ErrCallNotRun)
-		}
-
-		st.out = progress.last.out
-
-		return progress.last.err
-	}
-}
-
-func runCall[S any](call func(context.Context, *S) error) Handler {
-	return func(ctx context.Context) error {
-		at, ok := attemptFrom[S](ctx)
-		if !ok {
-			return Permanent(ErrCallContextLost)
-		}
-
-		if err := at.start(); err != nil {
-			return Permanent(err)
-		}
-
-		fresh, err := copyState(at.base)
-		if err != nil {
-			err = Permanent(err)
-		} else if err = catchPanic(func() error { return call(ctx, fresh) }); err != nil {
-			fresh = nil
-		}
-
-		at.finish(fresh, err)
 
 		return err
 	}
 }
 
-func pipeline[S any](spec *callSpec, call func(context.Context, *S) error) callFunc[S] {
-	layers := []Middleware{withRetry(spec.retry), withStepInfo(spec.saga, spec.step, spec.phase)}
-	if spec.phase == PhaseAction && spec.timeout > 0 {
-		layers = append(layers, withTimeout(spec.timeout))
+func withTimeout(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error {
+		ctx, cancel := context.WithTimeoutCause(ctx, d, cause)
+		defer cancel()
+
+		err := call(ctx)
+		if err != nil && ctx.Err() != nil {
+			meta.end(context.Cause(ctx))
+		}
+
+		return err
+	}
+}
+
+func requireRan[S any](at *attemptState[S], meta *callMeta, out **S) MiddlewareFunc {
+	return func(ctx context.Context, _ CallInfo, call Call) error {
+		defer at.close()
+
+		err := call(ctx)
+		progress := at.close()
+
+		if progress.running {
+			meta.mark(ErrCallUnfinished)
+
+			return Permanent(errors.Join(err, ErrCallUnfinished))
+		}
+
+		if err != nil {
+			noteCallError(meta, err, &progress)
+
+			return err
+		}
+
+		if !progress.started {
+			meta.mark(ErrCallNotRun)
+
+			return Permanent(ErrCallNotRun)
+		}
+
+		meta.mark(progress.label)
+
+		*out = progress.last.out
+
+		return progress.last.err
+	}
+}
+
+func noteCallError[S any](meta *callMeta, err error, progress *attemptProgress[S]) {
+	if progress.last.err != nil && !errors.Is(err, progress.last.err) {
+		meta.replace(progress.last.err)
+
+		return
 	}
 
-	layers = append(layers, recoverer, requireRan[S])
-	layers = append(layers, spec.middleware...)
+	meta.mark(progress.label)
+}
 
-	chain := runCall(call)
-	for _, layer := range slices.Backward(layers) {
-		chain = layer(chain)
+func runCall[S any](at *attemptState[S], call func(context.Context, *S) error, key string) Call {
+	return func(ctx context.Context) error {
+		if kind := at.start(); kind != nil {
+			at.refuse(kind)
+
+			return Permanent(kind)
+		}
+
+		ctx = withIdempotencyKey(ctx, key)
+
+		var label *KindError
+
+		fresh, err := copyState(at.base)
+		if err != nil {
+			label, err = ErrInvalidState, Permanent(err)
+		} else if panicked, callErr := recoverPanic(func() error { return call(ctx, fresh) }); callErr != nil {
+			fresh, err = nil, callErr
+
+			if panicked {
+				label = ErrPanic
+			}
+		}
+
+		at.finish(fresh, err, label)
+
+		return err
+	}
+}
+
+func pipeline[S any](given *callSpec, call func(context.Context, *S) error) callFunc[S] {
+	spec := new(*given)
+
+	var timeoutCause error
+	if spec.timesOut() {
+		timeoutCause = fmt.Errorf("sagas: step %q timed out after %v: %w", spec.step, spec.timeout,
+			context.DeadlineExceeded)
 	}
 
-	return func(ctx context.Context, execution string, base snapshot[S]) outcome[S] {
-		meta := &callMeta{execution: execution}
-		st := &callState[S]{base: base}
+	return func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S] {
+		var state *S
 
-		err := chain(withCallState(withMeta(ctx, meta), st))
+		info := CallInfo{Saga: spec.saga, Execution: meta.execution, Step: spec.step, Phase: spec.phase}
+		key := info.IdempotencyKey()
 
-		out := outcome[S]{kind: classify(err), attempts: meta.attempt, err: err}
+		attempt := func(ctx context.Context) error {
+			at := &attemptState[S]{base: base}
+
+			attemptInfo := info
+			attemptInfo.Attempt = meta.attempt
+
+			layers := compose(attemptLayers(spec, meta, at, &state, timeoutCause))
+
+			return layers.Wrap(ctx, attemptInfo, runCall(at, call, key))
+		}
+
+		err := withRetry(spec.retry, meta).Wrap(ctx, info, attempt)
+
+		out := outcome[S]{kind: classify(err), attempts: meta.attempt}
 		if err == nil {
-			out.state = st.out
+			out.state = state
+
+			return out
+		}
+
+		out.err, out.label, out.cause, out.previous = err, meta.label, meta.cause, meta.history()
+
+		if out.cause == nil && ctx.Err() != nil {
+			out.cause = context.Cause(ctx)
 		}
 
 		return out
 	}
+}
+
+const coreLayers = 4
+
+func (s *callSpec) timesOut() bool {
+	return s.phase != PhaseCompensate && s.timeout > 0
+}
+
+func attemptLayers[S any](
+	spec *callSpec, meta *callMeta, at *attemptState[S], state **S, timeoutCause error,
+) []Middleware {
+	layers := make([]Middleware, 0, len(spec.middleware)+coreLayers)
+
+	if spec.timesOut() {
+		layers = append(layers, withTimeout(meta, spec.timeout, timeoutCause))
+	}
+
+	layers = append(layers, recoverer(meta), requireRan(at, meta, state))
+	layers = append(layers, spec.middleware...)
+
+	if spec.wrap != nil {
+		layers = append(layers, spec.wrap)
+	}
+
+	return layers
 }

@@ -10,20 +10,21 @@ import (
 )
 
 var (
-	// ErrJournal wraps an Append error that is not a rejection; a Journal returns its own failures as is.
-	ErrJournal = errors.New("sagas: journal failure")
+	// ErrJournal wraps an Append error that is neither a rejection nor ctx's own error after the grace end.
+	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
 	// ErrExecutionExists is returned when the journal rejects the first event because the execution already exists.
-	ErrExecutionExists = errors.New("sagas: execution exists")
+	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}
 	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
-	ErrConcurrentWriter = errors.New("sagas: concurrent writer")
-
-	errInvalidEvent = errors.New("sagas: invalid event")
+	ErrConcurrentWriter = &KindError{name: "concurrent_writer", message: "sagas: concurrent writer"}
 )
+
+var errInvalidEvent = errors.New("sagas: invalid event")
 
 // Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of e,
 // never e or its slices, only when its Seq is its execution's last Seq plus one; an equal resend from the same Writer
 // (slices by content, Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected,
 // wrapping ErrExecutionExists at Seq 1 and ErrConcurrentWriter later; a nil e or a Seq below 1 is an invalid event.
+// Append must honor ctx: once ctx is done it stores nothing and returns an error, so a late outcome can go unrecorded.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
@@ -37,11 +38,19 @@ type Event struct {
 	Kind      EventKind
 	Step      string
 	Attempt   int
-	Err       string
+	Err       EventError
 	Changed   []string
 	Steps     []StepZone
 	Status    Status
 	Time      time.Time
+}
+
+// EventError is the text form of an Error as a journal stores it. The zero value means no error.
+type EventError struct {
+	Kind     string
+	Message  string
+	Cause    string
+	Previous []string
 }
 
 // StepZone names a step and the zone it runs in.
@@ -80,16 +89,23 @@ const (
 	ZoneForwardOnly Zone = "forward-only"
 )
 
-type memoryJournal struct {
+// MemoryJournal is a Journal that keeps every execution in memory. Its zero value is ready to use.
+type MemoryJournal struct {
 	mu      sync.Mutex
 	streams map[string][]Event
 }
 
-func newMemoryJournal() *memoryJournal {
-	return &memoryJournal{streams: map[string][]Event{}}
+// NewMemoryJournal returns an empty MemoryJournal.
+func NewMemoryJournal() *MemoryJournal {
+	return &MemoryJournal{streams: map[string][]Event{}}
 }
 
-func (j *memoryJournal) Append(_ context.Context, e *Event) error {
+// Append implements Journal.
+func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if e == nil {
 		return fmt.Errorf("%w: nil event", errInvalidEvent)
 	}
@@ -100,6 +116,10 @@ func (j *memoryJournal) Append(_ context.Context, e *Event) error {
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
+
+	if j.streams == nil {
+		j.streams = map[string][]Event{}
+	}
 
 	stream := j.streams[e.Execution]
 	if e.Seq == len(stream)+1 {
@@ -122,7 +142,8 @@ func (j *memoryJournal) Append(_ context.Context, e *Event) error {
 	return fmt.Errorf("%w: execution %q seq %d", rejection, e.Execution, e.Seq)
 }
 
-func (j *memoryJournal) events(execution string) []Event {
+// Events returns a copy of an execution's events in Seq order.
+func (j *MemoryJournal) Events(execution string) []Event {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -143,14 +164,19 @@ func copyEvents(events []Event) []Event {
 func cloneSlices(e *Event) {
 	e.Changed = slices.Clone(e.Changed)
 	e.Steps = slices.Clone(e.Steps)
+	e.Err.Previous = slices.Clone(e.Err.Previous)
 }
 
 func sameEvent(a, b *Event) bool {
-	return sameScalars(a, b) && slices.Equal(a.Changed, b.Changed) && slices.Equal(a.Steps, b.Steps) &&
-		a.Time.Equal(b.Time)
+	return sameScalars(a, b) && sameError(&a.Err, &b.Err) && slices.Equal(a.Changed, b.Changed) &&
+		slices.Equal(a.Steps, b.Steps) && a.Time.Equal(b.Time)
+}
+
+func sameError(a, b *EventError) bool {
+	return a.Kind == b.Kind && a.Message == b.Message && a.Cause == b.Cause && slices.Equal(a.Previous, b.Previous)
 }
 
 func sameScalars(a, b *Event) bool {
 	return a.Saga == b.Saga && a.Execution == b.Execution && a.Writer == b.Writer && a.Seq == b.Seq &&
-		a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Err == b.Err && a.Status == b.Status
+		a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Status == b.Status
 }
