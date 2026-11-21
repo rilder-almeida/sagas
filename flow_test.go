@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -224,6 +225,191 @@ func Test_resolve(t *testing.T) {
 			assert.Equal(t, tt.wantParents, got.parents)
 			assert.Equal(t, tt.wantErr != "", len(got.errs) > 0)
 			assert.Contains(t, errText(errors.Join(got.errs...)), tt.wantErr)
+		})
+	}
+}
+
+func Test_resolution_visit(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *actStep
+
+	tests := []struct {
+		name string
+		flow Flow
+		at   string
+		want ends
+	}{
+		{
+			name: "[Success] When: the item is a step ; Should: return it as head and tail",
+			flow: act("a", okAction), at: "flow", want: ends{heads: []int{0}, tails: []int{0}},
+		},
+		{
+			name: "[Success] When: the item is a group ; Should: return the ends of the group",
+			flow: Sequence(act("a", okAction), act("b", okAction)), at: "flow",
+			want: ends{heads: []int{0}, tails: []int{1}},
+		},
+		{
+			name: "[Fail] When: the item is nil ; Should: return no ends",
+			flow: nil, at: "Sequence item at index 2", want: ends{},
+		},
+		{
+			name: "[Fail] When: the item is a typed nil pointer ; Should: return no ends",
+			flow: typedNil, at: "flow", want: ends{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := resolution{index: map[*Step]int{}}
+
+			assert.Equal(t, tt.want, r.visit(tt.flow, tt.at))
+		})
+	}
+}
+
+func Test_resolution_group(t *testing.T) {
+	t.Parallel()
+
+	s := okSteps("a", "b", "c")
+	a, b, c := s[0], s[1], s[2]
+
+	tests := []struct {
+		name  string
+		group *Group
+		want  ends
+	}{
+		{
+			name:  "[Success] When: the group is a Sequence ; Should: start at the first item and end at the last",
+			group: Sequence(a, b, c),
+			want:  ends{heads: []int{0}, tails: []int{2}},
+		},
+		{
+			name:  "[Success] When: the group is a Parallel ; Should: start and end at every item",
+			group: Parallel(a, b),
+			want:  ends{heads: []int{0, 1}, tails: []int{0, 1}},
+		},
+		{
+			name:  "[Success] When: a Sequence ends in a Parallel ; Should: end at every member",
+			group: Sequence(a, Parallel(b, c)),
+			want:  ends{heads: []int{0}, tails: []int{1, 2}},
+		},
+		{
+			name:  "[Success] When: the group is empty ; Should: return no ends",
+			group: Sequence(),
+			want:  ends{},
+		},
+		{
+			name:  "[Fail] When: an empty group sits between two steps ; Should: return the ends of the steps",
+			group: Sequence(a, Parallel(), b),
+			want:  ends{heads: []int{0}, tails: []int{1}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := resolution{index: map[*Step]int{}}
+
+			assert.Equal(t, tt.want, r.group(tt.group))
+		})
+	}
+}
+
+func Test_resolution_step(t *testing.T) {
+	t.Parallel()
+
+	s := okSteps("a", "b")
+	a, b := s[0], s[1]
+
+	tests := []struct {
+		name  string
+		flows []Flow
+		want  []ends
+	}{
+		{
+			name:  "[Success] When: two pointers are given ; Should: give each its own index",
+			flows: []Flow{a, b},
+			want:  []ends{{heads: []int{0}, tails: []int{0}}, {heads: []int{1}, tails: []int{1}}},
+		},
+		{
+			name:  "[Success] When: one pointer is given twice ; Should: give it one index",
+			flows: []Flow{a, b, a},
+			want: []ends{
+				{heads: []int{0}, tails: []int{0}},
+				{heads: []int{1}, tails: []int{1}},
+				{heads: []int{0}, tails: []int{0}},
+			},
+		},
+		{
+			name:  "[Fail] When: the item embeds *Step ; Should: return no ends and keep the next index",
+			flows: []Flow{&sharedA{Step: &Step{}, do: okAction}, a},
+			want:  []ends{{}, {heads: []int{0}, tails: []int{0}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := resolution{index: map[*Step]int{}}
+			got := make([]ends, 0, len(tt.flows))
+
+			for _, f := range tt.flows {
+				got = append(got, r.step(f, "flow"))
+			}
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func Test_embedsStep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want bool
+	}{
+		{
+			name: "[Success] When: a pointer to a struct embeds Step ; Should: accept it",
+			typ:  reflect.TypeFor[*Reserve](), want: true,
+		},
+		{
+			name: "[Success] When: Step comes through a struct embedded by value ; Should: accept it",
+			typ:  reflect.TypeFor[*nestedReserve](), want: true,
+		},
+		{
+			name: "[Fail] When: the type is a struct, not a pointer ; Should: reject it",
+			typ:  reflect.TypeFor[Reserve](), want: false,
+		},
+		{
+			name: "[Fail] When: the pointer is to a non-struct ; Should: reject it",
+			typ:  reflect.TypeFor[*int](), want: false,
+		},
+		{
+			name: "[Fail] When: the struct embeds *Step ; Should: reject it",
+			typ:  reflect.TypeFor[*sharedA](), want: false,
+		},
+		{
+			name: "[Fail] When: Step comes through an embedded pointer ; Should: reject it",
+			typ:  reflect.TypeFor[*ptrReserve](), want: false,
+		},
+		{
+			name: "[Fail] When: a named field is called Step ; Should: reject it",
+			typ:  reflect.TypeFor[*struct{ Step Step }](), want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, embedsStep(tt.typ))
 		})
 	}
 }
