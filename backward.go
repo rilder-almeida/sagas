@@ -157,34 +157,43 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 }
 
 func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]) {
-	name := r.saga.steps[f.step].name
-	out := f.out
+	if f.out.kind == outcomeSuccess {
+		if r.rejected != nil {
+			return
+		}
 
-	if out.kind == outcomeSuccess && f.late {
-		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: ErrGraceEnded, label: ErrGraceEnded}
-	}
-
-	if out.kind == outcomeSuccess && r.rejected != nil {
-		return
-	}
-
-	if out.kind == outcomeSuccess {
-		res, err := r.store.commit(name, f.base, *out.state)
-		if err == nil {
+		out, ok := r.commitUndo(grace, f)
+		if ok {
 			b.done[f.step], r.undone[f.step] = true, stepCompensated
-
-			r.record(grace, &Event{
-				Kind: EventCompensationSucceeded, Step: name, Attempt: out.attempts, Changed: res.changed,
-			})
 
 			return
 		}
 
-		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: err, label: res.label}
+		if r.rejected != nil {
+			return
+		}
+
+		f.out = out
 	}
 
-	f.out = out
 	r.lost(grace, b, f.step, r.lateResult(f))
+}
+
+func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome[S], bool) {
+	name := r.saga.steps[f.step].name
+	attempts := f.out.attempts
+
+	res, err := r.store.commit(name, f.base, *f.out.state)
+	if err != nil {
+		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: res.label}, false
+	}
+
+	done := Event{Kind: EventCompensationSucceeded, Step: name, Attempt: attempts, Changed: res.changed}
+	if err = r.persist(grace, &done); err != nil {
+		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: ErrJournal}, false
+	}
+
+	return f.out, true
 }
 
 func (r *runner[S]) lateResult(f *settled[S]) outcome[S] {

@@ -99,6 +99,7 @@ func backwardRows() []runRow {
 		undoConflictRow(),
 		undoIntentRow(),
 		journalOutageRow(),
+		undoOutcomeRow(),
 		graceWaitingRow(),
 		graceRunningRow(),
 		graceIntentRow(),
@@ -606,6 +607,28 @@ func undoIntentRow() runRow {
 	}
 }
 
+func undoOutcomeRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of a successful compensation fails ; " +
+			"Should: fail it with ErrJournal and apply its policy",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:       map[int]error{9: errJournalDown},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
+		wantFailed:   []string{"c", comp("b")},
+		wantErrText:  map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
+		wantErrs:     []error{ErrJournal, errJournalDown},
+		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:  []string{"a", "b"},
+		wantOrder:    [][2]string{{"b", undoB}},
+		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
+	}
+}
+
 func journalOutageRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal stays down from the first compensation intent on ; " +
@@ -689,7 +712,7 @@ func graceRunningRow() runRow {
 func graceLateConflictRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation that would conflict returns after the grace period ; " +
-			"Should: fail it with ErrGraceEnded, not ErrConflict",
+			"Should: fail it with ErrConflict and join ErrGraceEnded",
 		steps: func(rec *recorder) Flow {
 			late := func(ctx context.Context, s *tripState) error {
 				<-ctx.Done()
@@ -708,12 +731,12 @@ func graceLateConflictRow() runRow {
 		cancelCause:  errStop,
 		wantStatus:   StatusCompensationFailed,
 		wantKind:     ErrCompensationFailed,
-		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrGraceEnded},
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrConflict},
 		wantFailed:   []string{"c", comp("d")},
-		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): ErrGraceEnded.Error()},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): "conflict"},
 		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
-		wantErrs:     []error{ErrGraceEnded, errStop},
-		wantNotErrs:  []error{ErrConflict},
+		wantErrs:     []error{ErrConflict, ErrGraceEnded, errStop},
+		wantNotErrs:  []error{ErrCompensated},
 		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed},
 		wantPending:  []string{"d"},
 		wantTrail: slices.Concat(
@@ -958,7 +981,7 @@ func lateCancelCompletesRow() runRow {
 func graceLateSuccessRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation succeeds only after the grace period ; " +
-			"Should: fail it with ErrGraceEnded and commit nothing",
+			"Should: commit it and record it compensated",
 		steps: func(*recorder) Flow {
 			late := func(_ context.Context, s *tripState) error {
 				time.Sleep(3 * pause)
@@ -973,19 +996,20 @@ func graceLateSuccessRow() runRow {
 		opts:         []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
-		wantStatus:   StatusCompensationFailed,
-		wantKind:     ErrCompensationFailed,
-		wantKinds:    map[string]*KindError{comp("b"): ErrGraceEnded, "c": ErrFailed},
-		wantFailed:   []string{"c", comp("b")},
-		wantErrText:  map[string]string{comp("b"): ErrGraceEnded.Error(), "c": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
-		wantErrs:     []error{ErrGraceEnded, errStop},
-		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
-		wantPending:  []string{"b"},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{ErrGraceEnded, errStop},
+		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed},
 		wantTrail: seq(
-			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"),
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoneOf("b"),
 			closed,
 		),
+		wantState: tripState{Hotel: undoneHotel},
 	}
 }
 

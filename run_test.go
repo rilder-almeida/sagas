@@ -1402,22 +1402,19 @@ func turnAfterRejectionRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation's turn comes after a rejection and the grace end ; " +
 			"Should: neither run nor fail it",
-		steps: rejectedUndoFlow(func(context.Context, *tripState) error {
-			time.Sleep(3 * pause)
-
-			return nil
-		}),
+		steps:        rejectedUndoFlow(lateFailure),
 		opts:         []Option{WithRecoveryTimeout(pause)},
 		script:       map[int]error{13: ErrConcurrentWriter},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
 		wantStatus:   StatusUnfinished,
 		wantKind:     ErrConcurrentWriter,
-		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrGraceEnded},
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrFailed},
 		wantFailed:   []string{"c", comp("d")},
-		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): ErrGraceEnded.Error()},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): errAlwaysFails.Error()},
 		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
-		wantErrs:     []error{ErrConcurrentWriter, ErrGraceEnded},
+		wantCauseIs:  map[string]error{comp("d"): ErrGraceEnded},
+		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails, ErrGraceEnded, errStop},
 		wantNotErrs:  []error{ErrJournal},
 		wantSteps: map[string]stepStatus{
 			"x": stepSucceeded, "y": stepSucceeded, "b": stepSucceeded, "d": stepCompensationFailed, "c": stepFailed,
