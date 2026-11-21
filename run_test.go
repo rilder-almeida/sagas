@@ -120,9 +120,16 @@ type orderState struct {
 
 func (s orderState) ExecutionID() string { return s.ID }
 
-type orderStep struct{ Step }
+type orderStep struct {
+	Step
 
-func (*orderStep) Execute(_ context.Context, s *orderState) error {
+	executes *atomic.Int64
+}
+
+func (o *orderStep) Execute(_ context.Context, s *orderState) error {
+	o.executes.Add(1)
+	time.Sleep(pause)
+
 	s.Hotel = hotelRitz
 
 	return nil
@@ -130,30 +137,49 @@ func (*orderStep) Execute(_ context.Context, s *orderState) error {
 
 const orderID = "order-7"
 
+type executionRow struct {
+	name         string
+	id           string
+	script       map[int]error
+	concurrent   bool
+	wantErrs     [][]error
+	wantNotErrs  []error
+	wantExecutes int64
+	wantEvents   []EventKind
+}
+
 func Test_Saga_Run_executionID(t *testing.T) {
 	t.Parallel()
 
 	completed := []EventKind{EventSagaStarted, EventStepStarted, EventStepSucceeded, EventSagaFinished}
 
-	tests := []struct {
-		name       string
-		id         string
-		script     map[int]error
-		wantErrs   [][]error
-		wantEvents []EventKind
-	}{
+	tests := []executionRow{
 		{
-			name:     "[Success] When: the state declares ExecutionID ; Should: store the events under that ID",
-			id:       orderID,
-			wantErrs: [][]error{nil},
-
-			wantEvents: completed,
+			name:         "[Success] When: the state declares ExecutionID ; Should: store the events under that ID",
+			id:           orderID,
+			wantErrs:     [][]error{nil},
+			wantNotErrs:  []error{ErrJournal},
+			wantExecutes: 1,
+			wantEvents:   completed,
 		},
 		{
-			name:       "[Fail] When: a second run reuses a stored ID ; Should: return ErrExecutionExists, no RunError",
-			id:         orderID,
-			wantErrs:   [][]error{nil, {ErrExecutionExists}},
-			wantEvents: completed,
+			name: "[Fail] When: a second run reuses a stored ID ; " +
+				"Should: return ErrExecutionExists, no RunError",
+			id:           orderID,
+			wantErrs:     [][]error{nil, {ErrExecutionExists}},
+			wantNotErrs:  []error{ErrJournal},
+			wantExecutes: 1,
+			wantEvents:   completed,
+		},
+		{
+			name: "[Fail] When: two runs share one ID on one journal at once ; " +
+				"Should: complete one and return ErrExecutionExists, no RunError, to the other",
+			id:           orderID,
+			concurrent:   true,
+			wantErrs:     [][]error{nil, {ErrExecutionExists}},
+			wantNotErrs:  []error{ErrJournal},
+			wantExecutes: 1,
+			wantEvents:   completed,
 		},
 		{
 			name:     "[Fail] When: the journal fails the saga-started event ; Should: return ErrJournal, no RunError",
@@ -162,77 +188,16 @@ func Test_Saga_Run_executionID(t *testing.T) {
 			wantErrs: [][]error{{ErrJournal, errJournalDown}},
 		},
 		{
-			name:     "[Fail] When: the ID breaks the name rule ; Should: return ErrInvalidRun before any event",
-			id:       "order:42",
-			wantErrs: [][]error{{ErrInvalidRun}},
+			name:        "[Fail] When: the ID breaks the name rule ; Should: return ErrInvalidRun before any event",
+			id:          "order:42",
+			wantErrs:    [][]error{{ErrInvalidRun}},
+			wantNotErrs: []error{ErrJournal},
 		},
 		{
-			name:     "[Fail] When: the ID is empty ; Should: return ErrInvalidRun before any event",
-			id:       "",
-			wantErrs: [][]error{{ErrInvalidRun}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			journal := newScriptJournal(tt.script)
-
-			s, err := New[orderState]("order", &orderStep{}, WithJournal(journal))
-			require.NoError(t, err)
-
-			for run, wants := range tt.wantErrs {
-				runErr := s.Run(t.Context(), &orderState{ID: tt.id})
-
-				requireErrs(t, runErr, wants, nil)
-				assert.NotErrorAs(t, runErr, new(*RunError), "run %d: pre-start errors are not a RunError", run)
-			}
-
-			var kinds []EventKind
-			for _, e := range journal.Events(tt.id) {
-				kinds = append(kinds, e.Kind)
-			}
-
-			assert.Equal(t, tt.wantEvents, kinds)
-		})
-	}
-}
-
-type sharedStep struct {
-	Step
-
-	executes, undos *atomic.Int64
-}
-
-func (s *sharedStep) Execute(context.Context, *orderState) error {
-	s.executes.Add(1)
-	time.Sleep(pause)
-
-	return nil
-}
-
-func (s *sharedStep) Compensate(context.Context, *orderState) error {
-	s.undos.Add(1)
-
-	return nil
-}
-
-func Test_Saga_Run_sharedExecution(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		runs         int
-		wantExecutes int64
-		wantEvents   []EventKind
-	}{
-		{
-			name: "[Fail] When: two runs share one ExecutionID on one journal at once ; " +
-				"Should: complete one and stop the other without running or compensating anything",
-			runs:         2,
-			wantExecutes: 1,
-			wantEvents:   []EventKind{EventSagaStarted, EventStepStarted, EventStepSucceeded, EventSagaFinished},
+			name:        "[Fail] When: the ID is empty ; Should: return ErrInvalidRun before any event",
+			id:          "",
+			wantErrs:    [][]error{{ErrInvalidRun}},
+			wantNotErrs: []error{ErrJournal},
 		},
 	}
 
@@ -241,29 +206,27 @@ func Test_Saga_Run_sharedExecution(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				journal := NewMemoryJournal()
-				step := &sharedStep{Name: "pay", executes: &atomic.Int64{}, undos: &atomic.Int64{}}
+				journal := newScriptJournal(tt.script)
+				step := &orderStep{executes: &atomic.Int64{}}
 
 				s, err := New[orderState]("order", step, WithJournal(journal))
 				require.NoError(t, err)
 
-				errs := make([]error, tt.runs)
+				errs := runOrders(t.Context(), s, &tt)
 
-				var wg sync.WaitGroup
-				for i := range errs {
-					wg.Go(func() { errs[i] = s.Run(t.Context(), &orderState{ID: orderID}) })
+				for run, wants := range tt.wantErrs {
+					requireErrs(t, errs[run], wants, nil)
+					assert.NotErrorAs(t, errs[run], new(*RunError), "run %d: pre-start errors are not a RunError", run)
+
+					for _, no := range tt.wantNotErrs {
+						require.NotErrorIs(t, errs[run], no)
+					}
 				}
 
-				wg.Wait()
-
-				assert.Equal(t, 1, assertLosers(t, errs), "exactly one run completes: %v", errs)
 				assert.Equal(t, tt.wantExecutes, step.executes.Load())
-				assert.Zero(t, step.undos.Load())
 
-				events := journal.Events(orderID)
-
-				kinds := make([]EventKind, 0, len(events))
-				for _, e := range events {
+				var kinds []EventKind
+				for _, e := range journal.Events(tt.id) {
 					kinds = append(kinds, e.Kind)
 				}
 
@@ -273,28 +236,34 @@ func Test_Saga_Run_sharedExecution(t *testing.T) {
 	}
 }
 
-func assertLosers(t *testing.T, errs []error) int {
-	t.Helper()
+func runOrders(ctx context.Context, s *Saga[orderState], tt *executionRow) []error {
+	errs := make([]error, len(tt.wantErrs))
 
-	completed := 0
+	var wg sync.WaitGroup
 
-	for _, err := range errs {
-		if err == nil {
-			completed++
-
-			continue
-		}
-
-		if runErr, ok := errors.AsType[*RunError](err); ok {
-			assert.Same(t, ErrConcurrentWriter, runErr.Kind)
+	for i := range errs {
+		call := func() { errs[i] = s.Run(ctx, &orderState{ID: tt.id}) }
+		if tt.concurrent {
+			wg.Go(call)
 
 			continue
 		}
 
-		require.ErrorIs(t, err, ErrExecutionExists)
+		call()
 	}
 
-	return completed
+	wg.Wait()
+	slices.SortStableFunc(errs, func(a, b error) int { return cmpNil(a) - cmpNil(b) })
+
+	return errs
+}
+
+func cmpNil(err error) int {
+	if err == nil {
+		return 0
+	}
+
+	return 1
 }
 
 func Test_Saga_Run_withoutJournal(t *testing.T) {
@@ -311,15 +280,17 @@ func Test_Saga_Run_withoutJournal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := New[orderState]("order", &orderStep{})
-			require.NoError(t, err)
+			synctest.Test(t, func(t *testing.T) {
+				s, err := New[orderState]("order", &orderStep{executes: &atomic.Int64{}})
+				require.NoError(t, err)
 
-			for range tt.runs {
-				st := orderState{ID: orderID}
+				for range tt.runs {
+					st := orderState{ID: orderID}
 
-				require.NoError(t, s.Run(t.Context(), &st))
-				assert.Equal(t, hotelRitz, st.Hotel)
-			}
+					require.NoError(t, s.Run(t.Context(), &st))
+					assert.Equal(t, hotelRitz, st.Hotel)
+				}
+			})
 		})
 	}
 }
