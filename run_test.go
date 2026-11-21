@@ -1112,6 +1112,7 @@ func runRows() []runRow {
 		pivotOutcomeAtGraceEndRow(),
 		finishedAtGraceEndRow(),
 		completedFinishAtGraceEndRow(),
+		completedMixedFinishAtGraceEndRow(),
 		finishedBeforeGraceEndRow(),
 		skippedAtGraceEndRow(),
 	}
@@ -1227,6 +1228,25 @@ func completedFinishAtGraceEndRow() runRow {
 		wantKind:    ErrGraceEnded,
 		wantErrs:    []error{ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrJournal},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a")),
+	}
+}
+
+func completedMixedFinishAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: every step succeeded and the saga-finished append fails for real after the grace end ; " +
+			"Should: end ErrJournal and match the journal error and ErrGraceEnded",
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		script:      map[int]error{3: errAwaitThenKeep, 4: errors.Join(errJournalDown, context.Canceled)},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  StatusUnfinished,
+		wantKind:    ErrJournal,
+		wantErrs:    []error{ErrJournal, errJournalDown, ErrGraceEnded, errStop},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a")),
 	}
@@ -1684,6 +1704,20 @@ func Test_callerCause(t *testing.T) {
 	}
 }
 
+type emptyBatchError struct{}
+
+func (emptyBatchError) Error() string { return "batch write failed" }
+
+func (emptyBatchError) Unwrap() []error { return nil }
+
+type canceledLeafError struct{}
+
+func (canceledLeafError) Error() string { return "append canceled" }
+
+func (canceledLeafError) Unwrap() error { return nil }
+
+func (canceledLeafError) Is(target error) bool { return target == context.Canceled }
+
 func Test_ownError(t *testing.T) {
 	t.Parallel()
 
@@ -1722,6 +1756,17 @@ func Test_ownError(t *testing.T) {
 			err: func(ctx context.Context) error {
 				return fmt.Errorf("append: %w", errors.Join(context.Cause(ctx), fmt.Errorf("io: %w", errJournalDown)))
 			},
+			want: false,
+		},
+		{
+			name: "[Success] When: a wrapper with no inner error matches the context's error itself ; " +
+				"Should: return true",
+			err:  func(context.Context) error { return canceledLeafError{} },
+			want: true,
+		},
+		{
+			name: "[Fail] When: a multi-error with an empty list holds only its own message ; Should: return false",
+			err:  func(context.Context) error { return emptyBatchError{} },
 			want: false,
 		},
 		{
