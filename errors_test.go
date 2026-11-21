@@ -478,16 +478,16 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 		assertPrevious(t, se.Previous, tt.wantPreviousIs[step])
 		assertCause(t, se.Cause, causeList(tt.wantCauseIs[step]), tt.wantCauseText[step])
 
-		result := resultOf(t, res, step)
+		recorded := outcomeOf(res.events, step)
 		if slices.Contains(tt.wantUnrecorded, step) {
-			assert.Equal(t, EventError{}, result.Err)
-			assert.Zero(t, result.Attempts)
+			assert.Equal(t, EventError{}, recorded.Err)
+			assert.Zero(t, recorded.Attempt)
 
 			continue
 		}
 
-		assert.Equal(t, se.Attempts, result.Attempts)
-		assertEventMirror(t, result.Err, se)
+		assert.Equal(t, se.Attempts, recorded.Attempt)
+		assertEventMirror(t, recorded.Err, se)
 	}
 
 	for step, kind := range tt.wantNotKinds {
@@ -499,7 +499,7 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 	}
 
 	for step, text := range tt.wantEventCauseText {
-		assert.Contains(t, resultOf(t, res, step).Err.Cause, text)
+		assert.Contains(t, outcomeOf(res.events, step).Err.Cause, text)
 	}
 
 	for text, count := range tt.wantTextCount {
@@ -563,18 +563,18 @@ func failureOf(t *testing.T, err error, step string) *Error {
 	return nil
 }
 
-func resultOf(t *testing.T, res *runRecord, step string) stepResult {
-	t.Helper()
+func outcomeOf(events []Event, step string) Event {
+	var last Event
 
-	for i := range res.Steps {
-		if res.Steps[i].Name == step {
-			return res.Steps[i]
+	for i := range events {
+		kind := events[i].Kind
+		if events[i].Step == step &&
+			(kind == EventStepSucceeded || kind == EventStepFailed || kind == EventStepUnknown) {
+			last = events[i]
 		}
 	}
 
-	require.FailNow(t, "no result for step "+step)
-
-	return stepResult{}
+	return last
 }
 
 func errorRows() []runRow {

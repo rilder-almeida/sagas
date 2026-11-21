@@ -284,7 +284,7 @@ func Test_New_stepSettings(t *testing.T) {
 				assert.Equal(t, tt.wantErr == nil, runErr == nil)
 				require.Len(t, res.Steps, 1)
 				assert.Equal(t, "a", res.Steps[0].Name)
-				assert.Equal(t, tt.wantAttempts, res.Steps[0].Attempts)
+				assert.Equal(t, tt.wantAttempts, outcomeOf(journal.Events(res.Execution), "a").Attempt)
 				assert.Equal(t, tt.wantElapsed, elapsed)
 
 				errTries := 0

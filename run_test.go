@@ -68,7 +68,7 @@ type runRecord struct {
 }
 
 func recordOf(events []Event) runRecord {
-	r := runRecord{Status: StatusUnfinished, Steps: foldStepsSharingChanged(events), events: events}
+	r := runRecord{Status: StatusUnfinished, Steps: foldStepStatuses(events), events: events}
 
 	for i := range events {
 		if events[i].Kind == EventSagaStarted {

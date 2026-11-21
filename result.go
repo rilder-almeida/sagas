@@ -2,7 +2,6 @@ package sagas
 
 import (
 	"slices"
-	"time"
 )
 
 var (
@@ -41,14 +40,8 @@ const (
 )
 
 type stepResult struct {
-	Name            string
-	Status          stepStatus
-	Attempts        int
-	Err             EventError
-	CompensationErr EventError
-	Changed         []string
-	Start           time.Time
-	End             time.Time
+	Name   string
+	Status stepStatus
 }
 
 func pendingOf(events []Event) []string {
@@ -60,7 +53,7 @@ func pendingOf(events []Event) []string {
 		}
 	}
 
-	steps := foldStepsSharingChanged(events)
+	steps := foldStepStatuses(events)
 	pivot := stepNotStarted
 
 	for i, z := range zones {
@@ -93,7 +86,7 @@ func owed(status stepStatus, zone Zone, pivot stepStatus) bool {
 	return false
 }
 
-func foldStepsSharingChanged(events []Event) []stepResult {
+func foldStepStatuses(events []Event) []stepResult {
 	var steps []stepResult
 
 	for i := range events {
@@ -108,29 +101,30 @@ func foldStepsSharingChanged(events []Event) []stepResult {
 		}
 
 		if k := slices.IndexFunc(steps, func(s stepResult) bool { return s.Name == e.Step }); k >= 0 {
-			applyEventSharingChanged(&steps[k], e)
+			steps[k].Status = nextStatus(steps[k].Status, e.Kind)
 		}
 	}
 
 	return steps
 }
 
-func applyEventSharingChanged(s *stepResult, e *Event) {
-	switch e.Kind {
+func nextStatus(current stepStatus, k EventKind) stepStatus {
+	switch k {
 	case EventStepStarted:
-		s.Status, s.Start = stepUnknown, e.Time
-	case EventStepSucceeded, EventStepFailed, EventStepUnknown:
-		s.Status, s.Attempts, s.Err, s.Changed, s.End = outcomeStatus(e.Kind), e.Attempt, e.Err, e.Changed, e.Time
+		return stepUnknown
+	case EventStepSucceeded, EventStepFailed, EventStepUnknown, EventCompensationSucceeded, EventCompensationFailed,
+		EventCompensationBlocked, EventCompensationHalted:
+		return outcomeStatus(k)
 	case EventStepSkipped:
-		s.Status = stepSkipped
-	case EventCompensationSucceeded, EventCompensationFailed, EventCompensationBlocked, EventCompensationHalted:
-		s.Status, s.CompensationErr, s.End = outcomeStatus(e.Kind), e.Err, e.Time
+		return stepSkipped
 	case EventCompensationStarted:
-		s.Status = stepCompensationFailed
+		return stepCompensationFailed
 	case "", EventSagaStarted, EventSagaFinished:
-		return
+		return current
 	default:
 	}
+
+	return current
 }
 
 func outcomeStatus(k EventKind) stepStatus {
