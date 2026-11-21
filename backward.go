@@ -58,6 +58,8 @@ func (r *runner[S]) backward(grace context.Context) {
 		r.unwind(grace, b)
 
 		if b.running == 0 {
+			r.owedAfterRejection()
+
 			return
 		}
 
@@ -65,6 +67,18 @@ func (r *runner[S]) backward(grace context.Context) {
 		b.running--
 
 		r.restore(grace, b, &f)
+	}
+}
+
+func (r *runner[S]) owedAfterRejection() {
+	if r.rejected == nil {
+		return
+	}
+
+	for i := range r.saga.steps {
+		if r.owes(i) && r.undone[i] == "" {
+			r.undone[i] = stepCompensationFailed
+		}
 	}
 }
 
