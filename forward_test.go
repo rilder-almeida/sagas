@@ -369,7 +369,7 @@ func forwardOnlyLateSuccessRow() runRow {
 func pivotCommitFailsRow() runRow {
 	return runRow{
 		name: "[Fail] When: the pivot succeeds and its state does not encode ; " +
-			"Should: count it unknown, commit and compensate nothing, end ErrIncomplete",
+			"Should: count it unknown, commit and compensate nothing, list it and the forward-only steps in Pending",
 		steps: func(rec *recorder) Flow {
 			p := paying("p", func(_ context.Context, s *tripState) error {
 				s.Hotel, s.Rate = hotelRitz, math.NaN()
@@ -377,7 +377,7 @@ func pivotCommitFailsRow() runRow {
 				return nil
 			})
 
-			return Sequence(rec.undoable("a"), p, rec.step("z"))
+			return Sequence(rec.undoable("a"), p, Parallel(rec.step("y"), rec.step("z")))
 		},
 		wantStatus:   StatusIncomplete,
 		wantKind:     ErrIncomplete,
@@ -387,11 +387,17 @@ func pivotCommitFailsRow() runRow {
 		wantAttempts: map[string]int{"p": 1},
 		wantErrs:     []error{ErrInvalidState},
 		wantNotErrs:  []error{ErrCompensated},
-		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
-		wantPending:  []string{"p"},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), closed),
+		wantSteps: map[string]stepStatus{
+			"a": stepSucceeded, "p": stepUnknown, "y": stepNotStarted, "z": stepNotStarted,
+		},
+		wantPending: []string{"p", "y", "z"},
+		wantRunOnly: []string{"y", "z"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), closed),
 		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
+			{Name: "a", Zone: ZoneCompensable},
+			{Name: "p", Zone: ZonePivot},
+			{Name: "y", Zone: ZoneForwardOnly},
+			{Name: "z", Zone: ZoneForwardOnly},
 		},
 	}
 }

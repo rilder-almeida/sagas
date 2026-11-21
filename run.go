@@ -221,6 +221,9 @@ func (r *runner[S]) pending() []string {
 
 		if i == r.saga.pivot {
 			pivot = statuses[i]
+			if r.runs[i].uncommitted {
+				pivot = stepSucceeded
+			}
 		}
 	}
 
