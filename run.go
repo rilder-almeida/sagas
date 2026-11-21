@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 )
 
@@ -61,6 +62,7 @@ type runner[S any] struct {
 	events      []Event
 	journalErrs []error
 	rejected    error
+	interrupted error
 	stopReason  error
 	store       *store[S]
 	runs        []stepRun
@@ -110,7 +112,13 @@ func (r *runner[S]) causes() []error {
 		errs = append(errs, r.rejected)
 	}
 
-	return append(errs, r.journalErrs...)
+	errs = append(errs, r.journalErrs...)
+
+	if r.interrupted != nil {
+		errs = append(errs, r.interrupted)
+	}
+
+	return errs
 }
 
 // Run executes the saga on the state st under ctx. A completed run returns nil and writes the committed state back
@@ -150,19 +158,57 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		return startErr
 	}
 
-	end := r.forward(ctx, grace)
-	sealed := end == endCompleted && r.record(grace, &Event{Kind: EventSagaFinished, Status: StatusCompleted})
+	return r.finish(grace, r.forward(ctx, grace), st)
+}
+
+func (r *runner[S]) finish(grace context.Context, end forwardEnd, st *S) error {
+	if end == endFailed {
+		r.backward(grace)
+	}
+
+	status := r.status(end)
+	sealed := status != "" && r.record(grace, &Event{Kind: EventSagaFinished, Status: status})
 
 	causes := r.causes()
-	if writeErr := committed.writeBack(st); writeErr != nil {
+	if writeErr := r.store.writeBack(st); writeErr != nil {
 		causes = append(causes, writeErr)
 	}
 
-	if sealed && len(causes) == 0 {
+	if sealed && status == StatusCompleted && len(causes) == 0 {
 		return nil
 	}
 
-	return &RunError{Kind: ErrIncomplete, Steps: r.failures, Pending: pendingOf(r.events), causes: causes}
+	kind := endKind(status, r.rejected != nil, len(r.journalErrs) > 0)
+
+	return &RunError{Kind: kind, Steps: r.failures, Pending: pendingOf(r.events), causes: causes}
+}
+
+func (r *runner[S]) status(end forwardEnd) Status {
+	switch {
+	case end == endRejected:
+		return ""
+	case end == endCompleted:
+		return StatusCompleted
+	case slices.ContainsFunc(r.failures, func(e *Error) bool { return e.Compensation }):
+		return StatusCompensationFailed
+	default:
+		return StatusCompensated
+	}
+}
+
+func endKind(status Status, rejected, journalFailed bool) *KindError {
+	switch {
+	case rejected:
+		return ErrConcurrentWriter
+	case status == StatusCompensated:
+		return ErrCompensated
+	case status == StatusCompensationFailed:
+		return ErrCompensationFailed
+	case status == StatusCompleted && journalFailed:
+		return ErrJournal
+	default:
+		return ErrIncomplete
+	}
 }
 
 type waitRelease func()

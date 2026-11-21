@@ -242,7 +242,8 @@ func stepFailsRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), fails(), rec.step("c"))
 		},
-		wantStatus:     StatusUnfinished,
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
 		wantFailed:     []string{"b"},
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
@@ -250,7 +251,7 @@ func stepFailsRow() runRow {
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantErrs:       []error{errAlwaysFails},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepFailed, "c": stepNotStarted},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB(), closed),
 	}
 }
 
@@ -260,7 +261,8 @@ func goexitRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), exits("b"))
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"b": ErrUnknown},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": goexitText},
@@ -268,7 +270,7 @@ func goexitRow() runRow {
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), closed),
 	}
 }
 
@@ -278,14 +280,15 @@ func predicatePanicRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"b": ErrPanic},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": panicBoom},
 		wantAttempts: map[string]int{"b": 0},
 		wantText:     []string{panicBoom},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB()),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB(), closed),
 	}
 }
 
@@ -301,14 +304,15 @@ func predicateGoexitRow() runRow {
 
 			return Sequence(rec.step("a"), rec.stepIf("b", leave))
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": goexitText},
 		wantAttempts: map[string]int{"b": 0},
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB()),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedB(), closed),
 	}
 }
 
@@ -318,14 +322,15 @@ func siblingCancelRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), Parallel(fails(), waiting("c")), rec.step("d"))
 		},
-		wantStatus:     StatusUnfinished,
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
 		wantKinds:      map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
 		wantFailed:     []string{"b", "c"},
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error(), "c": context.Canceled.Error()},
 		wantAttempts:   map[string]int{"b": 3, "c": 1},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantCauseText:  map[string]string{"c": quotedB},
-		wantTrail:      afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c"))),
+		wantTrail:      afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c")), seq(closed)),
 		wantErrs:       []error{errAlwaysFails, context.Canceled},
 		wantSteps: map[string]stepStatus{
 			"a": stepSucceeded,
@@ -343,12 +348,13 @@ func conflictRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), Parallel(rec.booking("b"), napping("c", "plaza")))
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"c": ErrConflict},
 		wantFailed:   []string{"c"},
 		wantErrText:  map[string]string{"c": `field Hotel changed by step "c" after step "b"`},
 		wantAttempts: map[string]int{"c": 1},
-		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c"))),
+		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c")), seq(closed)),
 		wantErrs:     []error{ErrConflict},
 		wantText:     []string{`"b"`, `"c"`},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
@@ -368,7 +374,8 @@ func stoppedBeforeStartRow() runRow {
 
 			return Sequence(rec.step("a"), Parallel(fails(), rec.stepIf("c", late)))
 		},
-		wantStatus:     StatusUnfinished,
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
 		wantFailed:     []string{"b"},
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
@@ -376,7 +383,7 @@ func stoppedBeforeStartRow() runRow {
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantErrs:       []error{errAlwaysFails},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepFailed, "c": stepNotStarted},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB(), closed),
 	}
 }
 
@@ -388,6 +395,7 @@ func rejectionRow() runRow {
 		},
 		script:      map[int]error{3: ErrConcurrentWriter},
 		wantStatus:  StatusUnfinished,
+		wantKind:    ErrConcurrentWriter,
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
@@ -405,6 +413,7 @@ func lateSiblingRow() runRow {
 		},
 		script:      map[int]error{6: ErrConcurrentWriter},
 		wantStatus:  StatusUnfinished,
+		wantKind:    ErrConcurrentWriter,
 		wantTrail:   afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
@@ -420,7 +429,8 @@ func predicateAppendRow() runRow {
 			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
 		},
 		script:         map[int]error{4: errJournalDown},
-		wantStatus:     StatusUnfinished,
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
 		wantKinds:      map[string]*KindError{"b": ErrPanic},
 		wantFailed:     []string{"b"},
 		wantErrText:    map[string]string{"b": panicBoom},
@@ -429,7 +439,7 @@ func predicateAppendRow() runRow {
 		wantErrs:       []error{ErrJournal, errJournalDown},
 		wantText:       []string{panicBoom},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepNotStarted},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a")),
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), closed),
 	}
 }
 
@@ -440,11 +450,12 @@ func outcomeAppendRow() runRow {
 			return rec.booking("a")
 		},
 		script:      map[int]error{3: errJournalDown},
-		wantStatus:  StatusUnfinished,
+		wantStatus:  StatusCompensated,
+		wantKind:    ErrCompensated,
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantSteps:   map[string]stepStatus{"a": stepUnknown},
 		wantPending: []string{"a"},
-		wantTrail:   seq(opened, startOf("a")),
+		wantTrail:   seq(opened, startOf("a"), closed),
 		wantState:   tripState{Hotel: hotelRitz},
 	}
 }
@@ -456,7 +467,8 @@ func failureAppendRow() runRow {
 			return Sequence(rec.step("a"), fails())
 		},
 		script:         map[int]error{5: errJournalDown},
-		wantStatus:     StatusUnfinished,
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
 		wantFailed:     []string{"b"},
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
@@ -466,7 +478,7 @@ func failureAppendRow() runRow {
 		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:    []string{"b"},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b")),
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), closed),
 	}
 }
 
@@ -477,10 +489,11 @@ func intentAppendRow() runRow {
 			return rec.step("a")
 		},
 		script:     map[int]error{2: errJournalDown},
-		wantStatus: StatusUnfinished,
+		wantStatus: StatusCompensated,
+		wantKind:   ErrCompensated,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]stepStatus{"a": stepNotStarted},
-		wantTrail:  seq(opened),
+		wantTrail:  seq(opened, closed),
 	}
 }
 
@@ -491,10 +504,11 @@ func predicateIntentRow() runRow {
 			return Sequence(rec.step("a"), rec.bookingIf("b", "never", rec.when(true, "b")))
 		},
 		script:     map[int]error{4: errJournalDown},
-		wantStatus: StatusUnfinished,
+		wantStatus: StatusCompensated,
+		wantKind:   ErrCompensated,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "b": stepNotStarted},
-		wantTrail:  seq(opened, startOf("a"), doneOf("a")),
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), closed),
 	}
 }
 
@@ -506,6 +520,7 @@ func finishedAppendRow() runRow {
 		},
 		script:     map[int]error{4: errJournalDown},
 		wantStatus: StatusUnfinished,
+		wantKind:   ErrJournal,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]stepStatus{"a": stepSucceeded},
 		wantTrail:  seq(opened, startOf("a"), doneOf("a")),
@@ -521,6 +536,7 @@ func finishedRejectedRow() runRow {
 		},
 		script:      map[int]error{4: fmt.Errorf("%w: other writer", ErrConcurrentWriter)},
 		wantStatus:  StatusUnfinished,
+		wantKind:    ErrConcurrentWriter,
 		wantTrail:   seq(opened, startOf("a"), doneOf("a")),
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},

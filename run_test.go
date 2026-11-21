@@ -638,6 +638,7 @@ type runRow struct {
 	runs               int
 	concurrent         bool
 	wantStatus         Status
+	wantKind           *KindError
 	wantErrs           []error
 	wantNotErrs        []error
 	wantText           []string
@@ -666,7 +667,7 @@ type runRow struct {
 func Test_Saga_Run(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(forwardRows(), stopRows(), errorRows()) {
+	for _, tt := range slices.Concat(forwardRows(), stopRows(), errorRows(), backwardRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -704,11 +705,14 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 
 	var pending, failed []string
 
-	if err != nil {
+	if tt.wantKind == nil {
+		require.NoError(t, err)
+	} else {
 		runErr, ok := errors.AsType[*RunError](err)
 		require.True(t, ok, "a failed run is not a RunError: %v", err)
-		assert.Same(t, ErrIncomplete, runErr.Kind)
-		require.ErrorIs(t, err, ErrIncomplete)
+		assert.Same(t, tt.wantKind, runErr.Kind)
+		require.ErrorIs(t, err, tt.wantKind)
+		assertExclusive(t, err)
 
 		pending = runErr.Pending
 		for _, se := range runErr.Steps {
@@ -728,6 +732,13 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	assertFailures(t, tt, got, res)
 }
 
+func assertExclusive(t *testing.T, err error) {
+	t.Helper()
+
+	assert.False(t, errors.Is(err, ErrCompensated) && errors.Is(err, ErrCompensationFailed),
+		"the error matches both ErrCompensated and ErrCompensationFailed: %v", err)
+}
+
 type ran struct {
 	err   error
 	state tripState
@@ -743,7 +754,11 @@ func execute(s *Saga[tripState], tt *runRow) []ran {
 			ctx, cancel := context.WithCancelCause(context.Background())
 			defer cancel(nil)
 
-			if tt.cancelCause != nil {
+			switch {
+			case tt.cancelCause == nil:
+			case tt.cancelAfter == 0:
+				cancel(tt.cancelCause)
+			default:
 				time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
 			}
 
@@ -907,6 +922,65 @@ func assertZones(t *testing.T, got, want []StepZone) {
 	}
 
 	assert.Equal(t, want, got)
+}
+
+func Test_endKind(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		status        Status
+		rejected      bool
+		journalFailed bool
+		want          *KindError
+	}{
+		{
+			name:   "[Success] When: every started compensation succeeded ; Should: return ErrCompensated",
+			status: StatusCompensated,
+			want:   ErrCompensated,
+		},
+		{
+			name:          "[Success] When: a compensated run also had a journal failure ; Should: keep ErrCompensated",
+			status:        StatusCompensated,
+			journalFailed: true,
+			want:          ErrCompensated,
+		},
+		{
+			name:   "[Success] When: a compensation failed for good ; Should: return ErrCompensationFailed",
+			status: StatusCompensationFailed,
+			want:   ErrCompensationFailed,
+		},
+		{
+			name:   "[Success] When: forward work is undone ; Should: return ErrIncomplete",
+			status: StatusIncomplete,
+			want:   ErrIncomplete,
+		},
+		{
+			name:          "[Success] When: every step succeeded and the journal failed ; Should: return ErrJournal",
+			status:        StatusCompleted,
+			journalFailed: true,
+			want:          ErrJournal,
+		},
+		{
+			name:     "[Success] When: the journal rejected an event ; Should: return ErrConcurrentWriter",
+			rejected: true,
+			want:     ErrConcurrentWriter,
+		},
+		{
+			name:     "[Success] When: a rejection follows the status ; Should: return ErrConcurrentWriter",
+			status:   StatusCompleted,
+			rejected: true,
+			want:     ErrConcurrentWriter,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Same(t, tt.want, endKind(tt.status, tt.rejected, tt.journalFailed))
+		})
+	}
 }
 
 func Benchmark_Saga_Run(b *testing.B) {

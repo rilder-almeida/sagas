@@ -118,7 +118,8 @@ func (e *Error) LogValue() slog.Value {
 
 // RunError reports a run that began and did not complete cleanly. Steps holds every failed step in failure order, and
 // Pending lists the steps that still need action. errors.Is also walks the step errors, the journal rejection, the
-// journal errors and the state write-back error; read the kind of the run itself with errors.As and its Kind field.
+// journal errors, the cause of a caller's context that stopped the run and the state write-back error; read the kind
+// of the run itself with errors.As and its Kind field.
 type RunError struct {
 	Kind    *KindError
 	Steps   []*Error
@@ -136,7 +137,8 @@ func (e *RunError) Error() string {
 	return e.Kind.Error() + ": " + strings.Join(texts(errs), "; ")
 }
 
-// Unwrap returns the step errors, then the journal rejection, the journal errors and the write-back error.
+// Unwrap returns the step errors, then the journal rejection, the journal errors, the cause of a caller's context
+// that stopped the run and the write-back error.
 func (e *RunError) Unwrap() []error {
 	errs := make([]error, 0, len(e.Steps)+len(e.causes))
 	for _, step := range e.Steps {

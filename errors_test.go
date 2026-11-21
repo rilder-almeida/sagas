@@ -27,8 +27,8 @@ const (
 )
 
 var (
-	errLookalike           = errors.New("sagas: state conflict")
-	errLookalikeIncomplete = errors.New("sagas: incomplete")
+	errLookalike            = errors.New("sagas: state conflict")
+	errLookalikeCompensated = errors.New("sagas: compensated")
 )
 
 var (
@@ -613,6 +613,7 @@ func rejectionStopRow() runRow {
 		steps:        waitingSibling(),
 		script:       map[int]error{6: ErrConcurrentWriter},
 		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:     []error{ErrConcurrentWriter, context.Canceled},
@@ -634,9 +635,10 @@ func journalStopRow() runRow {
 			"Should: name it as the cause",
 		steps:        waitingSibling(),
 		script:       map[int]error{6: errJournalDown},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantAttempts: map[string]int{"c": 1},
-		wantTrail:    afterA(together(startOf("b"), startOf("c"), lostOf("c"))),
+		wantTrail:    afterA(together(startOf("b"), startOf("c"), lostOf("c")), seq(closed)),
 		wantErrs:     []error{ErrJournal, errJournalDown, context.Canceled},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
 		wantPending:  []string{"b", "c"},
@@ -667,9 +669,10 @@ func markedPanicRow() runRow {
 			return Sequence(rec.step("a"), act("b", func(context.Context, *tripState) error { panic(errAlwaysFails) }))
 		},
 		opts:         []Option{WithMiddleware(marking())},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantAttempts: map[string]int{"b": 1},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), closed),
 		wantErrs:     []error{errMarker, errAlwaysFails},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
@@ -685,8 +688,9 @@ func failedKindRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), fails())
 		},
-		wantStatus:     StatusUnfinished,
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB(), closed),
 		wantErrs:       []error{errAlwaysFails, ErrFailed},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
@@ -705,9 +709,10 @@ func panicKindRow() runRow {
 				panic(errAlwaysFails)
 			}))
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantAttempts: map[string]int{"b": 1},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), closed),
 		wantErrs:     []error{errAlwaysFails, ErrPanic},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
@@ -723,9 +728,10 @@ func conflictKindRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), Parallel(rec.booking("b"), napping("c", "plaza")))
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantAttempts: map[string]int{"c": 1},
-		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c"))),
+		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c")), seq(closed)),
 		wantErrs:     []error{ErrConflict},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
 		wantState:    tripState{Hotel: hotelRitz},
@@ -741,9 +747,10 @@ func siblingCauseRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), Parallel(fails(), waiting("c")))
 		},
-		wantStatus:         StatusUnfinished,
+		wantStatus:         StatusCompensated,
+		wantKind:           ErrCompensated,
 		wantAttempts:       map[string]int{"b": 3, "c": 1},
-		wantTrail:          afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c"))),
+		wantTrail:          afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c")), seq(closed)),
 		wantErrs:           []error{errAlwaysFails, context.Canceled},
 		wantSteps:          map[string]stepStatus{"a": stepSucceeded, "b": stepFailed, "c": stepUnknown},
 		wantPending:        []string{"c"},
@@ -776,8 +783,9 @@ func goexitHistoryRow() runRow {
 
 			return Sequence(rec.step("a"), leaves)
 		},
-		wantStatus:     StatusUnfinished,
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
+		wantStatus:     StatusCompensated,
+		wantKind:       ErrCompensated,
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), closed),
 		wantErrs:       []error{errGoexit, errFirst},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:    []string{"b"},
@@ -803,6 +811,7 @@ func droppedPredicateRow() runRow {
 		},
 		script:       map[int]error{5: ErrConcurrentWriter},
 		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
 		wantAttempts: map[string]int{"c": 0},
 		wantErrs:     []error{ErrConcurrentWriter},
 		wantNotErrs:  []error{ErrJournal},
@@ -832,6 +841,7 @@ func droppedOutcomeRow() runRow {
 		},
 		script:       map[int]error{6: ErrConcurrentWriter},
 		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
@@ -858,9 +868,10 @@ func callerCauseRow() runRow {
 		},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantAttempts: map[string]int{"b": 1},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), closed),
 		wantErrs:     []error{errStop, context.Canceled},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
@@ -883,14 +894,15 @@ func callerKindRow(
 
 			return Sequence(rec.step("a"), wraps)
 		},
-		wantStatus:  StatusUnfinished,
+		wantStatus:  StatusCompensated,
+		wantKind:    ErrCompensated,
 		wantPending: pending,
 		wantErrs:    []error{wrapped},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "b": status},
 		wantKinds:   map[string]*KindError{"b": kind},
 		wantFailed:  []string{"b"},
 		wantErrText: map[string]string{"b": "nested run: " + wrapped.Error()},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("b"), last),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("b"), last, closed),
 
 		wantAttempts: map[string]int{"b": 1},
 	}
@@ -933,14 +945,15 @@ func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs [
 
 			return Sequence(rec.step("a"), nests)
 		},
-		wantStatus:   StatusUnfinished,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
 		wantErrs:     wantErrs,
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": `step "x" failed after 1 attempts: ` + errText},
 		wantAttempts: map[string]int{"b": 1},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB(), closed),
 	}
 }
 
@@ -963,14 +976,15 @@ func nestedMiddlewareRow() runRow {
 			return Sequence(rec.step("a"), act("b", okAction))
 		},
 		opts:         []Option{WithMiddleware(nestingMiddleware())},
-		wantStatus:   StatusUnfinished,
-		wantErrs:     []error{ErrConflict, ErrIncomplete, ErrFailed},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantErrs:     []error{ErrConflict, ErrCompensated, ErrFailed},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": nestedConflictText},
 		wantAttempts: map[string]int{"b": 3},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB(), closed),
 
 		wantPreviousIs: map[string][]error{"b": {ErrConflict, ErrConflict}},
 	}
@@ -1023,18 +1037,18 @@ func Test_RunError_Error(t *testing.T) {
 		{
 			name:    "[Success] When: a step failed ; Should: read the kind, then the step error",
 			stepErr: errAlwaysFails,
-			want:    "sagas: incomplete: " + bFailed,
+			want:    "sagas: compensated: " + bFailed,
 		},
 		{
 			name:    "[Success] When: a step and the journal failed ; Should: join the texts with a semicolon",
 			script:  map[int]error{5: errJournalDown},
 			stepErr: errAlwaysFails,
-			want:    "sagas: incomplete: " + bFailed + "; " + journalDown,
+			want:    "sagas: compensated: " + bFailed + "; " + journalDown,
 		},
 		{
 			name:   "[Success] When: only the journal failed ; Should: read the kind, then the journal error",
 			script: map[int]error{3: errJournalDown},
-			want:   "sagas: incomplete: " + journalDown,
+			want:   "sagas: compensated: " + journalDown,
 		},
 	}
 
@@ -1089,7 +1103,7 @@ func Test_RunError_Is(t *testing.T) {
 		{
 			name:    "[Success] When: the target is the Kind ; Should: match",
 			stepErr: errAlwaysFails,
-			target:  ErrIncomplete,
+			target:  ErrCompensated,
 			want:    true,
 		},
 		{
@@ -1113,12 +1127,12 @@ func Test_RunError_Is(t *testing.T) {
 		{
 			name:    "[Fail] When: the target is another Kind ; Should: not match",
 			stepErr: errAlwaysFails,
-			target:  ErrCompensated,
+			target:  ErrCompensationFailed,
 		},
 		{
 			name:    "[Fail] When: a caller error has the same text as the Kind ; Should: not match",
 			stepErr: errAlwaysFails,
-			target:  errLookalikeIncomplete,
+			target:  errLookalikeCompensated,
 		},
 	}
 

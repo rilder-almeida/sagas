@@ -32,6 +32,7 @@ const (
 
 type stepRun struct {
 	status   runStatus
+	started  bool
 	attempts int
 	err      *Error
 }
@@ -74,7 +75,7 @@ func ready(parents []int, status []stepRun) bool {
 }
 
 func (r *runner[S]) stopped() bool {
-	return len(r.failures) > 0 || r.rejected != nil || len(r.journalErrs) > 0
+	return len(r.failures) > 0 || r.rejected != nil || len(r.journalErrs) > 0 || r.interrupted != nil
 }
 
 func (r *runner[S]) record(ctx context.Context, e *Event) bool {
@@ -115,7 +116,7 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 	switch {
 	case r.rejected != nil:
 		return endRejected
-	case len(r.failures) > 0 || len(r.journalErrs) > 0:
+	case r.stopped():
 		return endFailed
 	default:
 		return endCompleted
@@ -128,13 +129,23 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 			continue
 		}
 
+		if stepCtx.Err() != nil {
+			r.interrupted = context.Cause(stepCtx)
+			r.stop(r.interrupted)
+
+			return
+		}
+
 		j := job[S]{step: i, base: r.store.snapshot()}
 
-		if r.saga.steps[i].pred != nil {
+		switch {
+		case r.saga.steps[i].pred != nil:
 			j.answer = make(chan bool, 1)
 			c.answers[i] = j.answer
-		} else if !r.record(grace, &Event{Kind: EventStepStarted, Step: r.saga.steps[i].name}) {
+		case !r.record(grace, &Event{Kind: EventStepStarted, Step: r.saga.steps[i].name}):
 			return
+		default:
+			r.runs[i].started = true
 		}
 
 		r.runs[i].status = runRunning
@@ -166,7 +177,7 @@ func (r *runner[S]) work(ctx context.Context, reports chan<- report, j job[S]) {
 		}
 	}
 
-	r.act(ctx, reports, j)
+	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) { reports <- done })
 }
 
 func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
@@ -179,7 +190,7 @@ func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
 	return v.run && v.err == nil
 }
 
-func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
+func (r *runner[S]) act(ctx context.Context, j job[S], call callFunc[S], send func(settled[S])) {
 	meta := &callMeta{execution: r.execution}
 	done := settled[S]{step: j.step, base: j.base, out: outcome[S]{kind: outcomeUnknown, err: errGoexit}}
 	returned := false
@@ -189,10 +200,10 @@ func (r *runner[S]) act(ctx context.Context, reports chan<- report, j job[S]) {
 			done.out.attempts, done.out.previous = meta.attempt, meta.history()
 		}
 
-		reports <- done
+		send(done)
 	}()
 
-	done.out = r.saga.steps[j.step].action(ctx, meta, j.base)
+	done.out = call(ctx, meta, j.base)
 	returned = true
 }
 
@@ -245,6 +256,8 @@ func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool)
 		r.runs[i].status = runNotStarted
 	default:
 		answer <- true
+
+		r.runs[i].started = true
 
 		return false
 	}
@@ -308,7 +321,7 @@ func (r *runner[S]) note(i int, out outcome[S]) Event {
 		Err: out.err, Cause: out.cause, Previous: out.previous,
 	}
 	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: eventErrorOf(failure)}
-	r.runs[i] = stepRun{status: runFailed, attempts: out.attempts, err: failure}
+	r.runs[i].status, r.runs[i].attempts, r.runs[i].err = runFailed, out.attempts, failure
 	r.failures = append(r.failures, failure)
 	r.stop(fmt.Errorf("%w: step %q", errStepStopped, name))
 
