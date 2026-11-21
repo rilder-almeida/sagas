@@ -3,7 +3,7 @@
 ## Rules
 
 - The core module imports only the standard library.
-- Positional arguments of `New` are a name and a flow. A step is a type that embeds `sagas.Step`. Saga and run settings are functional options.
+- Positional arguments of `New` are a name and a flow. A step is a type that embeds `sagas.Step`. Saga settings are functional options.
 - `docs/glossary.md` is the vocabulary.
 - Take the simplest code that meets each rule. Measure performance with a benchmark
   instead of guessing, and record the numbers when a change touches a hot path.
@@ -12,7 +12,7 @@
 
 ## API style
 
-- A step's behavior is its methods. Middleware is a value with `Wrap(ctx, info, call)`. A port is an interface with the fewest methods its callers need.
+- A step's behavior is its methods. Middleware is a value with `Wrap(ctx, info, call)`.
 - A port interface has the fewest methods its callers need, one when possible. A new
   capability is a new small interface, not a new method on an existing one.
 - Middleware gets the call data as the `CallInfo` parameter of `Wrap`. A step method reads the idempotency key with `IdempotencyKey(ctx)`.
