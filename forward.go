@@ -314,6 +314,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 
 	if r.rejected != nil {
 		if f.out.kind != outcomeSuccess {
+			r.graceHit = r.graceHit || f.late
 			r.note(i, f.out)
 		}
 

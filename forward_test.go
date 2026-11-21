@@ -100,6 +100,63 @@ func pivotRows() []runRow {
 		forwardOnlyOwnFailureRow(),
 		lateSiblingAfterOwnFailureRow(),
 		forwardOnlyCommitFailsRow(),
+		lateAfterRejectionRow(),
+		lateCompensableSiblingRow(),
+	}
+}
+
+func lateAfterRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: a step returns late without success after the journal rejected an event ; " +
+			"Should: end ErrConcurrentWriter and match the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(rec.step("b"), once("c", lateFailure)))
+		},
+		opts:           []Option{WithRecoveryTimeout(pause)},
+		script:         map[int]error{6: ErrConcurrentWriter},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrConcurrentWriter,
+		wantKinds:      map[string]*KindError{"c": ErrFailed},
+		wantFailed:     []string{"c"},
+		wantErrText:    map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"c": 1},
+		wantCauseText:  map[string]string{"c": "journal rejected an event"},
+		wantUnrecorded: []string{"c"},
+		wantErrs:       []error{ErrConcurrentWriter, errAlwaysFails, errStop},
+		wantNotErrs:    []error{ErrJournal},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
+		wantPending:    []string{"b", "c"},
+		wantTrail:      afterA(together(startOf("b"), startOf("c"))),
+	}
+}
+
+func lateCompensableSiblingRow() runRow {
+	return runRow{
+		name: "[Fail] When: a step before the pivot returns late without success after its sibling stopped the run ; " +
+			"Should: match the caller cause",
+		steps: func(*recorder) Flow {
+			return Parallel(once("x", alwaysFails), once("y", lateFailure))
+		},
+		opts:          []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:   pause,
+		cancelCause:   errStop,
+		wantStatus:    StatusCompensated,
+		wantKind:      ErrCompensated,
+		wantKinds:     map[string]*KindError{"x": ErrFailed, "y": ErrFailed},
+		wantFailed:    []string{"x", "y"},
+		wantErrText:   map[string]string{"x": errAlwaysFails.Error(), "y": errAlwaysFails.Error()},
+		wantAttempts:  map[string]int{"x": 1, "y": 1},
+		wantCauseText: map[string]string{"y": `"x"`},
+		wantErrs:      []error{errAlwaysFails, errStop},
+		wantNotErrs:   []error{ErrGraceEnded},
+		wantSteps:     map[string]stepStatus{"x": stepFailed, "y": stepFailed},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("x"), startOf("y"), failedOf("x"), failedOf("y")),
+			seq(closed),
+		),
 	}
 }
 

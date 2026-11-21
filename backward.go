@@ -236,6 +236,7 @@ func (r *runner[S]) halt(grace context.Context, b *rollback[S]) {
 	for _, i := range slices.Backward(r.saga.order) {
 		if !b.done[i] && !b.begun[i] && r.owes(i) {
 			b.begun[i] = true
+			r.graceHit = r.graceHit || graceEnded(grace)
 			r.skip(grace, b, i, EventCompensationHalted)
 		}
 	}
