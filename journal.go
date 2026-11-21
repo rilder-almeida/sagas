@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	// ErrJournal wraps an Append error that is not a rejection; a Journal returns its own failures as is.
+	// ErrJournal wraps an Append error that is neither a rejection nor ctx's own error after the grace end.
 	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
 	// ErrExecutionExists is returned when the journal rejects the first event because the execution already exists.
 	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}

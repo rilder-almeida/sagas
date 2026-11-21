@@ -88,10 +88,14 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 			return err
 		}
 
-		failed := settled[S]{
-			out:  outcome[S]{kind: outcomeFailure, err: fmt.Errorf("%w: %w", ErrJournal, err)},
-			late: e.Kind != EventSagaStarted && graceEnded(ctx), graced: true,
+		late := e.Kind != EventSagaStarted && graceEnded(ctx)
+
+		reason := fmt.Errorf("%w: %w", ErrJournal, err)
+		if late && ownError(ctx, err) {
+			reason = ErrGraceEnded
 		}
+
+		failed := settled[S]{out: outcome[S]{kind: outcomeFailure, err: reason}, late: late, graced: true}
 		err = r.lateResult(&failed).err
 		r.journalErrs = append(r.journalErrs, err)
 		r.stop(errJournalStopped)
@@ -103,6 +107,18 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	r.events = append(r.events, stored)
 
 	return nil
+}
+
+func ownError(ctx context.Context, err error) bool {
+	return errors.Is(err, ctx.Err()) || errors.Is(err, context.Cause(ctx))
+}
+
+func appendLabel(err error) *KindError {
+	if errors.Is(err, ErrJournal) {
+		return ErrJournal
+	}
+
+	return ErrGraceEnded
 }
 
 func (r *runner[S]) stop(reason error) {

@@ -773,6 +773,7 @@ type runRow struct {
 	wantErrs           []error
 	wantNotErrs        []error
 	wantText           []string
+	deadline           time.Duration
 	cancelAfter        time.Duration
 	cancelCause        error
 	wantFailed         []string
@@ -903,6 +904,13 @@ func execute(s *Saga[tripState], tt *runRow) []ran {
 		call := func() {
 			ctx, cancel := context.WithCancelCause(context.Background())
 			defer cancel(nil)
+
+			if tt.deadline > 0 {
+				var expire context.CancelFunc
+
+				ctx, expire = context.WithTimeout(ctx, tt.deadline)
+				defer expire()
+			}
 
 			switch {
 			case tt.cancelCause == nil:
@@ -1106,8 +1114,8 @@ func skippedAtGraceEndRow() runRow {
 		cancelCause: errStop,
 		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
-		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
-		wantNotErrs: []error{ErrCompensated},
+		wantErrs:    []error{ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrCompensated, ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
 		wantPending: []string{"z"},
 		wantOrder:   [][2]string{{"p", "if:z"}},
@@ -1129,8 +1137,8 @@ func forwardIntentAtGraceEndRow() runRow {
 		cancelCause: errStop,
 		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
-		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop, context.Canceled},
-		wantNotErrs: []error{ErrCompensated},
+		wantErrs:    []error{ErrGraceEnded, errStop, context.Canceled},
+		wantNotErrs: []error{ErrCompensated, ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
 		wantPending: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p")),
@@ -1151,8 +1159,8 @@ func pivotOutcomeAtGraceEndRow() runRow {
 		cancelCause: errStop,
 		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
-		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
-		wantNotErrs: []error{ErrCompensated},
+		wantErrs:    []error{ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrCompensated, ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
 		wantPending: []string{"p", "z"},
 		wantRunOnly: []string{"z"},
@@ -1178,7 +1186,8 @@ func finishedAtGraceEndRow() runRow {
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": errAlwaysFails.Error()},
 		wantAttempts: map[string]int{"b": 1},
-		wantErrs:     []error{errAlwaysFails, ErrJournal, ErrGraceEnded, errStop},
+		wantNotErrs:  []error{ErrJournal},
+		wantErrs:     []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepFailed},
 		wantOrder:    [][2]string{{"a", undoA}},
 		wantTrail: seq(

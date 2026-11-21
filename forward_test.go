@@ -93,6 +93,8 @@ func pivotRows() []runRow {
 		cancelDuringForwardPredicateRow(),
 		noCallerCancelRow(),
 		lateCompensableFailureRow(),
+		deadlineGraceEndRow(),
+		journalErrorAtGraceEndRow(),
 		pivotLateSuccessRow(),
 		forwardOnlyLateSuccessRow(),
 		pivotCommitFailsRow(),
@@ -213,7 +215,8 @@ func lateCompensableSiblingRow() runRow {
 		wantAttempts:   map[string]int{"x": 1, "y": 1},
 		wantCauseText:  map[string]string{"y": `"x"`},
 		wantUnrecorded: []string{"y"},
-		wantErrs:       []error{errAlwaysFails, ErrJournal, errStop},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantNotKinds:   map[string]*KindError{"y": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"x": stepFailed, "y": stepUnknown},
 		wantPending:    []string{"y"},
@@ -251,8 +254,8 @@ func lateSiblingAfterOwnFailureRow() runRow {
 		wantFailed:   []string{"z"},
 		wantErrText:  map[string]string{"z": errAlwaysFails.Error()},
 		wantAttempts: map[string]int{"z": 1},
-		wantErrs:     []error{errAlwaysFails, ErrJournal, ErrGraceEnded, errStop, context.Canceled},
-		wantNotErrs:  []error{ErrCompensated},
+		wantErrs:     []error{errAlwaysFails, ErrGraceEnded, errStop, context.Canceled},
+		wantNotErrs:  []error{ErrCompensated, ErrJournal},
 		wantSteps: map[string]stepStatus{
 			"a": stepSucceeded, "p": stepSucceeded, "y": stepUnknown, "z": stepFailed,
 		},
@@ -328,8 +331,8 @@ func pivotLateSuccessRow() runRow {
 		cancelCause: errStop,
 		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
-		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
-		wantNotErrs: []error{ErrCompensated},
+		wantErrs:    []error{ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrCompensated, ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
 		wantPending: []string{"p", "z"},
 		wantRunOnly: []string{"z"},
@@ -359,8 +362,8 @@ func forwardOnlyLateSuccessRow() runRow {
 		cancelCause: errStop,
 		wantStatus:  StatusUnfinished,
 		wantKind:    ErrIncomplete,
-		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
-		wantNotErrs: []error{ErrCompensated},
+		wantErrs:    []error{ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrCompensated, ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
@@ -580,8 +583,8 @@ func pivotGraceEndRow() runRow {
 		wantAttempts:   map[string]int{"p": 1},
 		wantCauseIs:    map[string]error{"p": ErrGraceEnded},
 		wantUnrecorded: []string{"p"},
-		wantErrs:       []error{ErrJournal, ErrGraceEnded, context.Canceled, errStop},
-		wantNotErrs:    []error{ErrCompensated},
+		wantErrs:       []error{ErrGraceEnded, context.Canceled, errStop},
+		wantNotErrs:    []error{ErrCompensated, ErrJournal},
 		wantTextCount:  map[string]int{ErrGraceEnded.Error(): 3},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown},
 		wantPending:    []string{"p"},
@@ -611,7 +614,8 @@ func pivotLateFailureRow() runRow {
 		wantAttempts:    map[string]int{"p": 1},
 		wantCauseIs:     map[string]error{"p": ErrGraceEnded},
 		wantUnrecorded:  []string{"p"},
-		wantErrs:        []error{errAlwaysFails, ErrJournal, ErrGraceEnded, errStop},
+		wantNotErrs:     []error{ErrJournal},
+		wantErrs:        []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantTextCount:   map[string]int{ErrGraceEnded.Error(): 4},
 		wantSteps:       map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown},
 		wantJournalOnly: []string{"p"},
@@ -623,7 +627,7 @@ func pivotLateFailureRow() runRow {
 func pivotPanicRow() runRow {
 	return runRow{
 		name: "[Fail] When: the pivot panics ; " +
-			"Should: stop retries, end ErrIncomplete without compensating and leave the forward-only step out of Pending",
+			"Should: stop retries, end ErrIncomplete without compensating and leave the forward-only step unlisted",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), paying("p", panics), rec.step("z"))
 		},
@@ -710,8 +714,8 @@ func forwardOnlyGraceEndRow() runRow {
 		wantAttempts:   map[string]int{"z": 1},
 		wantCauseIs:    map[string]error{"z": ErrGraceEnded},
 		wantUnrecorded: []string{"z"},
-		wantErrs:       []error{ErrJournal, ErrGraceEnded, errStop},
-		wantNotErrs:    []error{ErrCompensated},
+		wantErrs:       []error{ErrGraceEnded, errStop},
+		wantNotErrs:    []error{ErrCompensated, ErrJournal},
 		wantTextCount:  map[string]int{ErrGraceEnded.Error(): 3},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending:    []string{"z"},
@@ -743,8 +747,8 @@ func forwardOnlyLateFailureRow() runRow {
 		wantAttempts:   map[string]int{"z": 1},
 		wantCauseIs:    map[string]error{"z": context.DeadlineExceeded},
 		wantUnrecorded: []string{"z"},
-		wantErrs:       []error{errAlwaysFails, ErrJournal, ErrGraceEnded, errStop},
-		wantNotErrs:    []error{ErrCompensated},
+		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
+		wantNotErrs:    []error{ErrCompensated, ErrJournal},
 		wantTextCount:  map[string]int{ErrGraceEnded.Error(): 3},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending:    []string{"z"},
@@ -917,7 +921,61 @@ func lateCompensableFailureRow() runRow {
 		wantAttempts:   map[string]int{"a": 1},
 		wantCauseIs:    map[string]error{"a": errStop},
 		wantUnrecorded: []string{"a"},
-		wantErrs:       []error{errAlwaysFails, ErrJournal, errStop},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
+		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
+		wantSteps:      map[string]stepStatus{"a": stepUnknown},
+		wantPending:    []string{"a"},
+		wantTrail:      seq(opened, startOf("a")),
+	}
+}
+
+func deadlineGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: a caller deadline passes and a late failure append is refused at the grace end ; " +
+			"Should: match the deadline and ErrGraceEnded, and neither context.Canceled nor ErrJournal",
+		steps: func(*recorder) Flow {
+			return once("a", lateFailure)
+		},
+		opts:           []Option{WithRecoveryTimeout(pause)},
+		deadline:       pause,
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrCompensated,
+		wantKinds:      map[string]*KindError{"a": ErrFailed},
+		wantFailed:     []string{"a"},
+		wantErrText:    map[string]string{"a": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"a": 1},
+		wantCauseIs:    map[string]error{"a": context.DeadlineExceeded},
+		wantUnrecorded: []string{"a"},
+		wantErrs:       []error{errAlwaysFails, context.DeadlineExceeded, ErrGraceEnded},
+		wantNotErrs:    []error{context.Canceled, ErrJournal},
+		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
+		wantSteps:      map[string]stepStatus{"a": stepUnknown},
+		wantPending:    []string{"a"},
+		wantTrail:      seq(opened, startOf("a")),
+	}
+}
+
+func journalErrorAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal fails on its own after the grace end ; " +
+			"Should: match ErrJournal, the journal error and ErrGraceEnded",
+		steps: func(*recorder) Flow {
+			return once("a", lateFailure)
+		},
+		opts:           []Option{WithRecoveryTimeout(pause)},
+		script:         map[int]error{3: errJournalDown},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrCompensated,
+		wantKinds:      map[string]*KindError{"a": ErrFailed},
+		wantFailed:     []string{"a"},
+		wantErrText:    map[string]string{"a": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"a": 1},
+		wantCauseIs:    map[string]error{"a": errStop},
+		wantUnrecorded: []string{"a"},
+		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown, ErrGraceEnded, errStop},
 		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"a": stepUnknown},
 		wantPending:    []string{"a"},

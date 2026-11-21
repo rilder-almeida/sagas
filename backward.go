@@ -139,7 +139,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 			return
 		}
 
-		r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal})
+		r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: err, label: appendLabel(err)})
 
 		return
 	}
@@ -190,7 +190,7 @@ func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome[S]
 
 	done := Event{Kind: EventCompensationSucceeded, Step: name, Attempt: attempts, Changed: res.changed}
 	if err = r.persist(grace, &done); err != nil {
-		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: ErrJournal}, false
+		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: appendLabel(err)}, false
 	}
 
 	return f.out, true
