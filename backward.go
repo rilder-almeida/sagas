@@ -15,15 +15,9 @@ const (
 	compHalted
 )
 
-type undone[S any] struct {
-	settled[S]
-
-	late bool
-}
-
 type rollback[S any] struct {
 	wg      sync.WaitGroup
-	results chan undone[S]
+	results chan settled[S]
 	done    []bool
 	begun   []bool
 	tainted []bool
@@ -55,7 +49,7 @@ func decide(halted, blockedBelow bool) compDecision {
 func (r *runner[S]) backward(grace context.Context) {
 	n := len(r.saga.steps)
 	b := &rollback[S]{
-		results: make(chan undone[S], n), done: make([]bool, n), begun: make([]bool, n), tainted: make([]bool, n),
+		results: make(chan settled[S], n), done: make([]bool, n), begun: make([]bool, n), tainted: make([]bool, n),
 	}
 
 	defer b.wg.Wait()
@@ -150,12 +144,13 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 
 	b.wg.Go(func() {
 		r.act(grace, j, step.compensation, func(done settled[S]) {
-			b.results <- undone[S]{settled: done, late: graceEnded(grace)}
+			done.late = graceEnded(grace)
+			b.results <- done
 		})
 	})
 }
 
-func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *undone[S]) {
+func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]) {
 	name := r.saga.steps[f.step].name
 	out := f.out
 

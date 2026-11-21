@@ -16,6 +16,7 @@ type forwardEnd int
 const (
 	endCompleted forwardEnd = iota
 	endFailed
+	endIncomplete
 	endRejected
 )
 
@@ -52,6 +53,7 @@ type settled[S any] struct {
 	step int
 	out  outcome[S]
 	base snapshot[S]
+	late bool
 }
 
 func (verdict) isReport() {}
@@ -124,11 +126,23 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 	switch {
 	case r.rejected != nil:
 		return endRejected
-	case r.stopped():
-		return endFailed
-	default:
+	case !r.stopped():
 		return endCompleted
+	case r.pivotApplied():
+		return endIncomplete
+	default:
+		return endFailed
 	}
+}
+
+func (r *runner[S]) pivotApplied() bool {
+	p := r.saga.pivot
+
+	return p >= 0 && r.runs[p].started && r.runs[p].status != runFailed
+}
+
+func (r *runner[S]) callerStops(stepCtx context.Context, i int) bool {
+	return r.saga.steps[i].zone != ZoneForwardOnly && r.callerDone(stepCtx)
 }
 
 func (r *runner[S]) callerDone(stepCtx context.Context) bool {
@@ -148,7 +162,7 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 			continue
 		}
 
-		if r.callerDone(stepCtx) {
+		if r.callerStops(stepCtx, i) {
 			return
 		}
 
@@ -167,7 +181,12 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 		r.runs[i].status = runRunning
 		c.running++
 
-		c.wg.Go(func() { r.work(stepCtx, c.reports, j) })
+		ctx := stepCtx
+		if r.saga.steps[i].zone != ZoneCompensable {
+			ctx = grace
+		}
+
+		c.wg.Go(func() { r.work(ctx, grace, c.reports, j) })
 	}
 }
 
@@ -186,14 +205,17 @@ func (r *runner[S]) receive(stepCtx, grace context.Context, c *crew[S]) {
 	}
 }
 
-func (r *runner[S]) work(ctx context.Context, reports chan<- report, j job[S]) {
+func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j job[S]) {
 	if pred := r.saga.steps[j.step].pred; pred != nil {
 		if !vet(pred, reports, j) || !<-j.answer {
 			return
 		}
 	}
 
-	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) { reports <- done })
+	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) {
+		done.late = graceEnded(grace)
+		reports <- done
+	})
 }
 
 func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
@@ -266,7 +288,7 @@ func (r *runner[S]) answer(stepCtx, grace context.Context, v verdict, reply chan
 
 		r.runs[i].status = runSkipped
 		r.record(grace, &Event{Kind: EventStepSkipped, Step: name})
-	case r.stopped() || r.callerDone(stepCtx) || !r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
+	case r.stopped() || r.callerStops(stepCtx, i) || !r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
 		reply <- false
 
 		r.runs[i].status = runNotStarted
@@ -296,7 +318,12 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	}
 
 	if f.out.kind != outcomeSuccess {
-		r.fail(grace, i, f.out)
+		out := f.out
+		if f.late && r.saga.steps[i].zone != ZoneCompensable {
+			out = withGraceEnd(out)
+		}
+
+		r.fail(grace, i, out)
 
 		return
 	}

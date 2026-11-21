@@ -204,7 +204,7 @@ func unknownBarrierRow() runRow {
 			return Sequence(rec.undoable("a"), Parallel(
 				undoOnce("b", panics, rec.do(undoB)),
 				undoOnce("c", blockedOnCtx, rec.do(undoC)),
-			), rec.pivot("p"))
+			), rec.pivot())
 		},
 		wantStatus:    StatusCompensated,
 		wantKind:      ErrCompensated,

@@ -637,7 +637,7 @@ func (r *recorder) bookingIf(name, hotel string, pred func(*tripState) bool) *if
 	return gated(name, r.book(name, hotel), pred)
 }
 
-func (r *recorder) pivot(name string) *pivotStep { return paying(name, r.do(name)) }
+func (r *recorder) pivot() *pivotStep { return paying("p", r.do("p")) }
 
 func (r *recorder) when(verdict bool, name string) func(*tripState) bool {
 	return func(*tripState) bool {
@@ -684,7 +684,7 @@ type runRow struct {
 func Test_Saga_Run(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(forwardRows(), stopRows(), errorRows(), backwardRows()) {
+	for _, tt := range slices.Concat(forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

@@ -189,6 +189,8 @@ func (r *runner[S]) status(end forwardEnd) Status {
 		return ""
 	case end == endCompleted:
 		return StatusCompleted
+	case end == endIncomplete:
+		return StatusIncomplete
 	case slices.ContainsFunc(r.failures, func(e *Error) bool { return e.Compensation }):
 		return StatusCompensationFailed
 	default:
