@@ -99,7 +99,7 @@ func NewMemoryJournal() *MemoryJournal {
 	return &MemoryJournal{streams: map[string][]Event{}}
 }
 
-// Append stores a copy of e as the Journal contract says.
+// Append implements Journal.
 func (j *MemoryJournal) Append(_ context.Context, e *Event) error {
 	if e == nil {
 		return fmt.Errorf("%w: nil event", errInvalidEvent)
@@ -137,7 +137,7 @@ func (j *MemoryJournal) Append(_ context.Context, e *Event) error {
 	return fmt.Errorf("%w: execution %q seq %d", rejection, e.Execution, e.Seq)
 }
 
-// Events returns a copy of the events of an execution in Seq order, which the caller may change freely.
+// Events returns a copy of an execution's events in Seq order.
 func (j *MemoryJournal) Events(execution string) []Event {
 	j.mu.Lock()
 	defer j.mu.Unlock()

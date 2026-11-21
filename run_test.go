@@ -374,7 +374,7 @@ func Test_runner_append(t *testing.T) {
 			}
 
 			requireAppendErr(t, err, tt.wantErrs, tt.wantNoErrs)
-			assertAppended(t, r, j, tt.wantSeq, tt.appends)
+			assertAppended(t, j, tt.wantSeq, tt.appends)
 
 			for _, got := range j.ctxs {
 				assert.Equal(t, ctx, got)
@@ -411,15 +411,15 @@ func requireAppendErr(t *testing.T, err error, wantErrs, wantNoErrs []error) {
 	}
 }
 
-func assertAppended(t *testing.T, r *runner[tripState], j *scriptJournal, wantSeq, appends int) {
+func assertAppended(t *testing.T, j *scriptJournal, wantStored, appends int) {
 	t.Helper()
 
-	assert.Equal(t, wantSeq, r.seq)
-	require.Len(t, r.events, wantSeq)
+	events := j.Events("exec-1")
+	require.Len(t, events, wantStored)
 	require.Len(t, j.ctxs, appends)
 
-	for i := range r.events {
-		e := &r.events[i]
+	for i := range events {
+		e := &events[i]
 		assert.Equal(t, i+1, e.Seq)
 		assert.Equal(t, "trip", e.Saga)
 		assert.Equal(t, "exec-1", e.Execution)
