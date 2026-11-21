@@ -368,18 +368,19 @@ func Test_runner_append(t *testing.T) {
 			}
 			ctx := context.WithValue(t.Context(), graceKey{}, "grace")
 
+			require.Equal(t, tt.failAt == 0, len(tt.wantErrs) == 0, "failAt and wantErrs must agree")
+
 			for i := 1; i <= tt.appends; i++ {
 				changed := []string{"Hotel"}
 				err = r.append(ctx, &Event{Kind: EventStepSucceeded, Step: "a", Changed: changed})
 				changed[0] = "mutated"
 
-				if i == tt.failAt {
-					requireAppendErr(t, err, tt.wantErrs, tt.wantNoErrs)
-
-					continue
+				wantErrs := tt.wantErrs
+				if i != tt.failAt {
+					wantErrs = nil
 				}
 
-				require.NoError(t, err, "append %d", i)
+				requireAppendErr(t, err, wantErrs, tt.wantNoErrs)
 			}
 
 			assertAppended(t, j, tt.wantStored, tt.appends)
