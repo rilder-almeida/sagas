@@ -3,7 +3,7 @@
 ## Rules
 
 - The core module imports only the standard library.
-- Positional arguments are a name and an action. Everything else is a functional option.
+- Positional arguments of `New` are a name and a flow. A step is a type that embeds `sagas.Step`. Saga and run settings are functional options.
 - `docs/glossary.md` is the vocabulary.
 - Take the simplest code that meets each rule. Measure performance with a benchmark
   instead of guessing, and record the numbers when a change touches a hot path.
@@ -12,11 +12,10 @@
 
 ## API style
 
-- Extension points are function types, not interfaces: a handler is a function, and
-  middleware is a function that wraps a handler (`func(next Handler) Handler`).
+- A step's behavior is its methods. Middleware is a value with `Wrap(ctx, info, call)`. A port is an interface with the fewest methods its callers need.
 - A port interface has the fewest methods its callers need, one when possible. A new
   capability is a new small interface, not a new method on an existing one.
-- Per-call metadata travels in the `context.Context` and is read through exported helpers.
+- Middleware gets the call data as the `CallInfo` parameter of `Wrap`. A step method reads the idempotency key with `IdempotencyKey(ctx)`.
   Middleware never receives the saga state.
 - A concern belongs in middleware when it acts on one call, needs neither the graph nor the
   state, and varies per application. Everything else stays in the core, which is itself a
