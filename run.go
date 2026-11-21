@@ -67,6 +67,7 @@ type runner[S any] struct {
 	stopReason  error
 	store       *store[S]
 	runs        []stepRun
+	undone      []stepStatus
 	failures    []*Error
 }
 
@@ -147,7 +148,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 
 	r := &runner[S]{
 		saga: s, execution: execution, writer: newID(), journal: journal,
-		store: committed, runs: make([]stepRun, len(s.steps)),
+		store: committed, runs: make([]stepRun, len(s.steps)), undone: make([]stepStatus, len(s.steps)),
 	}
 
 	grace, release := graceContext(ctx, s.recovery)
@@ -191,17 +192,43 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 	return &RunError{Kind: kind, Steps: r.failures, Pending: r.pending(), causes: causes}
 }
 
+func (s runStatus) stepStatus() stepStatus {
+	switch s {
+	case runSucceeded:
+		return stepSucceeded
+	case runFailed:
+		return stepFailed
+	case runSkipped:
+		return stepSkipped
+	case runNotStarted:
+		return stepNotStarted
+	case runRunning, runUnknown:
+		return stepUnknown
+	}
+
+	return stepUnknown
+}
+
 func (r *runner[S]) pending() []string {
-	failedPivot := ""
-	if p := r.saga.pivot; p >= 0 && r.runs[p].status == runFailed {
-		failedPivot = r.saga.steps[p].name
+	statuses := make([]stepStatus, len(r.saga.steps))
+	pivot := stepNotStarted
+
+	for i := range r.saga.steps {
+		statuses[i] = r.undone[i]
+		if statuses[i] == "" {
+			statuses[i] = r.runs[i].status.stepStatus()
+		}
+
+		if i == r.saga.pivot {
+			pivot = statuses[i]
+		}
 	}
 
 	var pending []string
 
-	for _, name := range pendingOf(r.events) {
-		if name != failedPivot {
-			pending = append(pending, name)
+	for i, status := range statuses {
+		if owed(status, r.saga.steps[i].zone, pivot) {
+			pending = append(pending, r.saga.steps[i].name)
 		}
 	}
 

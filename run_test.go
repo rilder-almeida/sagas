@@ -31,18 +31,30 @@ var (
 
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+const forever = -1
+
+type repeatedError struct {
+	error
+
+	times int
+}
+
+func (r *repeatedError) Unwrap() error { return r.error }
+
+func failing(err error, times int) error { return &repeatedError{error: err, times: times} }
+
 type scriptJournal struct {
 	*MemoryJournal
 
 	errs       map[int]error
-	failed     map[int]bool
+	failed     map[int]int
 	ctxs       []context.Context
 	executions []string
 	mu         sync.Mutex
 }
 
 func newScriptJournal(errs map[int]error) *scriptJournal {
-	return &scriptJournal{MemoryJournal: NewMemoryJournal(), errs: errs, failed: map[int]bool{}}
+	return &scriptJournal{MemoryJournal: NewMemoryJournal(), errs: errs, failed: map[int]int{}}
 }
 
 func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
@@ -54,8 +66,14 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 	}
 
 	err, scripted := j.errs[e.Seq]
-	if scripted && !j.failed[e.Seq] {
-		j.failed[e.Seq] = true
+
+	limit := 1
+	if r, ok := errors.AsType[*repeatedError](err); ok {
+		err, limit = r.error, r.times
+	}
+
+	if scripted && (limit == forever || j.failed[e.Seq] < limit) {
+		j.failed[e.Seq]++
 		j.mu.Unlock()
 
 		if errors.Is(err, errAwaitDone) {
@@ -763,6 +781,7 @@ type runRow struct {
 	wantSteps          map[string]stepStatus
 	wantPending        []string
 	wantJournalOnly    []string
+	wantRunOnly        []string
 	wantOrder          [][2]string
 	wantZones          []StepZone
 	wantTrail          [][]string
@@ -842,6 +861,10 @@ func journalPending(res *runRecord, tt *runRow) []string {
 
 	for i := range res.Steps {
 		name := res.Steps[i].Name
+		if slices.Contains(tt.wantRunOnly, name) {
+			continue
+		}
+
 		if slices.Contains(tt.wantPending, name) || slices.Contains(tt.wantJournalOnly, name) {
 			want = append(want, name)
 		}

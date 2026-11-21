@@ -127,7 +127,7 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 }
 
 func (r *runner[S]) skip(grace context.Context, b *rollback[S], i int, kind EventKind) {
-	b.done[i] = true
+	b.done[i], r.undone[i] = true, outcomeStatus(kind)
 	r.record(grace, &Event{Kind: kind, Step: r.saga.steps[i].name})
 }
 
@@ -146,6 +146,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 
 	j := job[S]{step: i, base: r.store.snapshot()}
 	b.running++
+	r.undone[i] = stepCompensationFailed
 
 	b.wg.Go(func() {
 		r.act(grace, j, step.compensation, func(done settled[S]) {
@@ -170,7 +171,7 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 	if out.kind == outcomeSuccess {
 		res, err := r.store.commit(name, f.base, *out.state)
 		if err == nil {
-			b.done[f.step] = true
+			b.done[f.step], r.undone[f.step] = true, stepCompensated
 
 			r.record(grace, &Event{
 				Kind: EventCompensationSucceeded, Step: name, Attempt: out.attempts, Changed: res.changed,
@@ -222,7 +223,7 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outco
 		Err: out.err, Cause: out.cause, Previous: out.previous,
 	}
 
-	b.done[i] = true
+	b.done[i], r.undone[i] = true, stepCompensationFailed
 
 	r.failures = append(r.failures, failure)
 	r.record(grace, &Event{

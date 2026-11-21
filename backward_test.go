@@ -98,6 +98,7 @@ func backwardRows() []runRow {
 		undoPanicRow(),
 		undoConflictRow(),
 		undoIntentRow(),
+		journalOutageRow(),
 		graceWaitingRow(),
 		graceRunningRow(),
 		graceIntentRow(),
@@ -601,6 +602,29 @@ func undoIntentRow() runRow {
 		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
 		wantTrail:    chainTrail(undoFailedOf("b"), blockedOf("a"), closed),
+	}
+}
+
+func journalOutageRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal stays down from the first compensation intent on ; " +
+			"Should: list every owed compensation in Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:         map[int]error{8: failing(errJournalDown, forever)},
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{comp("b"): 0, "c": 1},
+		wantUnrecorded: []string{comp("b")},
+		wantErrs:       []error{ErrJournal, errJournalDown},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
+		wantPending:    []string{"a", "b"},
+		wantRunOnly:    []string{"a", "b"},
+		wantTrail:      chainTrail(),
 	}
 }
 

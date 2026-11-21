@@ -292,7 +292,9 @@ func (r *runner[S]) answer(stepCtx, grace context.Context, v verdict, reply chan
 		reply <- false
 
 		r.runs[i].status = runSkipped
-		r.record(grace, &Event{Kind: EventStepSkipped, Step: name})
+		if !r.record(grace, &Event{Kind: EventStepSkipped, Step: name}) {
+			r.runs[i].status = runNotStarted
+		}
 	case r.stopped() || r.callerStops(stepCtx, grace, i) ||
 		!r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
 		reply <- false
