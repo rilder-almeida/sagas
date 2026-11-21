@@ -286,13 +286,7 @@ func scanLevel(level []embedNode, name string) ([]string, []embedNode) {
 }
 
 func provides(t reflect.Type, name string) bool {
-	if t.Kind() == reflect.Interface {
-		_, ok := t.MethodByName(name)
-
-		return ok
-	}
-
-	if _, ok := reflect.PointerTo(derefType(t)).MethodByName(name); !ok {
+	if !hasMethod(t, name) {
 		return false
 	}
 

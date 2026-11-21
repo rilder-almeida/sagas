@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
-// Step holds the name and settings of a step. A step is a pointer to a user type that embeds Step and declares
-// Execute or Pivot, and optionally Compensate, Enabled and Wrap. Step methods must be safe for concurrent use.
-// An empty Name takes the type name; a saga with a durable journal sets Name, so a type rename keeps the names.
+// Step holds the name and settings of a step: a pointer to a user type that embeds Step and has Execute or Pivot,
+// and optionally Compensate, Enabled and Wrap, all safe for concurrent use. An empty Name takes the type name; a
+// saga with a durable journal sets Name, so a type rename keeps the names. New cannot see a step method lost when
+// an embedded field declares it and also embeds a field with it, or a non-method field has its name: declare step
+// methods on the step type or keep embedded providers unambiguous.
 type Step struct {
 	Name                string
 	Description         string
