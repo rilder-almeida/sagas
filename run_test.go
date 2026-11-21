@@ -1035,6 +1035,113 @@ func runRows() []runRow {
 		undoIntentRejectedRow(),
 		undoRunningRejectedRow(),
 		turnAfterRejectionRow(),
+		forwardIntentAtGraceEndRow(),
+		pivotOutcomeAtGraceEndRow(),
+		finishedAtGraceEndRow(),
+		finishedBeforeGraceEndRow(),
+	}
+}
+
+func forwardIntentAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the intent append of a forward-only step fails at the grace end ; " +
+			"Should: end ErrIncomplete and match ErrJournal, ErrGraceEnded and the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		script:      map[int]error{6: errAwaitDone},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  StatusIncomplete,
+		wantKind:    ErrIncomplete,
+		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop, context.Canceled},
+		wantNotErrs: []error{ErrCompensated},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
+		wantPending: []string{"z"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantZones:   pivotZones("z"),
+	}
+}
+
+func pivotOutcomeAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of the pivot fails at the grace end ; " +
+			"Should: leave the pivot unknown and match ErrJournal, ErrGraceEnded and the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		script:      map[int]error{5: errAwaitDone},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  StatusIncomplete,
+		wantKind:    ErrIncomplete,
+		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrCompensated},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
+		wantPending: []string{"p"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), closed),
+		wantZones:   pivotZones("z"),
+	}
+}
+
+func finishedAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the saga-finished append of a compensated run fails at the grace end ; " +
+			"Should: keep ErrCompensated and match ErrJournal, ErrGraceEnded and the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), once("b", alwaysFails))
+		},
+		opts:         []Option{WithRecoveryTimeout(pause)},
+		script:       map[int]error{8: errAwaitDone},
+		cancelAfter:  pause,
+		cancelCause:  errStop,
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantFailed:   []string{"b"},
+		wantErrText:  map[string]string{"b": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"b": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, ErrGraceEnded, errStop},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoneOf("a"),
+		),
+	}
+}
+
+func finishedBeforeGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the saga-finished append fails after a caller cancel and before any grace end ; " +
+			"Should: keep ErrCompensated and match neither ErrGraceEnded nor the caller cause",
+		steps: func(rec *recorder) Flow {
+			slowUndo := func(context.Context, *tripState) error {
+				time.Sleep(pause)
+				rec.add(undoA)
+
+				return nil
+			}
+
+			return Sequence(undoing("a", rec.do("a"), slowUndo), once("b", alwaysFails))
+		},
+		script:       map[int]error{8: errJournalDown},
+		cancelAfter:  pause / 2,
+		cancelCause:  errStop,
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantFailed:   []string{"b"},
+		wantErrText:  map[string]string{"b": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"b": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantNotErrs:  []error{ErrGraceEnded, errStop},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoneOf("a"),
+		),
 	}
 }
 

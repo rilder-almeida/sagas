@@ -139,11 +139,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 			return
 		}
 
-		refused := settled[S]{
-			step: i, out: outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal}, late: graceEnded(grace),
-			graced: true,
-		}
-		r.lost(grace, b, i, r.lateResult(&refused))
+		r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal})
 
 		return
 	}

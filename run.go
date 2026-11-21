@@ -87,7 +87,11 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 			return err
 		}
 
-		err = fmt.Errorf("%w: %w", ErrJournal, err)
+		failed := settled[S]{
+			out:  outcome[S]{kind: outcomeFailure, err: fmt.Errorf("%w: %w", ErrJournal, err)},
+			late: graceEnded(ctx), graced: true,
+		}
+		err = r.lateResult(&failed).err
 		r.journalErrs = append(r.journalErrs, err)
 		r.stop(errJournalStopped)
 
@@ -166,12 +170,12 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 		r.backward(grace)
 	}
 
+	status := r.status(end)
+	sealed := status != "" && r.record(grace, &Event{Kind: EventSagaFinished, Status: status})
+
 	if r.graceHit && r.interrupted == nil {
 		r.interrupted = context.Cause(ctx)
 	}
-
-	status := r.status(end)
-	sealed := status != "" && r.record(grace, &Event{Kind: EventSagaFinished, Status: status})
 
 	causes := r.causes()
 	if writeErr := r.store.writeBack(st); writeErr != nil {
