@@ -1154,7 +1154,8 @@ func pivotOutcomeAtGraceEndRow() runRow {
 		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrCompensated},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
-		wantPending: []string{"p"},
+		wantPending: []string{"p", "z"},
+		wantRunOnly: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p")),
 		wantZones:   pivotZones("z"),
 	}
@@ -1313,7 +1314,8 @@ func pivotOutcomeAppendRow() runRow {
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantNotErrs: []error{ErrCompensated},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
-		wantPending: []string{"p"},
+		wantPending: []string{"p", "z"},
+		wantRunOnly: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), closed),
 		wantZones:   pivotZones("z"),
 	}

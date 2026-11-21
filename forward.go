@@ -32,11 +32,11 @@ const (
 )
 
 type stepRun struct {
-	status      runStatus
-	started     bool
-	uncommitted bool
-	attempts    int
-	err         *Error
+	status   runStatus
+	started  bool
+	applied  bool
+	attempts int
+	err      *Error
 }
 
 type report interface {
@@ -336,7 +336,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	if err != nil {
 		kind := outcomeFailure
 		if i == r.saga.pivot {
-			kind, r.runs[i].uncommitted = outcomeUnknown, true
+			kind, r.runs[i].applied = outcomeUnknown, true
 		}
 
 		r.fail(grace, i, outcome[S]{kind: kind, attempts: f.out.attempts, err: err, label: res.label})
@@ -348,7 +348,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 
 	done := Event{Kind: EventStepSucceeded, Step: name, Attempt: f.out.attempts, Changed: res.changed}
 	if !r.record(grace, &done) {
-		r.runs[i].status = runUnknown
+		r.runs[i].status, r.runs[i].applied = runUnknown, i == r.saga.pivot
 	}
 }
 

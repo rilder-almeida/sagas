@@ -331,7 +331,8 @@ func pivotLateSuccessRow() runRow {
 		wantErrs:    []error{ErrJournal, ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrCompensated},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
-		wantPending: []string{"p"},
+		wantPending: []string{"p", "z"},
+		wantRunOnly: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p")),
 		wantZones: []StepZone{
 			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
@@ -621,9 +622,10 @@ func pivotLateFailureRow() runRow {
 
 func pivotPanicRow() runRow {
 	return runRow{
-		name: "[Fail] When: the pivot panics ; Should: stop retries and end ErrIncomplete without compensating",
+		name: "[Fail] When: the pivot panics ; " +
+			"Should: stop retries, end ErrIncomplete without compensating and leave the forward-only step out of Pending",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.undoable("a"), paying("p", panics))
+			return Sequence(rec.undoable("a"), paying("p", panics), rec.step("z"))
 		},
 		wantStatus:   StatusIncomplete,
 		wantKind:     ErrIncomplete,
@@ -633,10 +635,10 @@ func pivotPanicRow() runRow {
 		wantAttempts: map[string]int{"p": 1},
 		wantText:     []string{panicBoom},
 		wantNotErrs:  []error{ErrCompensated},
-		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
 		wantPending:  []string{"p"},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), closed),
-		wantZones:    []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones:    pivotZones("z"),
 	}
 }
 
