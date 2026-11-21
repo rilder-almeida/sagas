@@ -1145,6 +1145,65 @@ func runRows() []runRow {
 		completedMixedFinishAtGraceEndRow(),
 		finishedBeforeGraceEndRow(),
 		skippedAtGraceEndRow(),
+		lateForwardOnlyVerdictRow(),
+		lateCompensableVerdictRow(),
+	}
+}
+
+func (r *recorder) lateYes(name string) func(*tripState) bool {
+	return func(*tripState) bool {
+		time.Sleep(pause)
+		r.add("if:" + name)
+
+		return true
+	}
+}
+
+func lateForwardOnlyVerdictRow() runRow {
+	return runRow{
+		name: "[Fail] When: a forward-only Enabled method says yes after a sibling failed ; " +
+			"Should: not start the step and end ErrIncomplete",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.pivot(), Parallel(once("y", alwaysFails), rec.stepIf("z", rec.lateYes("z"))))
+		},
+		wantStatus:   StatusIncomplete,
+		wantKind:     ErrIncomplete,
+		wantKinds:    map[string]*KindError{"y": ErrFailed},
+		wantFailed:   []string{"y"},
+		wantErrText:  map[string]string{"y": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"y": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{context.Canceled},
+		wantSteps:    map[string]stepStatus{"p": stepSucceeded, "y": stepFailed, "z": stepNotStarted},
+		wantPending:  []string{"y", "z"},
+		wantOrder:    [][2]string{{"p", "if:z"}},
+		wantTrail:    seq(opened, startOf("p"), doneOf("p"), startOf("y"), failedOf("y"), closed),
+		wantZones: []StepZone{
+			{Name: "p", Zone: ZonePivot}, {Name: "y", Zone: ZoneForwardOnly}, {Name: "z", Zone: ZoneForwardOnly},
+		},
+	}
+}
+
+func lateCompensableVerdictRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensable Enabled method says yes after a sibling failed ; " +
+			"Should: not start the step and not read the stop as a caller cancel",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(once("a", alwaysFails), rec.stepIf("b", rec.lateYes("b"))), rec.pivot())
+		},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"a": ErrFailed},
+		wantFailed:   []string{"a"},
+		wantErrText:  map[string]string{"a": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"a": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{context.Canceled},
+		wantSteps:    map[string]stepStatus{"a": stepFailed, "b": stepNotStarted, "p": stepNotStarted},
+		wantTrail:    seq(opened, startOf("a"), failedOf("a"), closed),
+		wantZones: []StepZone{
+			{Name: "a", Zone: ZoneCompensable}, {Name: "b", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot},
+		},
 	}
 }
 
