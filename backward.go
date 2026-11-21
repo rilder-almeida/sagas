@@ -15,9 +15,15 @@ const (
 	compHalted
 )
 
+type undone[S any] struct {
+	settled[S]
+
+	late bool
+}
+
 type rollback[S any] struct {
 	wg      sync.WaitGroup
-	results chan settled[S]
+	results chan undone[S]
 	done    []bool
 	begun   []bool
 	tainted []bool
@@ -49,7 +55,7 @@ func decide(halted, blockedBelow bool) compDecision {
 func (r *runner[S]) backward(grace context.Context) {
 	n := len(r.saga.steps)
 	b := &rollback[S]{
-		results: make(chan settled[S], n), done: make([]bool, n), begun: make([]bool, n), tainted: make([]bool, n),
+		results: make(chan undone[S], n), done: make([]bool, n), begun: make([]bool, n), tainted: make([]bool, n),
 	}
 
 	defer b.wg.Wait()
@@ -129,7 +135,12 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 	step := &r.saga.steps[i]
 
 	if err := r.persist(grace, &Event{Kind: EventCompensationStarted, Step: step.name}); err != nil {
-		r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal})
+		out := outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal}
+		if graceEnded(grace) {
+			out = withGraceEnd(out)
+		}
+
+		r.lost(grace, b, i, out)
 
 		return
 	}
@@ -137,14 +148,18 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 	j := job[S]{step: i, base: r.store.snapshot()}
 	b.running++
 
-	b.wg.Go(func() { r.act(grace, j, step.compensation, func(done settled[S]) { b.results <- done }) })
+	b.wg.Go(func() {
+		r.act(grace, j, step.compensation, func(done settled[S]) {
+			b.results <- undone[S]{settled: done, late: graceEnded(grace)}
+		})
+	})
 }
 
-func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]) {
+func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *undone[S]) {
 	name := r.saga.steps[f.step].name
 	out := f.out
 
-	if out.kind == outcomeSuccess && graceEnded(grace) {
+	if out.kind == outcomeSuccess && f.late {
 		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: ErrGraceEnded, label: ErrGraceEnded}
 	}
 
@@ -163,7 +178,22 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: err, label: res.label}
 	}
 
+	if f.late {
+		out = withGraceEnd(out)
+	}
+
 	r.lost(grace, b, f.step, out)
+}
+
+func withGraceEnd[S any](out outcome[S]) outcome[S] {
+	own := errors.Join(append([]error{out.err, out.cause}, out.previous...)...)
+	if out.label == ErrGraceEnded || errors.Is(own, ErrGraceEnded) {
+		return out
+	}
+
+	out.err = errors.Join(out.err, ErrGraceEnded)
+
+	return out
 }
 
 func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outcome[S]) {
@@ -171,10 +201,6 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outco
 	failure := &Error{
 		Kind: kindOf(out.kind, out.label), Step: name, Compensation: true, Attempts: out.attempts,
 		Err: out.err, Cause: out.cause, Previous: out.previous,
-	}
-
-	if graceEnded(grace) && !errors.Is(failure, ErrGraceEnded) {
-		failure.Err = errors.Join(failure.Err, ErrGraceEnded)
 	}
 
 	b.done[i] = true

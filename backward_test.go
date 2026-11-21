@@ -17,6 +17,7 @@ const (
 	undoB       = "undo:b"
 	undoC       = "undo:c"
 	cReturned   = "c returned"
+	undoneHotel = "undo-b"
 	canceledTxt = "context canceled"
 )
 
@@ -100,6 +101,9 @@ func backwardRows() []runRow {
 		graceWaitingRow(),
 		graceRunningRow(),
 		graceIntentRow(),
+		graceLateConflictRow(),
+		graceReadLateSuccessRow(),
+		graceReadLateFailureRow(),
 		callerDuringPredicateRow(),
 		blockChainRow(),
 		unknownThenUndoFailsRow(),
@@ -551,7 +555,7 @@ func undoConflictRow() runRow {
 			}
 
 			return Sequence(Parallel(
-				undoOnce("b", okAction, rec.book(undoB, "undo-b")), undoOnce("d", okAction, late),
+				undoOnce("b", okAction, rec.book(undoB, undoneHotel)), undoOnce("d", okAction, late),
 			), once("c", alwaysFails))
 		},
 		wantStatus: StatusCompensationFailed,
@@ -572,7 +576,7 @@ func undoConflictRow() runRow {
 			together(compStartOf("b"), compStartOf("d"), undoneOf("b"), undoFailedOf("d")),
 			seq(closed),
 		),
-		wantState: tripState{Hotel: "undo-b"},
+		wantState: tripState{Hotel: undoneHotel},
 	}
 }
 
@@ -632,23 +636,144 @@ func graceRunningRow() runRow {
 		steps: func(*recorder) Flow {
 			return Sequence(undoOnce("b", okAction, blockedOnCtx), once("c", alwaysFails))
 		},
+		opts:          []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:   pause,
+		cancelCause:   errStop,
+		wantStatus:    StatusCompensationFailed,
+		wantKind:      ErrCompensationFailed,
+		wantKinds:     map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
+		wantFailed:    []string{"c", comp("b")},
+		wantErrText:   map[string]string{comp("b"): canceledTxt, "c": errAlwaysFails.Error()},
+		wantAttempts:  map[string]int{comp("b"): 1, "c": 1},
+		wantCauseIs:   map[string]error{comp("b"): ErrGraceEnded},
+		wantErrs:      []error{ErrGraceEnded},
+		wantTextCount: map[string]int{ErrGraceEnded.Error(): 1},
+		wantSteps:     map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:   []string{"b"},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"),
+			closed,
+		),
+	}
+}
+
+func graceLateConflictRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation that would conflict returns after the grace period ; " +
+			"Should: fail it with ErrGraceEnded, not ErrConflict",
+		steps: func(rec *recorder) Flow {
+			late := func(ctx context.Context, s *tripState) error {
+				<-ctx.Done()
+
+				s.Hotel = "undo-d"
+
+				return nil
+			}
+
+			return Sequence(Parallel(
+				undoOnce("b", okAction, rec.book(undoB, undoneHotel)), undoOnce("d", okAction, late),
+			), once("c", alwaysFails))
+		},
 		opts:         []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
 		wantStatus:   StatusCompensationFailed,
 		wantKind:     ErrCompensationFailed,
-		wantKinds:    map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
-		wantFailed:   []string{"c", comp("b")},
-		wantErrText:  map[string]string{comp("b"): canceledTxt, "c": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
-		wantCauseIs:  map[string]error{comp("b"): ErrGraceEnded},
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrGraceEnded},
+		wantFailed:   []string{"c", comp("d")},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): ErrGraceEnded.Error()},
+		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
 		wantErrs:     []error{ErrGraceEnded},
-		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
-		wantPending:  []string{"b"},
-		wantTrail: seq(
-			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"),
-			closed,
+		wantNotErrs:  []error{ErrConflict},
+		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed},
+		wantPending:  []string{"d"},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d"), undoneOf("b")),
+			seq(undoFailedOf("d"), closed),
 		),
+		wantState: tripState{Hotel: undoneHotel},
+	}
+}
+
+func slowUndo(rec *recorder, err error) func(context.Context, *tripState) error {
+	return func(_ context.Context, s *tripState) error {
+		time.Sleep(pause * 3 / 2)
+		rec.add(undoB)
+
+		if err != nil {
+			return err
+		}
+
+		s.Hotel = undoneHotel
+
+		return nil
+	}
+}
+
+func readLateTrail(bOutcome string) [][]string {
+	return slices.Concat(
+		seq(opened),
+		together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+		seq(startOf("c"), failedOf("c")),
+		together(compStartOf("b"), compStartOf("d")),
+		seq(undoneOf("d"), bOutcome, closed),
+	)
+}
+
+func graceReadLateSuccessRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation succeeds before the grace end and is read after it ; " +
+			"Should: commit it as compensated",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				undoOnce("b", okAction, slowUndo(rec, nil)), undoOnce("d", okAction, rec.do("undo:d")),
+			), once("c", alwaysFails))
+		},
+		opts:         []Option{WithRecoveryTimeout(pause)},
+		script:       map[int]error{10: errAwaitThenStore},
+		cancelAfter:  pause,
+		cancelCause:  errStop,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{ErrGraceEnded},
+		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensated},
+		wantTrail:    readLateTrail(undoneOf("b")),
+		wantState:    tripState{Hotel: undoneHotel},
+	}
+}
+
+func graceReadLateFailureRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation fails before the grace end and is read after it ; " +
+			"Should: not join ErrGraceEnded to its error",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				undoOnce("b", okAction, slowUndo(rec, errAlwaysFails)), undoOnce("d", okAction, rec.do("undo:d")),
+			), once("c", alwaysFails))
+		},
+		opts:         []Option{WithRecoveryTimeout(pause)},
+		script:       map[int]error{10: errAwaitThenStore},
+		cancelAfter:  pause,
+		cancelCause:  errStop,
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("b"): ErrFailed},
+		wantFailed:   []string{"c", comp("b")},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("b"): errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1, comp("b"): 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{ErrGraceEnded},
+		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated},
+		wantPending:  []string{"b"},
+		wantTrail:    readLateTrail(undoFailedOf("b")),
 	}
 }
 
@@ -775,7 +900,7 @@ func graceLateSuccessRow() runRow {
 			late := func(_ context.Context, s *tripState) error {
 				time.Sleep(3 * pause)
 
-				s.Hotel = "undo-b"
+				s.Hotel = undoneHotel
 
 				return nil
 			}

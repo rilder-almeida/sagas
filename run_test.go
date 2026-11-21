@@ -23,7 +23,10 @@ type floatState struct {
 
 type graceKey struct{}
 
-var errAwaitDone = errors.New("sagas: test: wait for the context to end")
+var (
+	errAwaitDone      = errors.New("sagas: test: wait for the context to end")
+	errAwaitThenStore = errors.New("sagas: test: wait for the context to end, then store the event")
+)
 
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
@@ -58,6 +61,12 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 			<-ctx.Done()
 
 			return ctx.Err()
+		}
+
+		if errors.Is(err, errAwaitThenStore) {
+			<-ctx.Done()
+
+			return j.MemoryJournal.Append(ctx, e)
 		}
 
 		return err
