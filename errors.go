@@ -14,8 +14,12 @@ type KindError struct {
 	message string
 }
 
-// Error returns the message of the kind.
+// Error returns the message of the kind, or an empty string for a nil kind.
 func (k *KindError) Error() string {
+	if k == nil {
+		return ""
+	}
+
 	return k.message
 }
 
@@ -113,8 +117,8 @@ func (e *Error) LogValue() slog.Value {
 }
 
 // RunError reports a run that began and did not complete cleanly. Steps holds every failed step in failure order, and
-// Pending lists the steps that still need action. errors.Is also walks the step errors, the journal errors and the
-// state write-back error; read the kind of the run itself with errors.As and its Kind field.
+// Pending lists the steps that still need action. errors.Is also walks the step errors, the journal rejection, the
+// journal errors and the state write-back error; read the kind of the run itself with errors.As and its Kind field.
 type RunError struct {
 	Kind    *KindError
 	Steps   []*Error

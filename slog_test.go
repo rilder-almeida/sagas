@@ -48,6 +48,8 @@ func assertErrorAttr(tb testing.TB, rec map[string]any, want string) {
 const (
 	levelInfo = "INFO"
 	levelWarn = "WARN"
+
+	callFailedText = "call failed"
 )
 
 type slogAttempt struct {
@@ -103,7 +105,7 @@ func Test_Slog_Wrap(t *testing.T) {
 			info:      inCall(PhaseExecute),
 			wantPhase: string(PhaseExecute),
 			attempts: []slogAttempt{
-				{err: Permanent(errCall), wantLevel: levelWarn, wantAttempt: 1, wantText: "call failed"},
+				{err: Permanent(errCall), wantLevel: levelWarn, wantAttempt: 1, wantText: callFailedText},
 			},
 			wantErr: errCall,
 		},
@@ -119,7 +121,7 @@ func Test_Slog_Wrap(t *testing.T) {
 			wantPhase: string(PhaseCompensate),
 			policy:    RetryPolicy{Attempts: 2, Initial: time.Millisecond, NoJitter: true},
 			attempts: []slogAttempt{
-				{err: errCall, wantLevel: levelWarn, wantAttempt: 1, wantText: "call failed"},
+				{err: errCall, wantLevel: levelWarn, wantAttempt: 1, wantText: callFailedText},
 				{wantLevel: levelInfo, wantAttempt: 2},
 			},
 		},
@@ -145,7 +147,7 @@ func Test_Slog_Wrap(t *testing.T) {
 			direct:    true,
 			info:      CallInfo{},
 			wantPhase: "",
-			attempts:  []slogAttempt{{err: errCall, wantLevel: levelWarn, wantAttempt: 0, wantText: "call failed"}},
+			attempts:  []slogAttempt{{err: errCall, wantLevel: levelWarn, wantAttempt: 0, wantText: callFailedText}},
 			wantErr:   errCall,
 		},
 	}
@@ -189,6 +191,49 @@ func Test_Slog_Wrap(t *testing.T) {
 					assertErrorAttr(t, rec, tt.attempts[i].wantText)
 				}
 			})
+		})
+	}
+}
+
+func Test_Slog_Wrap_defaultLogger(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		info      CallInfo
+		callErr   error
+		wantLevel string
+		wantText  string
+	}{
+		{
+			name:      "[Fail] When: Logger is nil and the call fails ; Should: log one warn record to slog.Default",
+			info:      CallInfo{Saga: "saga-1", Step: "step-1"},
+			callErr:   errCall,
+			wantLevel: levelWarn,
+			wantText:  callFailedText,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var out bytes.Buffer
+
+			previous := slog.Default()
+
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			err := Slog{}.Wrap(t.Context(), tt.info, func(context.Context) error { return tt.callErr })
+			require.ErrorIs(t, err, tt.callErr)
+
+			records := decodeRecords(t, &out)
+			require.Len(t, records, 1)
+			assert.Equal(t, tt.wantLevel, records[0]["level"])
+			assert.Equal(t, tt.info.Saga, records[0]["saga"])
+			assert.Equal(t, tt.info.Step, records[0]["step"])
+			assertErrorAttr(t, records[0], tt.wantText)
 		})
 	}
 }

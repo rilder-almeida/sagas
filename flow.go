@@ -66,10 +66,21 @@ func (r *resolution) visit(f Flow, at string) ends {
 		return r.step(f, at)
 	}
 
+	return r.group(g)
+}
+
+func (r *resolution) group(g *Group) ends {
 	var out ends
 
 	for i, item := range g.items {
-		e := r.visit(item, fmt.Sprintf("%s item at index %d", g.kind, i))
+		at := fmt.Sprintf("%s item at index %d", g.kind, i)
+		if sub, isGroup := item.(*Group); isGroup && sub != nil && len(sub.items) == 0 {
+			r.errs = append(r.errs, fmt.Errorf("%w: %s is an empty %s", ErrInvalidStep, at, sub.kind))
+
+			continue
+		}
+
+		e := r.visit(item, at)
 
 		switch {
 		case g.kind == "Parallel":

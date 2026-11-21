@@ -61,11 +61,6 @@ func Test_Sequence(t *testing.T) {
 				reportOf("a"), reportOf("b", "a"), reportOf("c", "b"), reportOf("d", "c"),
 			},
 		},
-		{
-			name:        "[Success] When: empty groups sit in the sequence ; Should: skip them",
-			flow:        Sequence(Parallel(), a, Sequence(), b),
-			wantReports: []StepReport{reportOf("a"), reportOf("b", "a")},
-		},
 	}
 
 	for _, tt := range tests {
@@ -174,6 +169,24 @@ func Test_resolve(t *testing.T) {
 			wantSteps:   []Flow{a},
 			wantParents: [][]int{{}},
 			wantErr:     "Sequence item at index 1 is nil",
+		},
+		{
+			name:        "[Fail] When: an empty Sequence sits in a Sequence ; Should: report its position",
+			flow:        Sequence(a, Sequence(), b),
+			wantSteps:   []Flow{a, b},
+			wantParents: [][]int{{}, {0}},
+			wantErr:     "Sequence item at index 1 is an empty Sequence",
+		},
+		{
+			name:        "[Fail] When: an empty Parallel sits in a Parallel ; Should: report its position",
+			flow:        Parallel(Parallel(), a),
+			wantSteps:   []Flow{a},
+			wantParents: [][]int{{}},
+			wantErr:     "Parallel item at index 0 is an empty Parallel",
+		},
+		{
+			name: "[Success] When: the flow is an empty Sequence ; Should: find no step and no error",
+			flow: Sequence(),
 		},
 		{
 			name: "[Success] When: the flow is a nil Group ; Should: find no step",

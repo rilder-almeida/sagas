@@ -1060,6 +1060,11 @@ func Test_RunError_Error_noCause(t *testing.T) {
 			err:  RunError{Kind: ErrIncomplete},
 			want: "sagas: incomplete",
 		},
+		{
+			name: "[Success] When: the error is the zero value ; Should: return an empty message without a panic",
+			err:  RunError{},
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {

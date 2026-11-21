@@ -150,7 +150,7 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 	}
 
 	for _, mw := range d.middleware {
-		if mw == nil {
+		if isNilValue(mw) {
 			rules = append(rules, "nil Middleware in WithMiddleware")
 
 			break

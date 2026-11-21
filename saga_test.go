@@ -141,7 +141,7 @@ func Test_New(t *testing.T) {
 			name:         "[Fail] When: the flow is nil ; Should: return the Inspect error for a saga without steps",
 			saga:         tripName,
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"saga has no steps"},
+			wantContains: []string{noStepsText},
 		},
 		{
 			name: "[Fail] When: a step name breaks the name rule ; Should: return the Inspect error naming the step",
@@ -479,7 +479,7 @@ func Test_WithMiddleware(t *testing.T) {
 	tests := []struct {
 		name           string
 		names          []string
-		nilEntry       bool
+		extra          []Middleware
 		calls          int
 		changeAfterNew bool
 		pivot          bool
@@ -501,7 +501,15 @@ func Test_WithMiddleware(t *testing.T) {
 		},
 		{
 			name:  "[Fail] When: an entry is nil ; Should: reject it",
-			calls: 1, nilEntry: true, wantErr: ErrInvalidStep,
+			calls: 1, extra: []Middleware{nil}, wantErr: ErrInvalidStep,
+		},
+		{
+			name:  "[Fail] When: an entry is a nil MiddlewareFunc ; Should: reject it",
+			calls: 1, extra: []Middleware{MiddlewareFunc(nil)}, wantErr: ErrInvalidStep,
+		},
+		{
+			name:  "[Fail] When: an entry is a nil pointer middleware ; Should: reject it",
+			calls: 1, extra: []Middleware{(*tagMiddleware)(nil)}, wantErr: ErrInvalidStep,
 		},
 		{
 			name:  "[Fail] When: WithMiddleware is called twice ; Should: reject it",
@@ -515,10 +523,7 @@ func Test_WithMiddleware(t *testing.T) {
 
 			rec := &recorder{}
 
-			mws := middlewaresOf(rec, tt.names)
-			if tt.nilEntry {
-				mws = append(mws, nil)
-			}
+			mws := append(middlewaresOf(rec, tt.names), tt.extra...)
 
 			var second Flow = act("b", okAction)
 			if tt.pivot {

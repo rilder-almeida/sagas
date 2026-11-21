@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// Slog is middleware that logs each attempt to Logger: saga, execution, step, phase, attempt, duration,
-// and the error when the attempt fails, at info on success and warn on error. It never logs the state.
+// Slog is middleware that logs each attempt to Logger, or to slog.Default() when Logger is nil: saga, execution,
+// step, phase, attempt, duration, and the error when the attempt fails, at info on success and warn on error. It
+// never logs the state.
 type Slog struct {
 	Logger *slog.Logger
 }
@@ -33,7 +34,12 @@ func (s Slog) Wrap(ctx context.Context, info CallInfo, call Call) error {
 		attrs = append(attrs, slog.Any("error", err))
 	}
 
-	s.Logger.LogAttrs(ctx, level, "sagas: attempt", attrs...)
+	logger := s.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	logger.LogAttrs(ctx, level, "sagas: attempt", attrs...)
 
 	return err
 }

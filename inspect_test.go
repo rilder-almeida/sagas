@@ -417,13 +417,34 @@ func inspectStepRows() []inspectRow {
 			name:         "[Fail] When: the flow is nil ; Should: report a saga without steps",
 			inspect:      trip,
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"saga has no steps"},
+			wantContains: []string{noStepsText},
 		},
 		{
-			name:    "[Fail] When: the flow holds no step ; Should: report a saga without steps",
+			name:    "[Fail] When: the flow holds only an empty group ; Should: name the group and report no steps",
 			inspect: trip, flow: Sequence(Parallel()),
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"saga has no steps"},
+			wantContains: []string{"Sequence item at index 0 is an empty Parallel", noStepsText},
+		},
+		{
+			name:    "[Fail] When: the flow is an empty Sequence ; Should: report a saga without steps only",
+			inspect: trip, flow: Sequence(),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{noStepsText},
+			wantAbsent:   []string{"is an empty"},
+		},
+		{
+			name:    "[Fail] When: a Sequence item is an empty Parallel ; Should: reject it naming its position",
+			inspect: trip, flow: Sequence(act("a", okAction), Parallel()),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"Sequence item at index 1 is an empty Parallel"},
+			wantAbsent:   []string{noStepsText},
+		},
+		{
+			name:    "[Fail] When: a Parallel item is an empty Sequence ; Should: reject it naming its position",
+			inspect: trip, flow: Parallel(Sequence(), act("a", okAction)),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"Parallel item at index 0 is an empty Sequence"},
+			wantAbsent:   []string{noStepsText},
 		},
 		{
 			name:    "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
@@ -654,6 +675,8 @@ func inspectGraphRows() []inspectRow {
 		},
 	}
 }
+
+const noStepsText = "saga has no steps"
 
 func Test_Inspect(t *testing.T) {
 	t.Parallel()

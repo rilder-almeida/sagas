@@ -1601,6 +1601,7 @@ func Test_Chain(t *testing.T) {
 		name      string
 		mws       func(r *recorder) []Middleware
 		overwrite bool
+		wantPanic string
 		wantTrace []string
 		wantErr   error
 	}{
@@ -1639,6 +1640,18 @@ func Test_Chain(t *testing.T) {
 			wantTrace: []string{"a>", "<a"},
 			wantErr:   errBoom,
 		},
+		{
+			name:      "[Fail] When: an item is nil ; Should: panic naming its position",
+			mws:       func(r *recorder) []Middleware { return []Middleware{tagMiddleware{r, "a"}, nil} },
+			wantPanic: "sagas: Chain item 1 is nil",
+		},
+		{
+			name: "[Fail] When: an item is a nil value with a type ; Should: panic naming its position",
+			mws: func(r *recorder) []Middleware {
+				return []Middleware{(*tagMiddleware)(nil), tagMiddleware{r, "b"}}
+			},
+			wantPanic: "sagas: Chain item 0 is nil",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1647,17 +1660,29 @@ func Test_Chain(t *testing.T) {
 
 			rec := &recorder{}
 			mws := tt.mws(rec)
-			chain := Chain(mws...)
 
-			if tt.overwrite {
-				mws[0] = tagged(rec, "changed")
+			var (
+				chain MiddlewareFunc
+				err   error
+			)
+
+			build := func() { chain = Chain(mws...) }
+
+			if tt.wantPanic != "" {
+				require.PanicsWithValue(t, tt.wantPanic, build)
+			} else {
+				require.NotPanics(t, build)
+
+				if tt.overwrite {
+					mws[0] = tagged(rec, "changed")
+				}
+
+				err = chain.Wrap(t.Context(), CallInfo{}, func(context.Context) error {
+					rec.add(runMark)
+
+					return nil
+				})
 			}
-
-			err := chain.Wrap(t.Context(), CallInfo{}, func(context.Context) error {
-				rec.add(runMark)
-
-				return nil
-			})
 
 			assert.Equal(t, tt.wantTrace, rec.snapshot())
 			assert.Equal(t, tt.wantErr, err)
