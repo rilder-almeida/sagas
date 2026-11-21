@@ -142,7 +142,6 @@ type executionRow struct {
 	id           string
 	script       map[int]error
 	concurrent   bool
-	recovery     time.Duration
 	cancelAfter  time.Duration
 	wantErrs     [][]error
 	wantNotErrs  []error
@@ -194,7 +193,6 @@ func Test_Saga_Run_executionID(t *testing.T) {
 				"Should: return the journal error as is, without ErrGraceEnded and no RunError",
 			id:          orderID,
 			script:      map[int]error{1: errAwaitDone},
-			recovery:    pause,
 			cancelAfter: pause,
 			wantErrs:    [][]error{{ErrJournal, context.Canceled}},
 			wantNotErrs: []error{ErrGraceEnded, errStop},
@@ -221,7 +219,7 @@ func Test_Saga_Run_executionID(t *testing.T) {
 				journal := newScriptJournal(tt.script)
 				step := &orderStep{executes: &atomic.Int64{}}
 
-				s, err := New[orderState]("order", step, WithJournal(journal), WithRecoveryTimeout(tt.recovery))
+				s, err := New[orderState]("order", step, WithJournal(journal))
 				require.NoError(t, err)
 
 				errs := runOrders(t.Context(), s, &tt)
