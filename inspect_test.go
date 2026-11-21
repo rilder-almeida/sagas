@@ -121,6 +121,47 @@ type sharedB struct {
 
 type nestedReserve struct{ Reserve }
 
+type ptrReserve struct{ *Reserve }
+
+type pairWraps struct {
+	wrapper
+	otherWrapper
+}
+
+type nestedWraps struct {
+	Step
+	doer
+	pairWraps
+}
+
+type pairDoers struct {
+	doer
+	otherDoer
+}
+
+type nestedDoers struct {
+	Step
+	pairDoers
+}
+
+type deepWrap struct{ wrapper }
+
+type mixedDepth struct {
+	Step
+	doer
+	wrapper
+	otherWrapper
+	deepWrap
+}
+
+type cycleA struct {
+	Step
+	doer
+	*cycleB
+}
+
+type cycleB struct{ *cycleA }
+
 type ownWrap struct {
 	Step
 	doer
@@ -232,6 +273,12 @@ func inspectSuccessRows() []inspectRow {
 			},
 		},
 		{
+			name:        "[Success] When: two types embed each other by pointer ; Should: end the walk and report",
+			inspect:     trip,
+			flow:        &cycleA{do: okAction, cycleB: &cycleB{}},
+			wantReports: []StepReport{{Name: "cycle-a", Execute: true}},
+		},
+		{
 			name:        "[Success] When: the type embeds Step through a struct by value ; Should: find its methods",
 			inspect:     trip,
 			flow:        &nestedReserve{},
@@ -260,8 +307,6 @@ func inspectStepRows() []inspectRow {
 		typedNil *Reserve
 		nilGroup *Group
 	)
-
-	shared := &Step{Name: "shared"}
 
 	return []inspectRow{
 		{
@@ -322,12 +367,6 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{stepA, negAttempts},
 		},
 		{
-			name:    "[Fail] When: the type embeds two fields with Wrap and declares none ; Should: name the fields",
-			inspect: trip, flow: &twoWraps{do: okAction, wrap: okMiddleware(), otherWrapper: otherWrapper{}},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "two-wraps"`, "declares no Wrap and embeds one in wrapper and otherWrapper"},
-		},
-		{
 			name:    "[Fail] When: an explicit name breaks the name rule ; Should: name the step",
 			inspect: trip, flow: act("a b", okAction),
 			wantErrs:     []error{ErrInvalidStep},
@@ -362,12 +401,116 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{"Sequence item at index 1 is nil"},
 		},
 		{
+			name:         "[Fail] When: a Sequence item is a nil Group ; Should: reject it without a panic",
+			inspect:      trip,
+			flow:         Sequence(act("a", okAction), nilGroup),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"Sequence item at index 1 is nil"},
+		},
+		{
+			name:    "[Fail] When: a Parallel item is a typed nil pointer ; Should: reject it without a panic",
+			inspect: trip, flow: Parallel(act("a", okAction), typedNil),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"Parallel item at index 1 is nil"},
+		},
+		{
+			name:         "[Fail] When: the flow is nil ; Should: report a saga without steps",
+			inspect:      trip,
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"saga has no steps"},
+		},
+		{
+			name:    "[Fail] When: the flow holds no step ; Should: report a saga without steps",
+			inspect: trip, flow: Sequence(Parallel()),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{"saga has no steps"},
+		},
+		{
+			name:    "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
+			inspect: Inspect[chanState], flow: &okStep[chanState]{},
+			wantErrs:     []error{ErrInvalidState},
+			wantNoErrs:   []error{ErrInvalidStep},
+			wantContains: []string{"chanState"},
+		},
+		{
+			name:    "[Fail] When: a step and the state type are both bad ; Should: join both errors",
+			inspect: Inspect[chanState], flow: &idleStep{},
+			wantErrs:     []error{ErrInvalidStep, ErrInvalidState},
+			wantContains: []string{neitherText, "chanState"},
+		},
+		{
+			name:         "[Fail] When: the state ExecutionID has another signature ; Should: return ErrInvalidState",
+			inspect:      Inspect[badIDState],
+			flow:         &okStep[badIDState]{},
+			wantErrs:     []error{ErrInvalidState},
+			wantNoErrs:   []error{ErrInvalidStep},
+			wantContains: []string{"badIDState", "method ExecutionID", "func() int", "want func() string"},
+		},
+	}
+}
+
+func inspectEmbedRows() []inspectRow {
+	trip := Inspect[tripState]
+	shared := &Step{Name: "shared"}
+
+	return []inspectRow{
+		{
+			name:    "[Fail] When: the type embeds two fields with Wrap and declares none ; Should: name the fields",
+			inspect: trip, flow: &twoWraps{do: okAction, wrap: okMiddleware(), otherWrapper: otherWrapper{}},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "two-wraps"`, "declares no Wrap and embeds one in wrapper and otherWrapper"},
+		},
+		{
 			name:     "[Fail] When: the type embeds a struct and an interface with Wrap ; Should: name both fields",
 			inspect:  trip,
 			flow:     &ifaceWrap{do: okAction, wrap: okMiddleware(), Middleware: okMiddleware()},
 			wantErrs: []error{ErrInvalidStep},
 			wantContains: []string{
 				`step "iface-wrap"`, "declares no Wrap and embeds one in wrapper and Middleware",
+			},
+		},
+		{
+			name:     "[Fail] When: a nested struct promotes two Wrap ; Should: name both field paths",
+			inspect:  trip,
+			flow:     &nestedWraps{do: okAction, wrap: okMiddleware(), otherWrapper: otherWrapper{}},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "nested-wraps"`,
+				"declares no Wrap and embeds one in pairWraps.wrapper and pairWraps.otherWrapper",
+			},
+		},
+		{
+			name:     "[Fail] When: a nested struct promotes two Execute ; Should: name both field paths only",
+			inspect:  trip,
+			flow:     &nestedDoers{do: okAction, otherDoer: otherDoer{}},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "nested-doers"`, "declares no Execute and embeds one in pairDoers.doer and pairDoers.otherDoer",
+			},
+			wantAbsent: []string{neitherText},
+		},
+		{
+			name:    "[Fail] When: two Wrap sit at depth one and one deeper ; Should: name only the depth one fields",
+			inspect: trip,
+			flow: &mixedDepth{
+				do:           okAction,
+				wrap:         okMiddleware(),
+				otherWrapper: otherWrapper{},
+				deepWrap:     deepWrap{},
+			},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "mixed-depth"`, "declares no Wrap and embeds one in wrapper and otherWrapper",
+			},
+			wantAbsent: []string{"deepWrap"},
+		},
+		{
+			name:     "[Fail] When: the type reaches Step through a pointer ; Should: reject it naming the type",
+			inspect:  trip,
+			flow:     Sequence(&ptrReserve{Reserve: &Reserve{}}),
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				"Sequence item at index 0 has type *sagas.ptrReserve, want a pointer to a struct that embeds Step",
 			},
 		},
 		{
@@ -417,52 +560,6 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{
 				"Parallel item at index 1 has type sagas.sharedA", "want a pointer to a struct that embeds Step",
 			},
-		},
-		{
-			name:         "[Fail] When: a Sequence item is a nil Group ; Should: reject it without a panic",
-			inspect:      trip,
-			flow:         Sequence(act("a", okAction), nilGroup),
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"Sequence item at index 1 is nil"},
-		},
-		{
-			name:    "[Fail] When: a Parallel item is a typed nil pointer ; Should: reject it without a panic",
-			inspect: trip, flow: Parallel(act("a", okAction), typedNil),
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"Parallel item at index 1 is nil"},
-		},
-		{
-			name:         "[Fail] When: the flow is nil ; Should: report a saga without steps",
-			inspect:      trip,
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"saga has no steps"},
-		},
-		{
-			name:    "[Fail] When: the flow holds no step ; Should: report a saga without steps",
-			inspect: trip, flow: Sequence(Parallel()),
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"saga has no steps"},
-		},
-		{
-			name:    "[Fail] When: the state type breaks the state rules ; Should: return ErrInvalidState",
-			inspect: Inspect[chanState], flow: &okStep[chanState]{},
-			wantErrs:     []error{ErrInvalidState},
-			wantNoErrs:   []error{ErrInvalidStep},
-			wantContains: []string{"chanState"},
-		},
-		{
-			name:    "[Fail] When: a step and the state type are both bad ; Should: join both errors",
-			inspect: Inspect[chanState], flow: &idleStep{},
-			wantErrs:     []error{ErrInvalidStep, ErrInvalidState},
-			wantContains: []string{neitherText, "chanState"},
-		},
-		{
-			name:         "[Fail] When: the state ExecutionID has another signature ; Should: return ErrInvalidState",
-			inspect:      Inspect[badIDState],
-			flow:         &okStep[badIDState]{},
-			wantErrs:     []error{ErrInvalidState},
-			wantNoErrs:   []error{ErrInvalidStep},
-			wantContains: []string{"badIDState", "method ExecutionID", "func() int", "want func() string"},
 		},
 	}
 }
@@ -561,7 +658,7 @@ func inspectGraphRows() []inspectRow {
 func Test_Inspect(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(inspectSuccessRows(), inspectStepRows(), inspectGraphRows()) {
+	for _, tt := range slices.Concat(inspectSuccessRows(), inspectStepRows(), inspectEmbedRows(), inspectGraphRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

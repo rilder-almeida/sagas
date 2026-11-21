@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -233,21 +234,106 @@ func ambiguousMethods(t reflect.Type) ambiguity {
 	return a
 }
 
-func promoters(t reflect.Type, name string) []string {
-	var fields []string
+type embedNode struct {
+	t         reflect.Type
+	path      string
+	ancestors []reflect.Type
+}
 
-	for f := range t.Fields() {
-		ft := f.Type
-		if ft.Kind() != reflect.Pointer && ft.Kind() != reflect.Interface {
-			ft = reflect.PointerTo(ft)
+func promoters(t reflect.Type, name string) []string {
+	level := []embedNode{{t: t, ancestors: []reflect.Type{t}}}
+
+	for len(level) > 0 {
+		providers, next := scanLevel(level, name)
+		if len(providers) > 0 {
+			return providers
 		}
 
-		if _, ok := ft.MethodByName(name); f.Anonymous && ok {
-			fields = append(fields, f.Name)
+		level = next
+	}
+
+	return nil
+}
+
+func scanLevel(level []embedNode, name string) ([]string, []embedNode) {
+	var (
+		providers []string
+		next      []embedNode
+	)
+
+	for _, n := range level {
+		for f := range n.t.Fields() {
+			if !f.Anonymous {
+				continue
+			}
+
+			path := strings.TrimPrefix(n.path+"."+f.Name, ".")
+
+			switch inner := structOf(f.Type); {
+			case provides(f.Type, name):
+				providers = append(providers, path)
+			case inner != nil && !slices.Contains(n.ancestors, inner):
+				next = append(
+					next,
+					embedNode{t: inner, path: path, ancestors: append(slices.Clone(n.ancestors), inner)},
+				)
+			default:
+			}
 		}
 	}
 
-	return fields
+	return providers, next
+}
+
+func provides(t reflect.Type, name string) bool {
+	if t.Kind() == reflect.Interface {
+		_, ok := t.MethodByName(name)
+
+		return ok
+	}
+
+	if _, ok := reflect.PointerTo(derefType(t)).MethodByName(name); !ok {
+		return false
+	}
+
+	inner := structOf(t)
+	if inner == nil {
+		return true
+	}
+
+	for f := range inner.Fields() {
+		if f.Anonymous && hasMethod(f.Type, name) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func hasMethod(t reflect.Type, name string) bool {
+	if t.Kind() != reflect.Interface {
+		t = reflect.PointerTo(derefType(t))
+	}
+
+	_, ok := t.MethodByName(name)
+
+	return ok
+}
+
+func derefType(t reflect.Type) reflect.Type {
+	if t.Kind() == reflect.Pointer {
+		return t.Elem()
+	}
+
+	return t
+}
+
+func structOf(t reflect.Type) reflect.Type {
+	if t = derefType(t); t.Kind() == reflect.Struct {
+		return t
+	}
+
+	return nil
 }
 
 func checkExecutionID(t reflect.Type) error {
