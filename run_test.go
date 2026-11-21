@@ -369,6 +369,7 @@ func Test_runner_append(t *testing.T) {
 			ctx := context.WithValue(t.Context(), graceKey{}, "grace")
 
 			require.Equal(t, tt.failAt == 0, len(tt.wantErrs) == 0, "failAt and wantErrs must agree")
+			require.True(t, tt.failAt >= 0 && tt.failAt <= tt.appends, "failAt must be within 0..appends")
 
 			for i := 1; i <= tt.appends; i++ {
 				changed := []string{"Hotel"}
