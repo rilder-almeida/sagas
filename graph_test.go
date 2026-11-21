@@ -83,38 +83,38 @@ func Test_indexSteps(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		flow         Flow
+		flows        []Flow
 		wantErrs     int
 		wantContains string
 		wantHint     bool
 	}{
 		{
-			name: "[Success] When: every name is unique ; Should: report nothing",
-			flow: Sequence(act("a", okAction), &Reserve{}, &Reserve{Name: "b"}),
+			name:  "[Success] When: every name is unique ; Should: report nothing",
+			flows: []Flow{act("a", okAction), &Reserve{}, &Reserve{Name: "b"}},
 		},
 		{
 			name:         "[Fail] When: a set name repeats ; Should: report each extra one",
-			flow:         Parallel(act("a", okAction), act("b", okAction), act("a", okAction), act("a", okAction)),
+			flows:        []Flow{act("a", okAction), act("b", okAction), act("a", okAction), act("a", okAction)},
 			wantErrs:     2,
 			wantContains: `step "a": declared more than once`,
 		},
 		{
 			name:         "[Fail] When: two steps of one type take the type name ; Should: say to set Name on each",
-			flow:         Parallel(&Reserve{}, &Reserve{}),
+			flows:        []Flow{&Reserve{}, &Reserve{}},
 			wantErrs:     1,
 			wantContains: "set Name on each step of type *sagas.Reserve",
 			wantHint:     true,
 		},
 		{
 			name:         "[Fail] When: two instances of one generic type take the type name ; Should: name both types",
-			flow:         Parallel(&Notify[int]{}, &Notify[string]{}),
+			flows:        []Flow{&Notify[int]{}, &Notify[string]{}},
 			wantErrs:     1,
 			wantContains: "set Name on each step of types *sagas.Notify[int] and *sagas.Notify[string]",
 			wantHint:     true,
 		},
 		{
 			name:         "[Fail] When: a set name equals the type name of another step ; Should: not blame the type",
-			flow:         Parallel(&Reserve{}, act(reserveName, okAction)),
+			flows:        []Flow{&Reserve{}, act(reserveName, okAction)},
 			wantErrs:     1,
 			wantContains: `step "reserve": declared more than once`,
 		},
@@ -124,10 +124,8 @@ func Test_indexSteps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := resolve(tt.flow)
-
-			named := make([]namedStep, 0, len(r.flows))
-			for _, f := range r.flows {
+			named := make([]namedStep, 0, len(tt.flows))
+			for _, f := range tt.flows {
 				named = append(named, nameStep(f))
 			}
 

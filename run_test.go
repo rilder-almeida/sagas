@@ -304,49 +304,54 @@ func Test_runner_append(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		script          map[int]error
-		appends         int
-		wantSeq         int
-		wantErrs        []error
-		wantNoErrs      []error
-		wantRejected    error
-		wantJournalErrs int
+		name       string
+		script     map[int]error
+		appends    int
+		failAt     int
+		wantStored int
+		wantErrs   []error
+		wantNoErrs []error
+		wantCauses []error
 	}{
 		{
-			name:    "[Success] When: the first event is appended ; Should: give it Seq 1 and the run's Writer",
-			appends: 1,
-			wantSeq: 1,
+			name:       "[Success] When: the first event is appended ; Should: give it Seq 1 and the run's Writer",
+			appends:    1,
+			wantStored: 1,
 		},
 		{
-			name:    "[Success] When: two events are appended ; Should: number them 1 and 2",
-			appends: 2,
-			wantSeq: 2,
+			name:       "[Success] When: two events are appended ; Should: number them 1 and 2",
+			appends:    2,
+			wantStored: 2,
 		},
 		{
-			name:            "[Fail] When: the journal returns a plain error ; Should: wrap ErrJournal and keep seq",
-			script:          map[int]error{1: errAlwaysFails},
-			appends:         1,
-			wantErrs:        []error{ErrJournal, errAlwaysFails},
-			wantNoErrs:      []error{ErrConcurrentWriter, ErrExecutionExists},
-			wantJournalErrs: 1,
+			name:       "[Fail] When: the journal returns a plain error ; Should: wrap ErrJournal and keep seq",
+			script:     map[int]error{1: errAlwaysFails},
+			appends:    2,
+			failAt:     1,
+			wantStored: 1,
+			wantErrs:   []error{ErrJournal, errAlwaysFails},
+			wantNoErrs: []error{ErrConcurrentWriter, ErrExecutionExists},
+			wantCauses: []error{ErrJournal},
 		},
 		{
-			name:         "[Fail] When: the journal rejects Seq 1 ; Should: store and return ErrExecutionExists as is",
-			script:       map[int]error{1: fmt.Errorf("%w: exec-1", ErrExecutionExists)},
-			appends:      1,
-			wantErrs:     []error{ErrExecutionExists},
-			wantNoErrs:   []error{ErrJournal},
-			wantRejected: ErrExecutionExists,
+			name:       "[Fail] When: the journal rejects Seq 1 ; Should: return ErrExecutionExists as is and keep seq",
+			script:     map[int]error{1: fmt.Errorf("%w: exec-1", ErrExecutionExists)},
+			appends:    2,
+			failAt:     1,
+			wantStored: 1,
+			wantErrs:   []error{ErrExecutionExists},
+			wantNoErrs: []error{ErrJournal},
+			wantCauses: []error{ErrExecutionExists},
 		},
 		{
-			name:         "[Fail] When: the journal rejects Seq 2 ; Should: store and return ErrConcurrentWriter as is",
-			script:       map[int]error{2: fmt.Errorf("%w: exec-1", ErrConcurrentWriter)},
-			appends:      2,
-			wantSeq:      1,
-			wantErrs:     []error{ErrConcurrentWriter},
-			wantNoErrs:   []error{ErrJournal},
-			wantRejected: ErrConcurrentWriter,
+			name:       "[Fail] When: the journal rejects Seq 2 ; Should: return ErrConcurrentWriter and keep seq",
+			script:     map[int]error{2: fmt.Errorf("%w: exec-1", ErrConcurrentWriter)},
+			appends:    3,
+			failAt:     2,
+			wantStored: 2,
+			wantErrs:   []error{ErrConcurrentWriter},
+			wantNoErrs: []error{ErrJournal},
+			wantCauses: []error{ErrConcurrentWriter},
 		},
 	}
 
@@ -363,32 +368,32 @@ func Test_runner_append(t *testing.T) {
 			}
 			ctx := context.WithValue(t.Context(), graceKey{}, "grace")
 
-			for i := range tt.appends {
+			for i := 1; i <= tt.appends; i++ {
 				changed := []string{"Hotel"}
 				err = r.append(ctx, &Event{Kind: EventStepSucceeded, Step: "a", Changed: changed})
 				changed[0] = "mutated"
 
-				if i < tt.appends-1 {
-					require.NoError(t, err)
+				if i == tt.failAt {
+					requireAppendErr(t, err, tt.wantErrs, tt.wantNoErrs)
+
+					continue
 				}
+
+				require.NoError(t, err, "append %d", i)
 			}
 
-			requireAppendErr(t, err, tt.wantErrs, tt.wantNoErrs)
-			assertAppended(t, j, tt.wantSeq, tt.appends)
+			assertAppended(t, j, tt.wantStored, tt.appends)
 
 			for _, got := range j.ctxs {
 				assert.Equal(t, ctx, got)
 			}
 
-			assert.Len(t, r.journalErrs, tt.wantJournalErrs)
+			causes := r.causes()
+			require.Len(t, causes, len(tt.wantCauses))
 
-			if tt.wantRejected == nil {
-				require.NoError(t, r.rejected)
-
-				return
+			for i, want := range tt.wantCauses {
+				require.ErrorIs(t, causes[i], want)
 			}
-
-			require.ErrorIs(t, r.rejected, tt.wantRejected)
 		})
 	}
 }
