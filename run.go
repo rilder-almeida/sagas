@@ -61,6 +61,7 @@ type runner[S any] struct {
 	seq         int
 	events      []Event
 	unsent      *Event
+	unsentErr   error
 	appendErrs  []error
 	rejected    error
 	interrupted error
@@ -77,6 +78,12 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 		return err
 	}
 
+	stored := r.stamp(e)
+
+	return r.send(ctx, &stored)
+}
+
+func (r *runner[S]) stamp(e *Event) Event {
 	stored := *e
 	stored.Saga = r.saga.name
 	stored.Execution = r.execution
@@ -85,15 +92,37 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	stored.Time = time.Now()
 	cloneSlices(&stored)
 
-	return r.send(ctx, &stored)
+	return stored
 }
 
 func (r *runner[S]) resend(ctx context.Context) error {
-	if r.unsent == nil {
+	e, cause := r.unsent, r.unsentErr
+	if e == nil {
 		return nil
 	}
 
-	return r.send(ctx, r.unsent)
+	if err := r.send(ctx, e); err != nil {
+		return err
+	}
+
+	if e.Kind != EventStepStarted || r.ran(e.Step) {
+		return nil
+	}
+
+	failure := &Error{Kind: appendLabel(cause), Step: e.Step, Err: cause}
+	closing := r.stamp(&Event{Kind: EventStepFailed, Step: e.Step, Err: eventErrorOf(failure)})
+
+	return r.send(ctx, &closing)
+}
+
+func (r *runner[S]) ran(step string) bool {
+	for i := range r.saga.steps {
+		if r.saga.steps[i].name == step {
+			return r.runs[i].started
+		}
+	}
+
+	return false
 }
 
 func (r *runner[S]) send(ctx context.Context, e *Event) error {
@@ -115,7 +144,11 @@ func (r *runner[S]) send(ctx context.Context, e *Event) error {
 		failed := settled[S]{out: outcome[S]{kind: outcomeFailure, err: reason}, late: late, graced: true}
 		err = r.lateResult(&failed).err
 		r.appendErrs = append(r.appendErrs, err)
-		r.unsent = e
+
+		if r.unsent != e {
+			r.unsent, r.unsentErr = e, err
+		}
+
 		r.stop(errJournalStopped)
 
 		return err

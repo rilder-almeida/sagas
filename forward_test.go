@@ -1197,6 +1197,7 @@ func journalRows() []runRow {
 		outcomeAppendRow(),
 		failureAppendRow(),
 		intentAppendRow(),
+		intentClosingFailsRow(),
 		predicateIntentRow(),
 		finishedAppendRow(),
 		finishedRejectedRow(),
@@ -1455,13 +1456,34 @@ func intentAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return rec.step("a")
 		},
-		script:          map[int]error{2: errJournalDown},
-		wantStatus:      StatusCompensated,
+		script:     map[int]error{2: errJournalDown},
+		wantStatus: StatusCompensated,
+		wantKind:   ErrCompensated,
+		wantErrs:   []error{ErrJournal, errJournalDown},
+		wantSteps:  map[string]stepStatus{"a": stepFailed},
+		wantClosed: map[string]EventError{"a": journalDownEvent()},
+		wantTrail:  seq(opened, startOf("a"), failedOf("a"), closed),
+	}
+}
+
+func journalDownEvent() EventError {
+	return EventError{Kind: ErrJournal.Name(), Message: fmt.Errorf("%w: %w", ErrJournal, errJournalDown).Error()}
+}
+
+func intentClosingFailsRow() runRow {
+	return runRow{
+		name: "[Fail] When: the intent append fails and the failure append after its resent intent fails too ; " +
+			"Should: leave the step started in the journal and return ErrJournal",
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
+		},
+		script:          map[int]error{2: errJournalDown, 3: errJournalDown},
+		wantStatus:      statusUnfinished,
 		wantKind:        ErrCompensated,
 		wantErrs:        []error{ErrJournal, errJournalDown},
 		wantSteps:       map[string]stepStatus{"a": stepUnknown},
 		wantJournalOnly: []string{"a"},
-		wantTrail:       seq(opened, startOf("a"), closed),
+		wantTrail:       seq(opened, startOf("a")),
 	}
 }
 
@@ -1471,13 +1493,13 @@ func predicateIntentRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), rec.bookingIf("b", "never", rec.when(true, "b")))
 		},
-		script:          map[int]error{4: errJournalDown},
-		wantStatus:      StatusCompensated,
-		wantKind:        ErrCompensated,
-		wantErrs:        []error{ErrJournal, errJournalDown},
-		wantSteps:       map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
-		wantJournalOnly: []string{"b"},
-		wantTrail:       seq(opened, startOf("a"), doneOf("a"), startOf("b"), closed),
+		script:     map[int]error{4: errJournalDown},
+		wantStatus: StatusCompensated,
+		wantKind:   ErrCompensated,
+		wantErrs:   []error{ErrJournal, errJournalDown},
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
+		wantClosed: map[string]EventError{"b": journalDownEvent()},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), closed),
 	}
 }
 

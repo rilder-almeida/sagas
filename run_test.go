@@ -826,6 +826,7 @@ type runRow struct {
 	wantNotCauseIs     map[string]error
 	wantCauseText      map[string]string
 	wantEventCauseText map[string]string
+	wantClosed         map[string]EventError
 	wantTextCount      map[string]int
 	wantErrText        map[string]string
 	wantUnrecorded     []string
@@ -1507,10 +1508,13 @@ func forwardOnlyIntentRow() runRow {
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantNotErrs: []error{ErrCompensated},
-		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepFailed},
 		wantPending: []string{"z"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), closed),
-		wantZones:   pivotZones("z"),
+		wantClosed:  map[string]EventError{"z": journalDownEvent()},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
+		),
+		wantZones: pivotZones("z"),
 	}
 }
 

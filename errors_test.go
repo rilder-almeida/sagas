@@ -507,6 +507,13 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 		require.NotErrorIs(t, failureOf(t, got.err, step).Cause, cause)
 	}
 
+	for step, want := range tt.wantClosed {
+		closing := outcomeOf(res.events, step)
+		assert.Equal(t, EventStepFailed, closing.Kind, "closing event of step %s", step)
+		assert.Zero(t, closing.Attempt, "closing event of step %s", step)
+		assert.Equal(t, want, closing.Err, "closing event of step %s", step)
+	}
+
 	for step, text := range tt.wantEventCauseText {
 		assert.Contains(t, outcomeOf(res.events, step).Err.Cause, text)
 	}
