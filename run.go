@@ -60,7 +60,7 @@ type runner[S any] struct {
 	journal     Journal
 	seq         int
 	events      []Event
-	journalErrs []error
+	appendErrs  []error
 	rejected    error
 	interrupted error
 	graceHit    bool
@@ -97,7 +97,7 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 
 		failed := settled[S]{out: outcome[S]{kind: outcomeFailure, err: reason}, late: late, graced: true}
 		err = r.lateResult(&failed).err
-		r.journalErrs = append(r.journalErrs, err)
+		r.appendErrs = append(r.appendErrs, err)
 		r.stop(errJournalStopped)
 
 		return err
@@ -110,6 +110,14 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 }
 
 func ownError(ctx context.Context, err error) bool {
+	if multi, ok := err.(interface{ Unwrap() []error }); ok && len(multi.Unwrap()) > 0 {
+		return !slices.ContainsFunc(multi.Unwrap(), func(leaf error) bool { return !ownError(ctx, leaf) })
+	}
+
+	if single, ok := err.(interface{ Unwrap() error }); ok && single.Unwrap() != nil {
+		return ownError(ctx, single.Unwrap())
+	}
+
 	return errors.Is(err, ctx.Err()) || errors.Is(err, context.Cause(ctx))
 }
 
@@ -134,7 +142,7 @@ func (r *runner[S]) causes() []error {
 		errs = append(errs, r.rejected)
 	}
 
-	errs = append(errs, r.journalErrs...)
+	errs = append(errs, r.appendErrs...)
 
 	if r.interrupted != nil {
 		errs = append(errs, r.interrupted)
@@ -203,7 +211,12 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 		return nil
 	}
 
-	kind := endKind(status, r.rejected != nil, len(r.journalErrs) > 0)
+	var appendKind *KindError
+	if len(r.appendErrs) > 0 {
+		appendKind = appendLabel(errors.Join(r.appendErrs...))
+	}
+
+	kind := endKind(status, r.rejected != nil, appendKind)
 
 	return &RunError{Kind: kind, Steps: r.failures, Pending: r.pending(), causes: causes}
 }
@@ -278,7 +291,7 @@ func (r *runner[S]) status(end forwardEnd) Status {
 	}
 }
 
-func endKind(status Status, rejected, journalFailed bool) *KindError {
+func endKind(status Status, rejected bool, appendKind *KindError) *KindError {
 	switch {
 	case rejected:
 		return ErrConcurrentWriter
@@ -286,8 +299,8 @@ func endKind(status Status, rejected, journalFailed bool) *KindError {
 		return ErrCompensated
 	case status == StatusCompensationFailed:
 		return ErrCompensationFailed
-	case status == StatusCompleted && journalFailed:
-		return ErrJournal
+	case status == StatusCompleted && appendKind != nil:
+		return appendKind
 	default:
 		return ErrIncomplete
 	}

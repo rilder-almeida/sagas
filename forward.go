@@ -79,7 +79,7 @@ func ready(parents []int, status []stepRun) bool {
 }
 
 func (r *runner[S]) stopped() bool {
-	return len(r.failures) > 0 || r.rejected != nil || len(r.journalErrs) > 0 || r.interrupted != nil
+	return len(r.failures) > 0 || r.rejected != nil || len(r.appendErrs) > 0 || r.interrupted != nil
 }
 
 func (r *runner[S]) record(ctx context.Context, e *Event) bool {

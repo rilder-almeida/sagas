@@ -27,6 +27,8 @@ type graceKey struct{}
 var (
 	errAwaitDone      = errors.New("sagas: test: wait for the context to end")
 	errAwaitThenStore = errors.New("sagas: test: wait for the context to end, then store this and every later event")
+	errAwaitCause     = errors.New("sagas: test: wait for the context to end, then return its cause")
+	errAwaitThenKeep  = errors.New("sagas: test: wait for the context to end, then store this event only")
 )
 
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -77,23 +79,7 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 		j.failed[e.Seq]++
 		j.mu.Unlock()
 
-		if errors.Is(err, errAwaitDone) {
-			<-ctx.Done()
-
-			return ctx.Err()
-		}
-
-		if errors.Is(err, errAwaitThenStore) {
-			<-ctx.Done()
-
-			j.mu.Lock()
-			j.breaksCtx = true
-			j.mu.Unlock()
-
-			return j.MemoryJournal.Append(context.WithoutCancel(ctx), e)
-		}
-
-		return err
+		return j.scripted(ctx, e, err)
 	}
 
 	if j.breaksCtx {
@@ -103,6 +89,33 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 	j.mu.Unlock()
 
 	return j.MemoryJournal.Append(ctx, e)
+}
+
+func (j *scriptJournal) scripted(ctx context.Context, e *Event, err error) error {
+	switch {
+	case errors.Is(err, errAwaitDone):
+		<-ctx.Done()
+
+		return ctx.Err()
+	case errors.Is(err, errAwaitCause):
+		<-ctx.Done()
+
+		return context.Cause(ctx)
+	case errors.Is(err, errAwaitThenKeep):
+		<-ctx.Done()
+
+		return j.MemoryJournal.Append(context.WithoutCancel(ctx), e)
+	case errors.Is(err, errAwaitThenStore):
+		<-ctx.Done()
+
+		j.mu.Lock()
+		j.breaksCtx = true
+		j.mu.Unlock()
+
+		return j.MemoryJournal.Append(context.WithoutCancel(ctx), e)
+	default:
+		return err
+	}
 }
 
 type runRecord struct {
@@ -1088,14 +1101,17 @@ func runRows() []runRow {
 		finishedAfterCompensationFailedRow(),
 		finishedAfterIncompleteRow(),
 		pivotOutcomeAppendRow(),
+		pivotOutcomeRejectedRow(),
 		forwardOnlyIntentRow(),
 		undoIntentRejectedRow(),
 		undoRunningRejectedRow(),
 		undoOutcomeRejectedRow(),
+		undoneThenRejectedRow(),
 		turnAfterRejectionRow(),
 		forwardIntentAtGraceEndRow(),
 		pivotOutcomeAtGraceEndRow(),
 		finishedAtGraceEndRow(),
+		completedFinishAtGraceEndRow(),
 		finishedBeforeGraceEndRow(),
 		skippedAtGraceEndRow(),
 	}
@@ -1193,6 +1209,26 @@ func finishedAtGraceEndRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoneOf("a"),
 		),
+	}
+}
+
+func completedFinishAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: every step succeeded and the grace end refuses the saga-finished append ; " +
+			"Should: end ErrGraceEnded and match the caller cause, not ErrJournal",
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		script:      map[int]error{3: errAwaitThenKeep},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  StatusUnfinished,
+		wantKind:    ErrGraceEnded,
+		wantErrs:    []error{ErrGraceEnded, errStop},
+		wantNotErrs: []error{ErrJournal},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a")),
 	}
 }
 
@@ -1330,6 +1366,26 @@ func pivotOutcomeAppendRow() runRow {
 	}
 }
 
+func pivotOutcomeRejectedRow() runRow {
+	return runRow{
+		name: "[Fail] When: another writer rejects the outcome append of a successful pivot ; " +
+			"Should: end ErrConcurrentWriter and list the pivot and the forward-only step in Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
+		},
+		script:      map[int]error{5: ErrConcurrentWriter},
+		wantStatus:  StatusUnfinished,
+		wantKind:    ErrConcurrentWriter,
+		wantErrs:    []error{ErrConcurrentWriter},
+		wantNotErrs: []error{ErrJournal},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
+		wantPending: []string{"p", "z"},
+		wantRunOnly: []string{"z"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p")),
+		wantZones:   pivotZones("z"),
+	}
+}
+
 func forwardOnlyIntentRow() runRow {
 	return runRow{
 		name: "[Fail] When: the intent append of a forward-only step fails ; " +
@@ -1417,6 +1473,30 @@ func undoOutcomeRejectedRow() runRow {
 	}
 }
 
+func undoneThenRejectedRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal rejects a compensation intent after another compensation is recorded ; " +
+			"Should: end ErrConcurrentWriter and list only the unstarted compensation in Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:       map[int]error{10: ErrConcurrentWriter},
+		wantStatus:   StatusUnfinished,
+		wantKind:     ErrConcurrentWriter,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
+		wantNotErrs:  []error{ErrJournal},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepCompensated, "c": stepFailed},
+		wantPending:  []string{"a"},
+		wantRunOnly:  []string{"a"},
+		wantOrder:    [][2]string{{"b", undoB}},
+		wantTrail:    chainTrail(compStartOf("b"), undoneOf("b")),
+	}
+}
+
 func undoRunningRejectedRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation succeeds after the journal rejected an event ; " +
@@ -1478,11 +1558,11 @@ func Test_endKind(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		status        Status
-		rejected      bool
-		journalFailed bool
-		want          *KindError
+		name       string
+		status     Status
+		rejected   bool
+		appendKind *KindError
+		want       *KindError
 	}{
 		{
 			name:   "[Success] When: every started compensation succeeded ; Should: return ErrCompensated",
@@ -1490,10 +1570,10 @@ func Test_endKind(t *testing.T) {
 			want:   ErrCompensated,
 		},
 		{
-			name:          "[Success] When: a compensated run also had a journal failure ; Should: keep ErrCompensated",
-			status:        StatusCompensated,
-			journalFailed: true,
-			want:          ErrCompensated,
+			name:       "[Success] When: a compensated run also had a journal failure ; Should: keep ErrCompensated",
+			status:     StatusCompensated,
+			appendKind: ErrJournal,
+			want:       ErrCompensated,
 		},
 		{
 			name:   "[Success] When: a compensation failed for good ; Should: return ErrCompensationFailed",
@@ -1506,10 +1586,17 @@ func Test_endKind(t *testing.T) {
 			want:   ErrIncomplete,
 		},
 		{
-			name:          "[Success] When: every step succeeded and the journal failed ; Should: return ErrJournal",
-			status:        StatusCompleted,
-			journalFailed: true,
-			want:          ErrJournal,
+			name:       "[Success] When: every step succeeded and the journal failed ; Should: return ErrJournal",
+			status:     StatusCompleted,
+			appendKind: ErrJournal,
+			want:       ErrJournal,
+		},
+		{
+			name: "[Success] When: every step succeeded and only the grace end refused an append ; " +
+				"Should: return ErrGraceEnded",
+			status:     StatusCompleted,
+			appendKind: ErrGraceEnded,
+			want:       ErrGraceEnded,
 		},
 		{
 			name:     "[Success] When: the journal rejected an event ; Should: return ErrConcurrentWriter",
@@ -1528,7 +1615,7 @@ func Test_endKind(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Same(t, tt.want, endKind(tt.status, tt.rejected, tt.journalFailed))
+			assert.Same(t, tt.want, endKind(tt.status, tt.rejected, tt.appendKind))
 		})
 	}
 }
@@ -1593,6 +1680,65 @@ func Test_callerCause(t *testing.T) {
 			for _, want := range tt.wantIs {
 				require.ErrorIs(t, got, want)
 			}
+		})
+	}
+}
+
+func Test_ownError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  func(ctx context.Context) error
+		want bool
+	}{
+		{
+			name: "[Success] When: the error is the context's error ; Should: return true",
+			err:  func(ctx context.Context) error { return ctx.Err() },
+			want: true,
+		},
+		{
+			name: "[Success] When: the error is the context's cause ; Should: return true",
+			err:  context.Cause,
+			want: true,
+		},
+		{
+			name: "[Success] When: a wrapper holds the context's error ; Should: return true",
+			err:  func(ctx context.Context) error { return fmt.Errorf("append: %w", ctx.Err()) },
+			want: true,
+		},
+		{
+			name: "[Success] When: a join holds only the context's error and its cause ; Should: return true",
+			err:  func(ctx context.Context) error { return errors.Join(ctx.Err(), context.Cause(ctx)) },
+			want: true,
+		},
+		{
+			name: "[Fail] When: a join holds a journal failure and the context's error ; Should: return false",
+			err:  func(ctx context.Context) error { return errors.Join(errJournalDown, ctx.Err()) },
+			want: false,
+		},
+		{
+			name: "[Fail] When: a nested join hides a journal failure beside the cause ; Should: return false",
+			err: func(ctx context.Context) error {
+				return fmt.Errorf("append: %w", errors.Join(context.Cause(ctx), fmt.Errorf("io: %w", errJournalDown)))
+			},
+			want: false,
+		},
+		{
+			name: "[Fail] When: the error is a journal failure ; Should: return false",
+			err:  func(context.Context) error { return errJournalDown },
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(ErrGraceEnded)
+
+			assert.Equal(t, tt.want, ownError(ctx, tt.err(ctx)))
 		})
 	}
 }

@@ -95,6 +95,8 @@ func pivotRows() []runRow {
 		lateCompensableFailureRow(),
 		deadlineGraceEndRow(),
 		journalErrorAtGraceEndRow(),
+		mixedJournalErrorAtGraceEndRow(),
+		causeAtGraceEndRow(),
 		pivotLateSuccessRow(),
 		forwardOnlyLateSuccessRow(),
 		pivotCommitFailsRow(),
@@ -976,6 +978,64 @@ func journalErrorAtGraceEndRow() runRow {
 		wantCauseIs:    map[string]error{"a": errStop},
 		wantUnrecorded: []string{"a"},
 		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown, ErrGraceEnded, errStop},
+		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
+		wantSteps:      map[string]stepStatus{"a": stepUnknown},
+		wantPending:    []string{"a"},
+		wantTrail:      seq(opened, startOf("a")),
+	}
+}
+
+func mixedJournalErrorAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: after the grace end the journal error joins its own failure with the context error ; " +
+			"Should: keep ErrJournal, the journal error and the context error, and join ErrGraceEnded",
+		steps: func(*recorder) Flow {
+			return once("a", lateFailure)
+		},
+		opts:           []Option{WithRecoveryTimeout(pause)},
+		script:         map[int]error{3: errors.Join(errJournalDown, context.Canceled)},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrCompensated,
+		wantKinds:      map[string]*KindError{"a": ErrFailed},
+		wantFailed:     []string{"a"},
+		wantErrText:    map[string]string{"a": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"a": 1},
+		wantCauseIs:    map[string]error{"a": errStop},
+		wantUnrecorded: []string{"a"},
+		wantErrs: []error{
+			errAlwaysFails, ErrJournal, errJournalDown, context.Canceled, ErrGraceEnded, errStop,
+		},
+		wantText:     []string{ErrJournal.Error() + ": " + errJournalDown.Error()},
+		wantNotKinds: map[string]*KindError{"a": ErrGraceEnded},
+		wantSteps:    map[string]stepStatus{"a": stepUnknown},
+		wantPending:  []string{"a"},
+		wantTrail:    seq(opened, startOf("a")),
+	}
+}
+
+func causeAtGraceEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: after the grace end the journal returns the cause of its context ; " +
+			"Should: match ErrGraceEnded and not ErrJournal",
+		steps: func(*recorder) Flow {
+			return once("a", lateFailure)
+		},
+		opts:           []Option{WithRecoveryTimeout(pause)},
+		script:         map[int]error{3: errAwaitCause},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrCompensated,
+		wantKinds:      map[string]*KindError{"a": ErrFailed},
+		wantFailed:     []string{"a"},
+		wantErrText:    map[string]string{"a": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"a": 1},
+		wantCauseIs:    map[string]error{"a": errStop},
+		wantUnrecorded: []string{"a"},
+		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
+		wantNotErrs:    []error{ErrJournal},
 		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"a": stepUnknown},
 		wantPending:    []string{"a"},
