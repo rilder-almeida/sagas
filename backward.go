@@ -97,13 +97,11 @@ func (r *runner[S]) unwind(grace context.Context, b *rollback[S]) {
 	}
 }
 
+func graceEnded(grace context.Context) bool {
+	return errors.Is(context.Cause(grace), ErrGraceEnded)
+}
+
 func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBelow bool) {
-	if errors.Is(context.Cause(grace), ErrGraceEnded) {
-		r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: ErrGraceEnded, label: ErrGraceEnded})
-
-		return
-	}
-
 	switch decide(b.halted, blockedBelow) {
 	case compHalted:
 		r.skip(grace, b, i, EventCompensationHalted)
@@ -111,6 +109,12 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 		r.skip(grace, b, i, EventCompensationBlocked)
 		b.tainted[i] = true
 	case compRun:
+		if graceEnded(grace) {
+			r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: ErrGraceEnded, label: ErrGraceEnded})
+
+			return
+		}
+
 		r.undo(grace, b, i)
 	default:
 	}
@@ -140,6 +144,10 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 	name := r.saga.steps[f.step].name
 	out := f.out
 
+	if out.kind == outcomeSuccess && graceEnded(grace) {
+		out = outcome[S]{kind: outcomeFailure, attempts: out.attempts, err: ErrGraceEnded, label: ErrGraceEnded}
+	}
+
 	if out.kind == outcomeSuccess {
 		res, err := r.store.commit(name, f.base, *out.state)
 		if err == nil {
@@ -165,7 +173,7 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outco
 		Err: out.err, Cause: out.cause, Previous: out.previous,
 	}
 
-	if errors.Is(context.Cause(grace), ErrGraceEnded) && !errors.Is(failure, ErrGraceEnded) {
+	if graceEnded(grace) && !errors.Is(failure, ErrGraceEnded) {
 		failure.Err = errors.Join(failure.Err, ErrGraceEnded)
 	}
 

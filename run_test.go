@@ -23,6 +23,8 @@ type floatState struct {
 
 type graceKey struct{}
 
+var errAwaitDone = errors.New("sagas: test: wait for the context to end")
+
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type scriptJournal struct {
@@ -51,6 +53,12 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 	if scripted && !j.failed[e.Seq] {
 		j.failed[e.Seq] = true
 		j.mu.Unlock()
+
+		if errors.Is(err, errAwaitDone) {
+			<-ctx.Done()
+
+			return ctx.Err()
+		}
 
 		return err
 	}
@@ -645,7 +653,6 @@ type runRow struct {
 	cancelAfter        time.Duration
 	cancelCause        error
 	wantFailed         []string
-	wantCompensating   []string
 	wantKinds          map[string]*KindError
 	wantNotKinds       map[string]*KindError
 	wantAttempts       map[string]int
@@ -717,7 +724,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 
 		pending = runErr.Pending
 		for _, se := range runErr.Steps {
-			failed = append(failed, se.Step)
+			failed = append(failed, keyOf(se))
 		}
 	}
 

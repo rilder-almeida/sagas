@@ -463,10 +463,6 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 	assert.ElementsMatch(t, slices.Collect(maps.Keys(tt.wantKinds)), slices.Collect(maps.Keys(tt.wantErrText)),
 		"every failed step needs its error text")
 
-	for _, step := range tt.wantCompensating {
-		assert.Contains(t, tt.wantKinds, step, "a compensating step needs its kind")
-	}
-
 	for step, n := range failures {
 		assert.Equal(t, 1, n, "failures of step %s", step)
 	}
@@ -475,7 +471,6 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 		se := failureOf(t, got.err, step)
 		assert.Same(t, kind, se.Kind)
 		require.ErrorIs(t, se, kind)
-		assert.Equal(t, slices.Contains(tt.wantCompensating, step), se.Compensation, "Compensation of step %s", step)
 		assert.Equal(t, tt.wantAttempts[step], se.Attempts)
 		require.NotEmpty(t, tt.wantErrText[step], "expected error text of step %s", step)
 		assert.Contains(t, se.Err.Error(), tt.wantErrText[step])
@@ -517,7 +512,7 @@ func failuresOf(err error) map[string]int {
 
 	if runErr, ok := errors.AsType[*RunError](err); ok {
 		for _, se := range runErr.Steps {
-			failures[se.Step]++
+			failures[keyOf(se)]++
 		}
 	}
 
@@ -558,7 +553,7 @@ func failureOf(t *testing.T, err error, step string) *Error {
 	require.True(t, ok, "the run error is not a RunError: %v", err)
 
 	for _, se := range runErr.Steps {
-		if se.Step == step {
+		if keyOf(se) == step {
 			return se
 		}
 	}
@@ -568,19 +563,35 @@ func failureOf(t *testing.T, err error, step string) *Error {
 	return nil
 }
 
-func outcomeOf(events []Event, step string) Event {
+func outcomeOf(events []Event, key string) Event {
+	step, undo := strings.CutPrefix(key, compPrefix)
+
+	kinds := []EventKind{EventStepSucceeded, EventStepFailed, EventStepUnknown}
+	if undo {
+		kinds = []EventKind{EventCompensationFailed}
+	}
+
 	var last Event
 
 	for i := range events {
-		kind := events[i].Kind
-		if events[i].Step == step &&
-			(kind == EventStepSucceeded || kind == EventStepFailed || kind == EventStepUnknown ||
-				kind == EventCompensationFailed) {
+		if events[i].Step == step && slices.Contains(kinds, events[i].Kind) {
 			last = events[i]
 		}
 	}
 
 	return last
+}
+
+const compPrefix = "comp:"
+
+func comp(step string) string { return compPrefix + step }
+
+func keyOf(se *Error) string {
+	if se.Compensation {
+		return comp(se.Step)
+	}
+
+	return se.Step
 }
 
 func errorRows() []runRow {

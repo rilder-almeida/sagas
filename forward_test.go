@@ -707,7 +707,7 @@ func Test_runner_receive(t *testing.T) {
 			c.reports <- tt.report
 
 			assert.PanicsWithValue(t, tt.wantPanic, func() {
-				r.receive(context.Background(), c)
+				r.receive(context.Background(), context.Background(), c)
 			})
 		})
 	}

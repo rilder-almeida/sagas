@@ -118,7 +118,7 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 			break
 		}
 
-		r.receive(grace, c)
+		r.receive(stepCtx, grace, c)
 	}
 
 	switch {
@@ -131,16 +131,24 @@ func (r *runner[S]) forward(ctx, grace context.Context) forwardEnd {
 	}
 }
 
+func (r *runner[S]) callerDone(stepCtx context.Context) bool {
+	if stepCtx.Err() == nil {
+		return false
+	}
+
+	r.interrupted = context.Cause(stepCtx)
+	r.stop(r.interrupted)
+
+	return true
+}
+
 func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 	for _, i := range r.saga.order {
 		if r.runs[i].status != runNotStarted || !ready(r.saga.steps[i].parents, r.runs) {
 			continue
 		}
 
-		if stepCtx.Err() != nil {
-			r.interrupted = context.Cause(stepCtx)
-			r.stop(r.interrupted)
-
+		if r.callerDone(stepCtx) {
 			return
 		}
 
@@ -163,10 +171,10 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 	}
 }
 
-func (r *runner[S]) receive(grace context.Context, c *crew[S]) {
+func (r *runner[S]) receive(stepCtx, grace context.Context, c *crew[S]) {
 	switch rep := (<-c.reports).(type) {
 	case verdict:
-		if r.decide(grace, rep, c.answers[rep.step]) {
+		if r.answer(stepCtx, grace, rep, c.answers[rep.step]) {
 			c.running--
 		}
 	case settled[S]:
@@ -236,13 +244,13 @@ func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, *KindError, error
 	return ok, nil, nil
 }
 
-func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool) bool {
+func (r *runner[S]) answer(stepCtx, grace context.Context, v verdict, reply chan<- bool) bool {
 	i := v.step
 	name := r.saga.steps[i].name
 
 	switch {
 	case r.rejected != nil:
-		answer <- false
+		reply <- false
 
 		if v.err != nil {
 			r.note(i, outcome[S]{kind: outcomeFailure, err: v.err, label: v.label})
@@ -250,20 +258,20 @@ func (r *runner[S]) decide(grace context.Context, v verdict, answer chan<- bool)
 
 		r.runs[i].status = runNotStarted
 	case v.err != nil:
-		answer <- false
+		reply <- false
 
 		r.refuse(grace, i, outcome[S]{kind: outcomeFailure, err: v.err, label: v.label})
 	case !v.run:
-		answer <- false
+		reply <- false
 
 		r.runs[i].status = runSkipped
 		r.record(grace, &Event{Kind: EventStepSkipped, Step: name})
-	case r.stopped() || !r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
-		answer <- false
+	case r.stopped() || r.callerDone(stepCtx) || !r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
+		reply <- false
 
 		r.runs[i].status = runNotStarted
 	default:
-		answer <- true
+		reply <- true
 
 		r.runs[i].started = true
 
