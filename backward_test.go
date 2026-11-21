@@ -344,19 +344,20 @@ func predicateJournalRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), panicGuarded(rec))
 		},
-		script:         map[int]error{4: errJournalDown},
-		wantStatus:     StatusCompensated,
-		wantKind:       ErrCompensated,
-		wantKinds:      map[string]*KindError{"b": ErrPanic},
-		wantFailed:     []string{"b"},
-		wantErrText:    map[string]string{"b": panicBoom},
-		wantAttempts:   map[string]int{"b": 0},
-		wantUnrecorded: []string{"b"},
-		wantErrs:       []error{ErrJournal, errJournalDown},
-		wantText:       []string{panicBoom},
-		wantSteps:      map[string]stepStatus{"a": stepCompensated, "b": stepNotStarted},
-		wantOrder:      [][2]string{{"a", undoA}},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoneOf("a"), closed),
+		script:       map[int]error{4: errJournalDown},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"b": ErrPanic},
+		wantFailed:   []string{"b"},
+		wantErrText:  map[string]string{"b": panicBoom},
+		wantAttempts: map[string]int{"b": 0},
+		wantErrs:     []error{ErrJournal, errJournalDown},
+		wantText:     []string{panicBoom},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), failedOf("b"), compStartOf("a"), undoneOf("a"), closed,
+		),
 	}
 }
 
@@ -603,7 +604,7 @@ func undoIntentRow() runRow {
 		wantErrs:     []error{ErrJournal, errJournalDown},
 		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
-		wantTrail:    chainTrail(undoFailedOf("b"), blockedOf("a"), closed),
+		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
 	}
 }
 
@@ -625,7 +626,7 @@ func undoOutcomeRow() runRow {
 		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
 		wantOrder:    [][2]string{{"b", undoB}},
-		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
+		wantTrail:    chainTrail(compStartOf("b"), undoneOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
 	}
 }
 

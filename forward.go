@@ -86,6 +86,10 @@ func (r *runner[S]) record(ctx context.Context, e *Event) bool {
 	return r.persist(ctx, e) == nil
 }
 
+func (r *runner[S]) resent(ctx context.Context) bool {
+	return r.resend(ctx) == nil
+}
+
 func (r *runner[S]) persist(ctx context.Context, e *Event) error {
 	if r.rejected != nil {
 		return r.rejected
@@ -358,7 +362,7 @@ func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
 	switch {
 	case r.record(ctx, &e):
 	case i == r.saga.pivot && out.kind == outcomeFailure:
-		r.record(ctx, &e)
+		r.resent(ctx)
 	default:
 		r.runs[i].status = runUnknown
 	}

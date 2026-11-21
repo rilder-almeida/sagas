@@ -448,22 +448,22 @@ func pivotErrorAppendTwiceRow() runRow {
 	return runRow{
 		name: "[Fail] When: the pivot returns an error and its failure append fails twice ; " +
 			"Should: still compensate the steps before it and match ErrJournal",
-		steps:           failingPivot(),
-		script:          map[int]error{5: failing(errJournalDown, 2)},
-		wantStatus:      StatusCompensated,
-		wantKind:        ErrCompensated,
-		wantKinds:       map[string]*KindError{"p": ErrFailed},
-		wantFailed:      []string{"p"},
-		wantErrText:     map[string]string{"p": errAlwaysFails.Error()},
-		wantAttempts:    map[string]int{"p": 1},
-		wantUnrecorded:  []string{"p"},
-		wantErrs:        []error{errAlwaysFails, ErrJournal, errJournalDown},
-		wantNotErrs:     []error{ErrIncomplete},
-		wantSteps:       map[string]stepStatus{"a": stepCompensated, "p": stepUnknown},
-		wantJournalOnly: []string{"p"},
-		wantOrder:       [][2]string{{"a", undoA}},
-		wantTrail:       seq(opened, startOf("a"), doneOf("a"), startOf("p"), compStartOf("a"), undoneOf("a"), closed),
-		wantZones:       []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		steps:        failingPivot(),
+		script:       map[int]error{5: failing(errJournalDown, 2)},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"p": ErrFailed},
+		wantFailed:   []string{"p"},
+		wantErrText:  map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"p": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantNotErrs:  []error{ErrIncomplete},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
+		),
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -1395,18 +1395,17 @@ func predicateAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
 		},
-		script:         map[int]error{4: errJournalDown},
-		wantStatus:     StatusCompensated,
-		wantKind:       ErrCompensated,
-		wantKinds:      map[string]*KindError{"b": ErrPanic},
-		wantFailed:     []string{"b"},
-		wantErrText:    map[string]string{"b": panicBoom},
-		wantAttempts:   map[string]int{"b": 0},
-		wantUnrecorded: []string{"b"},
-		wantErrs:       []error{ErrJournal, errJournalDown},
-		wantText:       []string{panicBoom},
-		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepNotStarted},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), closed),
+		script:       map[int]error{4: errJournalDown},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"b": ErrPanic},
+		wantFailed:   []string{"b"},
+		wantErrText:  map[string]string{"b": panicBoom},
+		wantAttempts: map[string]int{"b": 0},
+		wantErrs:     []error{ErrJournal, errJournalDown},
+		wantText:     []string{panicBoom},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), failedOf("b"), closed),
 	}
 }
 
@@ -1420,9 +1419,10 @@ func outcomeAppendRow() runRow {
 		wantStatus:  StatusCompensated,
 		wantKind:    ErrCompensated,
 		wantErrs:    []error{ErrJournal, errJournalDown},
-		wantSteps:   map[string]stepStatus{"a": stepUnknown},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded},
 		wantPending: []string{"a"},
-		wantTrail:   seq(opened, startOf("a"), closed),
+		wantRunOnly: []string{"a"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), closed),
 		wantState:   tripState{Hotel: hotelRitz},
 	}
 }
@@ -1441,11 +1441,11 @@ func failureAppendRow() runRow {
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{"b": 3},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
-		wantUnrecorded: []string{"b"},
 		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown},
-		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantPending:    []string{"b"},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), closed),
+		wantRunOnly:    []string{"b"},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), closed),
 	}
 }
 
@@ -1455,12 +1455,13 @@ func intentAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return rec.step("a")
 		},
-		script:     map[int]error{2: errJournalDown},
-		wantStatus: StatusCompensated,
-		wantKind:   ErrCompensated,
-		wantErrs:   []error{ErrJournal, errJournalDown},
-		wantSteps:  map[string]stepStatus{"a": stepNotStarted},
-		wantTrail:  seq(opened, closed),
+		script:          map[int]error{2: errJournalDown},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantErrs:        []error{ErrJournal, errJournalDown},
+		wantSteps:       map[string]stepStatus{"a": stepUnknown},
+		wantJournalOnly: []string{"a"},
+		wantTrail:       seq(opened, startOf("a"), closed),
 	}
 }
 
@@ -1470,12 +1471,13 @@ func predicateIntentRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), rec.bookingIf("b", "never", rec.when(true, "b")))
 		},
-		script:     map[int]error{4: errJournalDown},
-		wantStatus: StatusCompensated,
-		wantKind:   ErrCompensated,
-		wantErrs:   []error{ErrJournal, errJournalDown},
-		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "b": stepNotStarted},
-		wantTrail:  seq(opened, startOf("a"), doneOf("a"), closed),
+		script:          map[int]error{4: errJournalDown},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantErrs:        []error{ErrJournal, errJournalDown},
+		wantSteps:       map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
+		wantJournalOnly: []string{"b"},
+		wantTrail:       seq(opened, startOf("a"), doneOf("a"), startOf("b"), closed),
 	}
 }
 

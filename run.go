@@ -60,6 +60,7 @@ type runner[S any] struct {
 	journal     Journal
 	seq         int
 	events      []Event
+	unsent      *Event
 	appendErrs  []error
 	rejected    error
 	interrupted error
@@ -72,6 +73,10 @@ type runner[S any] struct {
 }
 
 func (r *runner[S]) append(ctx context.Context, e *Event) error {
+	if err := r.resend(ctx); err != nil {
+		return err
+	}
+
 	stored := *e
 	stored.Saga = r.saga.name
 	stored.Execution = r.execution
@@ -80,7 +85,19 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 	stored.Time = time.Now()
 	cloneSlices(&stored)
 
-	if err := r.journal.Append(ctx, &stored); err != nil {
+	return r.send(ctx, &stored)
+}
+
+func (r *runner[S]) resend(ctx context.Context) error {
+	if r.unsent == nil {
+		return nil
+	}
+
+	return r.send(ctx, r.unsent)
+}
+
+func (r *runner[S]) send(ctx context.Context, e *Event) error {
+	if err := r.journal.Append(ctx, e); err != nil {
 		if errors.Is(err, ErrExecutionExists) || errors.Is(err, ErrConcurrentWriter) {
 			r.rejected = err
 			r.stop(errRejectionStopped)
@@ -98,13 +115,15 @@ func (r *runner[S]) append(ctx context.Context, e *Event) error {
 		failed := settled[S]{out: outcome[S]{kind: outcomeFailure, err: reason}, late: late, graced: true}
 		err = r.lateResult(&failed).err
 		r.appendErrs = append(r.appendErrs, err)
+		r.unsent = e
 		r.stop(errJournalStopped)
 
 		return err
 	}
 
 	r.seq++
-	r.events = append(r.events, stored)
+	r.events = append(r.events, *e)
+	r.unsent = nil
 
 	return nil
 }

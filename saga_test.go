@@ -375,7 +375,7 @@ func (j *graceJournal) Append(ctx context.Context, e *Event) error {
 
 	<-ctx.Done()
 
-	j.waited = time.Since(start)
+	j.waited = max(j.waited, time.Since(start))
 
 	return context.Cause(ctx)
 }

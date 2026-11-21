@@ -29,6 +29,7 @@ var (
 	errAwaitThenStore = errors.New("sagas: test: wait for the context to end, then store this and every later event")
 	errAwaitCause     = errors.New("sagas: test: wait for the context to end, then return its cause")
 	errAwaitThenKeep  = errors.New("sagas: test: wait for the context to end, then store this event only")
+	errStoreThenFail  = errors.New("sagas: test: store this event, let time pass, then return an error")
 )
 
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -105,6 +106,14 @@ func (j *scriptJournal) scripted(ctx context.Context, e *Event, err error) error
 		<-ctx.Done()
 
 		return j.MemoryJournal.Append(context.WithoutCancel(ctx), e)
+	case errors.Is(err, errStoreThenFail):
+		if stored := j.MemoryJournal.Append(ctx, e); stored != nil {
+			return stored
+		}
+
+		time.Sleep(time.Millisecond)
+
+		return err
 	case errors.Is(err, errAwaitThenStore):
 		<-ctx.Done()
 
@@ -476,6 +485,7 @@ func Test_runner_append(t *testing.T) {
 		appends    int
 		failAt     int
 		wantStored int
+		wantCalls  int
 		wantErrs   []error
 		wantNoErrs []error
 		wantCauses []error
@@ -484,19 +494,35 @@ func Test_runner_append(t *testing.T) {
 			name:       "[Success] When: the first event is appended ; Should: give it Seq 1 and the run's Writer",
 			appends:    1,
 			wantStored: 1,
+			wantCalls:  1,
 		},
 		{
 			name:       "[Success] When: two events are appended ; Should: number them 1 and 2",
 			appends:    2,
 			wantStored: 2,
+			wantCalls:  2,
 		},
 		{
-			name:       "[Fail] When: the journal returns a plain error ; Should: wrap ErrJournal and keep seq",
+			name: "[Fail] When: the journal returns a plain error ; " +
+				"Should: wrap ErrJournal, keep seq and resend the same event before the next one",
 			script:     map[int]error{1: errAlwaysFails},
 			appends:    2,
 			failAt:     1,
-			wantStored: 1,
+			wantStored: 2,
+			wantCalls:  3,
 			wantErrs:   []error{ErrJournal, errAlwaysFails},
+			wantNoErrs: []error{ErrConcurrentWriter, ErrExecutionExists},
+			wantCauses: []error{ErrJournal},
+		},
+		{
+			name: "[Fail] When: the journal stores an event, time passes and it returns an error ; " +
+				"Should: resend the equal event before the next one, not end ErrConcurrentWriter",
+			script:     map[int]error{1: errStoreThenFail},
+			appends:    2,
+			failAt:     1,
+			wantStored: 2,
+			wantCalls:  3,
+			wantErrs:   []error{ErrJournal, errStoreThenFail},
 			wantNoErrs: []error{ErrConcurrentWriter, ErrExecutionExists},
 			wantCauses: []error{ErrJournal},
 		},
@@ -506,6 +532,7 @@ func Test_runner_append(t *testing.T) {
 			appends:    2,
 			failAt:     1,
 			wantStored: 1,
+			wantCalls:  2,
 			wantErrs:   []error{ErrExecutionExists},
 			wantNoErrs: []error{ErrJournal},
 			wantCauses: []error{ErrExecutionExists},
@@ -516,6 +543,7 @@ func Test_runner_append(t *testing.T) {
 			appends:    3,
 			failAt:     2,
 			wantStored: 2,
+			wantCalls:  3,
 			wantErrs:   []error{ErrConcurrentWriter},
 			wantNoErrs: []error{ErrJournal},
 			wantCauses: []error{ErrConcurrentWriter},
@@ -551,7 +579,7 @@ func Test_runner_append(t *testing.T) {
 				requireAppendErr(t, err, wantErrs, tt.wantNoErrs)
 			}
 
-			assertAppended(t, j, tt.wantStored, tt.appends)
+			assertAppended(t, j, tt.wantStored, tt.wantCalls)
 
 			for _, got := range j.ctxs {
 				assert.Equal(t, ctx, got)
@@ -585,12 +613,12 @@ func requireAppendErr(t *testing.T, err error, wantErrs, wantNoErrs []error) {
 	}
 }
 
-func assertAppended(t *testing.T, j *scriptJournal, wantStored, appends int) {
+func assertAppended(t *testing.T, j *scriptJournal, wantStored, calls int) {
 	t.Helper()
 
 	events := j.Events("exec-1")
 	require.Len(t, events, wantStored)
-	require.Len(t, j.ctxs, appends)
+	require.Len(t, j.ctxs, calls)
 
 	for i := range events {
 		e := &events[i]
@@ -814,7 +842,9 @@ type runRow struct {
 func Test_Saga_Run(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows(), runRows()) {
+	for _, tt := range slices.Concat(
+		forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows(), runRows(), resendRows(),
+	) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1378,10 +1408,10 @@ func pivotOutcomeAppendRow() runRow {
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantNotErrs: []error{ErrCompensated},
-		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
 		wantPending: []string{"p", "z"},
-		wantRunOnly: []string{"z"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), closed),
+		wantRunOnly: []string{"p"},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
 		wantZones:   pivotZones("z"),
 	}
 }
@@ -1418,9 +1448,9 @@ func forwardOnlyIntentRow() runRow {
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantNotErrs: []error{ErrCompensated},
-		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending: []string{"z"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), closed),
 		wantZones:   pivotZones("z"),
 	}
 }
@@ -1785,5 +1815,121 @@ func Test_ownError(t *testing.T) {
 
 			assert.Equal(t, tt.want, ownError(ctx, tt.err(ctx)))
 		})
+	}
+}
+
+func resendRows() []runRow {
+	return []runRow{
+		pivotStoredFailureRow(),
+		forwardStoredOutcomeRow(),
+		backwardStoredIntentRow(),
+		storedThenDownRow(),
+	}
+}
+
+func pivotStoredFailureRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal stores the pivot failure and then returns an error ; " +
+			"Should: resend the same event, compensate and end ErrCompensated, not ErrConcurrentWriter",
+		steps:        failingPivot(),
+		script:       map[int]error{5: errStoreThenFail},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"p": ErrFailed},
+		wantFailed:   []string{"p"},
+		wantErrText:  map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"p": 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errStoreThenFail},
+		wantNotErrs:  []error{ErrIncomplete, ErrConcurrentWriter},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
+		wantOrder:    [][2]string{{"a", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
+		),
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+	}
+}
+
+func forwardStoredOutcomeRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal stores the outcome of a compensable step and then returns an error, and a " +
+			"sibling fails later ; Should: resend the outcome first and compensate, not end ErrConcurrentWriter",
+		steps: func(rec *recorder) Flow {
+			c := once("c", func(context.Context, *tripState) error {
+				time.Sleep(pause)
+
+				return errAlwaysFails
+			})
+
+			return Sequence(rec.undoable("a"), Parallel(rec.undoable("b"), c))
+		},
+		script:       map[int]error{6: errStoreThenFail},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantCauseIs:  map[string]error{"c": errJournalStopped},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errStoreThenFail},
+		wantNotErrs:  []error{ErrConcurrentWriter},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "b": stepCompensated, "c": stepFailed},
+		wantOrder:    [][2]string{{"b", undoB}, {undoB, undoA}},
+		wantTrail: slices.Concat(
+			seq(opened, startOf("a"), doneOf("a")),
+			together(startOf("b"), startOf("c")),
+			seq(doneOf("b"), failedOf("c"), compStartOf("b"), undoneOf("b"), compStartOf("a"), undoneOf("a"), closed),
+		),
+	}
+}
+
+func backwardStoredIntentRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal stores a compensation intent and then returns an error ; " +
+			"Should: resend the intent first and record the next compensation, not end ErrConcurrentWriter",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				rec.undoable("a"), failingUndo("b", CompensationContinue, rec.do(undoB)), once("c", alwaysFails),
+			)
+		},
+		script:       map[int]error{8: errStoreThenFail},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
+		wantFailed:   []string{"c", comp("b")},
+		wantErrText:  map[string]string{comp("b"): errStoreThenFail.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("b"): 0, "c": 1},
+		wantErrs:     []error{ErrJournal, errStoreThenFail},
+		wantNotErrs:  []error{ErrConcurrentWriter},
+		wantSteps: map[string]stepStatus{
+			"a": stepCompensated, "b": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"b"},
+		wantOrder:   [][2]string{{"a", undoA}},
+		wantTrail:   chainTrail(compStartOf("b"), undoFailedOf("b"), compStartOf("a"), undoneOf("a"), closed),
+	}
+}
+
+func storedThenDownRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal stores a step outcome and then stays down ; " +
+			"Should: leave the step unknown, fail its compensation with ErrJournal and not end ErrConcurrentWriter",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"))
+		},
+		script:         map[int]error{5: failing(errStoreThenFail, forever)},
+		wantStatus:     StatusUnfinished,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrJournal},
+		wantFailed:     []string{comp("b")},
+		wantErrText:    map[string]string{comp("b"): errStoreThenFail.Error()},
+		wantAttempts:   map[string]int{comp("b"): 0},
+		wantUnrecorded: []string{comp("b")},
+		wantErrs:       []error{ErrJournal, errStoreThenFail},
+		wantNotErrs:    []error{ErrConcurrentWriter},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded},
+		wantPending:    []string{"a", "b"},
+		wantRunOnly:    []string{"a", "b"},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b")),
 	}
 }
