@@ -104,6 +104,7 @@ func backwardRows() []runRow {
 		graceLateConflictRow(),
 		graceReadLateSuccessRow(),
 		graceReadLateFailureRow(),
+		graceLateFailureRow(),
 		callerDuringPredicateRow(),
 		blockChainRow(),
 		unknownThenUndoFailsRow(),
@@ -774,6 +775,40 @@ func graceReadLateFailureRow() runRow {
 		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated},
 		wantPending:  []string{"b"},
 		wantTrail:    readLateTrail(undoFailedOf("b")),
+	}
+}
+
+func graceLateFailureRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation ignores its context and fails after the grace period ; " +
+			"Should: keep ErrFailed and match ErrGraceEnded once",
+		steps: func(*recorder) Flow {
+			late := func(context.Context, *tripState) error {
+				time.Sleep(3 * pause)
+
+				return errAlwaysFails
+			}
+
+			return Sequence(undoOnce("b", okAction, late), once("c", alwaysFails))
+		},
+		opts:          []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:   pause,
+		cancelCause:   errStop,
+		wantStatus:    StatusCompensationFailed,
+		wantKind:      ErrCompensationFailed,
+		wantKinds:     map[string]*KindError{comp("b"): ErrFailed, "c": ErrFailed},
+		wantFailed:    []string{"c", comp("b")},
+		wantErrText:   map[string]string{comp("b"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:  map[string]int{comp("b"): 1, "c": 1},
+		wantCauseIs:   map[string]error{comp("b"): ErrGraceEnded},
+		wantErrs:      []error{errAlwaysFails, ErrGraceEnded},
+		wantTextCount: map[string]int{ErrGraceEnded.Error(): 1},
+		wantSteps:     map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:   []string{"b"},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"),
+			closed,
+		),
 	}
 }
 

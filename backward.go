@@ -187,7 +187,7 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *undone[S])
 
 func withGraceEnd[S any](out outcome[S]) outcome[S] {
 	own := errors.Join(append([]error{out.err, out.cause}, out.previous...)...)
-	if out.label == ErrGraceEnded || errors.Is(own, ErrGraceEnded) {
+	if errors.Is(own, ErrGraceEnded) {
 		return out
 	}
 
