@@ -202,7 +202,7 @@ func WithMiddleware(mw ...Middleware) Option {
 }
 
 // WithRecoveryTimeout sets the grace period after the caller's context ends. Zero, the default, means
-// DefaultRecoveryTimeout.
+// DefaultRecoveryTimeout. The bound holds only when every step, compensation and the journal honor their context.
 func WithRecoveryTimeout(t time.Duration) Option {
 	return func(d *definition) {
 		d.recovery = t

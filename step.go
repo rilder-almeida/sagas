@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// Step holds the name and settings of a step: a pointer to a user type that embeds Step and has Execute or Pivot,
-// and optionally Compensate, Enabled and Wrap, all safe for concurrent use. An empty Name takes the type name; a
-// saga with a durable journal sets Name, so a type rename keeps the names. New cannot see a step method lost when
-// an embedded field declares it and also embeds a field with it, or a non-method field has its name: declare step
-// methods on the step type or keep embedded providers unambiguous.
+// Step holds a step's name and settings: a pointer to a user type that embeds Step and has Execute or Pivot, and
+// optionally Compensate, Enabled and Wrap, all safe for concurrent use, idempotent and honoring their context; a call
+// that returns after the grace period can miss the journal and still shows in the error of Run. An empty Name takes
+// the type name; a durable journal needs Name set so a rename keeps it. New cannot see a method lost to an embedded
+// field that also embeds a provider of it, or to a field of the same name: declare step methods on the step type.
 type Step struct {
 	Name                string
 	Description         string
