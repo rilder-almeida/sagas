@@ -62,7 +62,11 @@ func (e *Error) Error() string {
 		what = "compensation of step"
 	}
 
-	msg := fmt.Sprintf("sagas: %s %q failed after %d attempts", what, e.Step, e.Attempts)
+	msg := fmt.Sprintf("sagas: %s %q did not run", what, e.Step)
+	if e.Attempts > 0 {
+		msg = fmt.Sprintf("sagas: %s %q failed after %d attempts", what, e.Step, e.Attempts)
+	}
+
 	if e.Err != nil {
 		msg += ": " + e.Err.Error()
 	}

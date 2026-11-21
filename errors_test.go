@@ -195,9 +195,18 @@ func Test_Error_Error(t *testing.T) {
 			want: `sagas: compensation of step "pay" failed after 1 attempts: ` + errAlwaysFails.Error(),
 		},
 		{
-			name: "[Success] When: the step never ran ; Should: report 0 attempts",
+			name: "[Success] When: the step never ran ; Should: say it did not run",
 			err:  Error{Step: "car", Err: ErrJournal},
-			want: `sagas: step "car" failed after 0 attempts: ` + ErrJournal.Error(),
+			want: `sagas: step "car" did not run: ` + ErrJournal.Error(),
+		},
+		{
+			name: "[Success] When: a compensation never ran ; " +
+				"Should: say it did not run and keep the cause and history",
+			err: Error{
+				Step: "car", Compensation: true, Err: ErrGraceEnded, Cause: errStop, Previous: []error{errFirst},
+			},
+			want: `sagas: compensation of step "car" did not run: ` + ErrGraceEnded.Error() + "; cause: " +
+				errStop.Error() + "; previous: first attempt",
 		},
 		{
 			name: "[Success] When: Err is nil ; Should: end after the attempts",
