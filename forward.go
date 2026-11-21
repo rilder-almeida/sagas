@@ -141,8 +141,12 @@ func (r *runner[S]) pivotApplied() bool {
 	return p >= 0 && r.runs[p].started && r.runs[p].status != runFailed
 }
 
-func (r *runner[S]) callerStops(stepCtx context.Context, i int) bool {
-	return r.saga.steps[i].zone != ZoneForwardOnly && r.callerDone(stepCtx)
+func (r *runner[S]) callerStops(stepCtx, grace context.Context, i int) bool {
+	if r.saga.steps[i].zone == ZoneForwardOnly && !graceEnded(grace) {
+		return false
+	}
+
+	return r.callerDone(stepCtx)
 }
 
 func (r *runner[S]) callerDone(stepCtx context.Context) bool {
@@ -162,7 +166,7 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 			continue
 		}
 
-		if r.callerStops(stepCtx, i) {
+		if r.callerStops(stepCtx, grace, i) {
 			return
 		}
 
@@ -288,7 +292,8 @@ func (r *runner[S]) answer(stepCtx, grace context.Context, v verdict, reply chan
 
 		r.runs[i].status = runSkipped
 		r.record(grace, &Event{Kind: EventStepSkipped, Step: name})
-	case r.stopped() || r.callerStops(stepCtx, i) || !r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
+	case r.stopped() || r.callerStops(stepCtx, grace, i) ||
+		!r.record(grace, &Event{Kind: EventStepStarted, Step: name}):
 		reply <- false
 
 		r.runs[i].status = runNotStarted
@@ -330,7 +335,12 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 
 	res, err := r.store.commit(name, f.base, *f.out.state)
 	if err != nil {
-		r.fail(grace, i, outcome[S]{kind: outcomeFailure, attempts: f.out.attempts, err: err, label: res.label})
+		kind := outcomeFailure
+		if i == r.saga.pivot {
+			kind = outcomeUnknown
+		}
+
+		r.fail(grace, i, outcome[S]{kind: kind, attempts: f.out.attempts, err: err, label: res.label})
 
 		return
 	}
@@ -346,7 +356,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
 	e := r.note(i, out)
 
-	if !r.record(ctx, &e) {
+	if !r.record(ctx, &e) && (i != r.saga.pivot || out.kind != outcomeFailure) {
 		r.runs[i].status = runUnknown
 	}
 }

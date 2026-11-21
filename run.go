@@ -121,10 +121,9 @@ func (r *runner[S]) causes() []error {
 	return errs
 }
 
-// Run executes the saga on the state st under ctx. A completed run returns nil and writes the committed state back
-// into st. A state that declares ExecutionID() string gives the execution ID, and any other state gets a random one.
-// An error before the saga-started event is stored is returned as is. Any later end that is not a clean completion
-// returns a *RunError.
+// Run executes the saga on st under ctx and writes the committed state back into st; completion returns nil. A state
+// with ExecutionID() string gives the execution ID, else a random one is used. An error before the saga-started event
+// is stored returns as is, and any later end that is not a clean completion returns a *RunError.
 func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 	execution, err := checkRun(st)
 	if err != nil {
@@ -158,12 +157,16 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		return startErr
 	}
 
-	return r.finish(grace, r.forward(ctx, grace), st)
+	return r.finish(ctx, grace, r.forward(ctx, grace), st)
 }
 
-func (r *runner[S]) finish(grace context.Context, end forwardEnd, st *S) error {
+func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) error {
 	if end == endFailed {
 		r.backward(grace)
+	}
+
+	if end != endCompleted && r.interrupted == nil && graceEnded(grace) {
+		r.interrupted = context.Cause(ctx)
 	}
 
 	status := r.status(end)

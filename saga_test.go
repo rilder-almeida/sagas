@@ -15,6 +15,7 @@ import (
 
 type tripState struct {
 	Hotel string
+	Rate  float64
 }
 
 type otherState struct {
