@@ -26,25 +26,23 @@ const (
 	StatusIncomplete         Status = "incomplete"
 )
 
-// StepStatus is where one step of a run ended. The empty string means not set.
-type StepStatus string
+type stepStatus string
 
-// StepStatus values.
 const (
-	StepNotStarted         StepStatus = "not-started"
-	StepSucceeded          StepStatus = "succeeded"
-	StepFailed             StepStatus = "failed"
-	StepUnknown            StepStatus = "unknown"
-	StepSkipped            StepStatus = "skipped"
-	StepCompensated        StepStatus = "compensated"
-	StepCompensationFailed StepStatus = "compensation-failed"
-	StepBlocked            StepStatus = "blocked"
-	StepHalted             StepStatus = "halted"
+	stepNotStarted         stepStatus = "not-started"
+	stepSucceeded          stepStatus = "succeeded"
+	stepFailed             stepStatus = "failed"
+	stepUnknown            stepStatus = "unknown"
+	stepSkipped            stepStatus = "skipped"
+	stepCompensated        stepStatus = "compensated"
+	stepCompensationFailed stepStatus = "compensation-failed"
+	stepBlocked            stepStatus = "blocked"
+	stepHalted             stepStatus = "halted"
 )
 
 type stepResult struct {
 	Name            string
-	Status          StepStatus
+	Status          stepStatus
 	Attempts        int
 	Err             EventError
 	CompensationErr EventError
@@ -53,24 +51,17 @@ type stepResult struct {
 	End             time.Time
 }
 
-type result struct {
-	Execution string
-	Status    Status
-	Steps     []stepResult
-	events    []Event
-}
-
-func (r *result) pending() []string {
+func pendingOf(events []Event) []string {
 	var zones []StepZone
 
-	for i := range r.events {
-		if r.events[i].Kind == EventSagaStarted {
-			zones = r.events[i].Steps
+	for i := range events {
+		if events[i].Kind == EventSagaStarted {
+			zones = events[i].Steps
 		}
 	}
 
-	steps := foldStepsSharingChanged(r.events)
-	pivot := StepNotStarted
+	steps := foldStepsSharingChanged(events)
+	pivot := stepNotStarted
 
 	for i, z := range zones {
 		if z.Zone == ZonePivot {
@@ -89,40 +80,17 @@ func (r *result) pending() []string {
 	return pending
 }
 
-func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
+func owed(status stepStatus, zone Zone, pivot stepStatus) bool {
 	switch status {
-	case StepUnknown, StepCompensationFailed, StepBlocked, StepHalted:
+	case stepUnknown, stepCompensationFailed, stepBlocked, stepHalted:
 		return true
-	case StepFailed, StepNotStarted:
-		return zone == ZoneForwardOnly && pivot == StepSucceeded
-	case StepSucceeded, StepSkipped, StepCompensated:
+	case stepFailed, stepNotStarted:
+		return zone == ZoneForwardOnly && pivot == stepSucceeded
+	case stepSucceeded, stepSkipped, stepCompensated:
 		return false
 	}
 
 	return false
-}
-
-func buildResult(events []Event) result {
-	r := result{Status: StatusUnfinished, events: copyEvents(events)}
-	r.Steps = foldStepsSharingChanged(r.events)
-
-	for k := range r.Steps {
-		r.Steps[k].Changed = slices.Clone(r.Steps[k].Changed)
-		r.Steps[k].Err.Previous = slices.Clone(r.Steps[k].Err.Previous)
-		r.Steps[k].CompensationErr.Previous = slices.Clone(r.Steps[k].CompensationErr.Previous)
-	}
-
-	for i := range r.events {
-		if r.events[i].Kind == EventSagaStarted {
-			r.Execution = r.events[i].Execution
-		}
-
-		if r.events[i].Kind == EventSagaFinished {
-			r.Status = r.events[i].Status
-		}
-	}
-
-	return r
 }
 
 func foldStepsSharingChanged(events []Event) []stepResult {
@@ -135,7 +103,7 @@ func foldStepsSharingChanged(events []Event) []stepResult {
 			steps = make([]stepResult, len(e.Steps))
 
 			for k := range e.Steps {
-				steps[k].Name, steps[k].Status = e.Steps[k].Name, StepNotStarted
+				steps[k].Name, steps[k].Status = e.Steps[k].Name, stepNotStarted
 			}
 		}
 
@@ -150,37 +118,37 @@ func foldStepsSharingChanged(events []Event) []stepResult {
 func applyEventSharingChanged(s *stepResult, e *Event) {
 	switch e.Kind {
 	case EventStepStarted:
-		s.Status, s.Start = StepUnknown, e.Time
+		s.Status, s.Start = stepUnknown, e.Time
 	case EventStepSucceeded, EventStepFailed, EventStepUnknown:
 		s.Status, s.Attempts, s.Err, s.Changed, s.End = outcomeStatus(e.Kind), e.Attempt, e.Err, e.Changed, e.Time
 	case EventStepSkipped:
-		s.Status = StepSkipped
+		s.Status = stepSkipped
 	case EventCompensationSucceeded, EventCompensationFailed, EventCompensationBlocked, EventCompensationHalted:
 		s.Status, s.CompensationErr, s.End = outcomeStatus(e.Kind), e.Err, e.Time
 	case EventCompensationStarted:
-		s.Status = StepCompensationFailed
+		s.Status = stepCompensationFailed
 	case "", EventSagaStarted, EventSagaFinished:
 		return
 	default:
 	}
 }
 
-func outcomeStatus(k EventKind) StepStatus {
+func outcomeStatus(k EventKind) stepStatus {
 	switch k {
 	case EventStepSucceeded:
-		return StepSucceeded
+		return stepSucceeded
 	case EventStepFailed:
-		return StepFailed
+		return stepFailed
 	case EventStepUnknown:
-		return StepUnknown
+		return stepUnknown
 	case EventCompensationSucceeded:
-		return StepCompensated
+		return stepCompensated
 	case EventCompensationFailed:
-		return StepCompensationFailed
+		return stepCompensationFailed
 	case EventCompensationBlocked:
-		return StepBlocked
+		return stepBlocked
 	case EventCompensationHalted:
-		return StepHalted
+		return stepHalted
 	case "", EventSagaStarted, EventStepStarted, EventStepSkipped, EventCompensationStarted, EventSagaFinished:
 		return ""
 	default:

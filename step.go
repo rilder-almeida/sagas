@@ -2,8 +2,6 @@ package sagas
 
 import (
 	"fmt"
-	"maps"
-	"slices"
 	"strings"
 	"time"
 )
@@ -71,22 +69,6 @@ func checkSettings(s *StepReport) []string {
 
 	if s.CompensationFailure != "" && !s.Compensate {
 		rules = append(rules, "CompensationFailure without Compensate")
-	}
-
-	return rules
-}
-
-func checkRepeats(given map[string]int, nilOptions int, kind string) []string {
-	var rules []string
-
-	if nilOptions > 0 {
-		rules = append(rules, "nil "+kind)
-	}
-
-	for _, name := range slices.Sorted(maps.Keys(given)) {
-		if given[name] > 1 {
-			rules = append(rules, name+" given more than once")
-		}
 	}
 
 	return rules

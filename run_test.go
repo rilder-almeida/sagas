@@ -60,13 +60,36 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
-func (j *scriptJournal) results() []result {
+type runRecord struct {
+	Execution string
+	Status    Status
+	Steps     []stepResult
+	events    []Event
+}
+
+func recordOf(events []Event) runRecord {
+	r := runRecord{Status: StatusUnfinished, Steps: foldStepsSharingChanged(events), events: events}
+
+	for i := range events {
+		if events[i].Kind == EventSagaStarted {
+			r.Execution = events[i].Execution
+		}
+
+		if events[i].Kind == EventSagaFinished {
+			r.Status = events[i].Status
+		}
+	}
+
+	return r
+}
+
+func (j *scriptJournal) results() []runRecord {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	out := make([]result, 0, len(j.executions))
+	out := make([]runRecord, 0, len(j.executions))
 	for _, execution := range j.executions {
-		out = append(out, buildResult(j.Events(execution)))
+		out = append(out, recordOf(j.Events(execution)))
 	}
 
 	return out
@@ -632,7 +655,7 @@ type runRow struct {
 	wantTextCount      map[string]int
 	wantErrText        map[string]string
 	wantUnrecorded     []string
-	wantSteps          map[string]StepStatus
+	wantSteps          map[string]stepStatus
 	wantPending        []string
 	wantOrder          [][2]string
 	wantZones          []StepZone
@@ -668,7 +691,7 @@ func Test_Saga_Run(t *testing.T) {
 	}
 }
 
-func assertRun(t *testing.T, tt *runRow, got *ran, res *result, journal *scriptJournal) {
+func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scriptJournal) {
 	t.Helper()
 
 	err := got.err
@@ -697,7 +720,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *result, journal *scriptJ
 
 	assert.Equal(t, tt.wantStatus, res.Status)
 	assert.Equal(t, tt.wantPending, pending)
-	assert.Equal(t, tt.wantPending, res.pending())
+	assert.Equal(t, tt.wantPending, pendingOf(res.events))
 	assert.Equal(t, tt.wantState, got.state)
 	assertSteps(t, res, tt.wantSteps)
 	assertEvents(t, res, tt, journal.Events(res.Execution))
@@ -760,10 +783,10 @@ func requireErrs(t *testing.T, err error, wants []error, text []string) {
 	}
 }
 
-func assertSteps(t *testing.T, res *result, want map[string]StepStatus) {
+func assertSteps(t *testing.T, res *runRecord, want map[string]stepStatus) {
 	t.Helper()
 
-	got := make(map[string]StepStatus, len(res.Steps))
+	got := make(map[string]stepStatus, len(res.Steps))
 	for i := range res.Steps {
 		got[res.Steps[i].Name] = res.Steps[i].Status
 	}
@@ -782,7 +805,7 @@ func assertOrder(t *testing.T, calls []string, want [][2]string) {
 	}
 }
 
-func assertEvents(t *testing.T, res *result, tt *runRow, events []Event) {
+func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 	t.Helper()
 
 	require.NotEmpty(t, events)
@@ -804,11 +827,11 @@ func assertEvents(t *testing.T, res *result, tt *runRow, events []Event) {
 
 	for i := range res.Steps {
 		step := &res.Steps[i]
-		if slices.Contains([]StepStatus{StepSkipped, StepNotStarted}, step.Status) {
+		if slices.Contains([]stepStatus{stepSkipped, stepNotStarted}, step.Status) {
 			assert.False(t, started[step.Name], "step %s is %s but has a started event", step.Name, step.Status)
 		}
 
-		if slices.Contains([]StepStatus{StepSucceeded, StepUnknown}, step.Status) {
+		if slices.Contains([]stepStatus{stepSucceeded, stepUnknown}, step.Status) {
 			assert.True(t, started[step.Name], "step %s is %s but has no started event", step.Name, step.Status)
 		}
 	}

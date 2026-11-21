@@ -162,9 +162,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		return nil
 	}
 
-	res := buildResult(r.events)
-
-	return &RunError{Kind: ErrIncomplete, Steps: r.failures, Pending: res.pending(), causes: causes}
+	return &RunError{Kind: ErrIncomplete, Steps: r.failures, Pending: pendingOf(r.events), causes: causes}
 }
 
 type waitRelease func()

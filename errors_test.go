@@ -452,7 +452,7 @@ func Test_kindOf(t *testing.T) {
 	}
 }
 
-func assertFailures(t *testing.T, tt *runRow, got *ran, res *result) {
+func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 	t.Helper()
 
 	failures := failuresOf(got.err)
@@ -563,7 +563,7 @@ func failureOf(t *testing.T, err error, step string) *Error {
 	return nil
 }
 
-func resultOf(t *testing.T, res *result, step string) stepResult {
+func resultOf(t *testing.T, res *runRecord, step string) stepResult {
 	t.Helper()
 
 	for i := range res.Steps {
@@ -617,7 +617,7 @@ func rejectionStopRow() runRow {
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:     []error{ErrConcurrentWriter, context.Canceled},
 		wantNotErrs:  []error{ErrJournal},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
 		wantPending:  []string{"b", "c"},
 		wantKinds:    map[string]*KindError{"c": ErrUnknown},
 		wantFailed:   []string{"c"},
@@ -638,7 +638,7 @@ func journalStopRow() runRow {
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"), lostOf("c"))),
 		wantErrs:     []error{ErrJournal, errJournalDown, context.Canceled},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
 		wantPending:  []string{"b", "c"},
 		wantKinds:    map[string]*KindError{"c": ErrUnknown},
 		wantFailed:   []string{"c"},
@@ -671,7 +671,7 @@ func markedPanicRow() runRow {
 		wantAttempts: map[string]int{"b": 1},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
 		wantErrs:     []error{errMarker, errAlwaysFails},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
 		wantKinds:    map[string]*KindError{"b": ErrPanic},
 		wantFailed:   []string{"b"},
@@ -688,7 +688,7 @@ func failedKindRow() runRow {
 		wantStatus:     StatusUnfinished,
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
 		wantErrs:       []error{errAlwaysFails, ErrFailed},
-		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
 		wantFailed:     []string{"b"},
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
@@ -709,7 +709,7 @@ func panicKindRow() runRow {
 		wantAttempts: map[string]int{"b": 1},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
 		wantErrs:     []error{errAlwaysFails, ErrPanic},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
 		wantKinds:    map[string]*KindError{"b": ErrPanic},
 		wantFailed:   []string{"b"},
@@ -727,7 +727,7 @@ func conflictKindRow() runRow {
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c"))),
 		wantErrs:     []error{ErrConflict},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepFailed},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
 		wantState:    tripState{Hotel: hotelRitz},
 		wantKinds:    map[string]*KindError{"c": ErrConflict},
 		wantFailed:   []string{"c"},
@@ -745,7 +745,7 @@ func siblingCauseRow() runRow {
 		wantAttempts:       map[string]int{"b": 3, "c": 1},
 		wantTrail:          afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c"))),
 		wantErrs:           []error{errAlwaysFails, context.Canceled},
-		wantSteps:          map[string]StepStatus{"a": StepSucceeded, "b": StepFailed, "c": StepUnknown},
+		wantSteps:          map[string]stepStatus{"a": stepSucceeded, "b": stepFailed, "c": stepUnknown},
 		wantPending:        []string{"c"},
 		wantKinds:          map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
 		wantFailed:         []string{"b", "c"},
@@ -779,7 +779,7 @@ func goexitHistoryRow() runRow {
 		wantStatus:     StatusUnfinished,
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
 		wantErrs:       []error{errGoexit, errFirst},
-		wantSteps:      map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:    []string{"b"},
 		wantKinds:      map[string]*KindError{"b": ErrUnknown},
 		wantFailed:     []string{"b"},
@@ -807,7 +807,7 @@ func droppedPredicateRow() runRow {
 		wantErrs:     []error{ErrConcurrentWriter},
 		wantNotErrs:  []error{ErrJournal},
 		wantText:     []string{"panic: late"},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepNotStarted},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepNotStarted},
 		wantPending:  []string{"b"},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b")),
 		wantKinds:    map[string]*KindError{"c": ErrPanic},
@@ -836,7 +836,7 @@ func droppedOutcomeRow() runRow {
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
 		wantNotErrs:  []error{ErrJournal},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown, "c": StepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
 		wantPending:  []string{"b", "c"},
 		wantKinds:    map[string]*KindError{"c": ErrFailed},
 		wantFailed:   []string{"c"},
@@ -862,7 +862,7 @@ func callerCauseRow() runRow {
 		wantAttempts: map[string]int{"b": 1},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
 		wantErrs:     []error{errStop, context.Canceled},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepUnknown},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
 		wantPending:  []string{"b"},
 		wantKinds:    map[string]*KindError{"b": ErrUnknown},
 		wantFailed:   []string{"b"},
@@ -872,7 +872,7 @@ func callerCauseRow() runRow {
 }
 
 func callerKindRow(
-	name string, wrapped error, status StepStatus, kind *KindError, last string, pending []string,
+	name string, wrapped error, status stepStatus, kind *KindError, last string, pending []string,
 ) runRow {
 	return runRow{
 		name: name,
@@ -886,7 +886,7 @@ func callerKindRow(
 		wantStatus:  StatusUnfinished,
 		wantPending: pending,
 		wantErrs:    []error{wrapped},
-		wantSteps:   map[string]StepStatus{"a": StepSucceeded, "b": status},
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "b": status},
 		wantKinds:   map[string]*KindError{"b": kind},
 		wantFailed:  []string{"b"},
 		wantErrText: map[string]string{"b": "nested run: " + wrapped.Error()},
@@ -899,21 +899,21 @@ func callerKindRow(
 func callerConflictRow() runRow {
 	return callerKindRow(
 		"[Fail] When: an action returns an error that wraps ErrConflict ; Should: report ErrFailed, not ErrConflict",
-		ErrConflict, StepFailed, ErrFailed, failedB(), nil,
+		ErrConflict, stepFailed, ErrFailed, failedB(), nil,
 	)
 }
 
 func callerJournalRow() runRow {
 	return callerKindRow(
 		"[Fail] When: an action returns an error that wraps ErrJournal ; Should: report ErrFailed, not ErrJournal",
-		ErrJournal, StepFailed, ErrFailed, failedB(), nil,
+		ErrJournal, stepFailed, ErrFailed, failedB(), nil,
 	)
 }
 
 func callerPanicRow() runRow {
 	return callerKindRow(
 		"[Fail] When: an action returns an error that wraps a PanicError ; Should: report ErrUnknown, not ErrPanic",
-		&PanicError{Value: "nested"}, StepUnknown, ErrUnknown, lostOf("b"), []string{"b"},
+		&PanicError{Value: "nested"}, stepUnknown, ErrUnknown, lostOf("b"), []string{"b"},
 	)
 }
 
@@ -935,7 +935,7 @@ func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs [
 		},
 		wantStatus:   StatusUnfinished,
 		wantErrs:     wantErrs,
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": `step "x" failed after 1 attempts: ` + errText},
@@ -965,7 +965,7 @@ func nestedMiddlewareRow() runRow {
 		opts:         []Option{WithMiddleware(nestingMiddleware())},
 		wantStatus:   StatusUnfinished,
 		wantErrs:     []error{ErrConflict, ErrIncomplete, ErrFailed},
-		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": nestedConflictText},

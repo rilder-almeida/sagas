@@ -26,6 +26,8 @@ const (
 	sagaTrip = `saga "trip"`
 	noReach  = "neither before nor after"
 	quotedB  = `"b"`
+
+	nilOptionText = "nil Option"
 )
 
 var errAlwaysFails = errors.New("sagas: test: the action always fails")
@@ -99,7 +101,7 @@ func Test_New(t *testing.T) {
 			name: "[Fail] When: an Option is nil ; Should: reject it",
 			saga: tripName, flow: a, opts: []Option{nil},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{sagaTrip, "nil Option"},
+			wantContains: []string{sagaTrip, nilOptionText},
 		},
 		{
 			name: "[Fail] When: WithJournal is nil ; Should: reject it",
@@ -165,7 +167,7 @@ func Test_New(t *testing.T) {
 			name: "[Fail] When: the saga and a step are both bad ; Should: join both errors",
 			flow: &idleStep{}, opts: []Option{nil},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`saga ""`, "nil Option", neitherText},
+			wantContains: []string{`saga ""`, nilOptionText, neitherText},
 		},
 	}
 
@@ -629,6 +631,48 @@ func Test_stepNode_buildCalls(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wantTrace, rec.snapshot())
+		})
+	}
+}
+
+func Test_checkRepeats(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		given      map[string]int
+		nilOptions int
+		want       []string
+	}{
+		{
+			name:  "[Success] When: each option is given once ; Should: find nothing",
+			given: map[string]int{"WithJournal": 1, "WithMiddleware": 1},
+			want:  nil,
+		},
+		{
+			name:       "[Fail] When: an option is nil ; Should: report a nil Option",
+			given:      map[string]int{},
+			nilOptions: 2,
+			want:       []string{nilOptionText},
+		},
+		{
+			name:  "[Fail] When: two options repeat ; Should: report each one in name order",
+			given: map[string]int{"WithRecoveryTimeout": 2, "WithJournal": 3, "WithMiddleware": 1},
+			want:  []string{"WithJournal given more than once", "WithRecoveryTimeout given more than once"},
+		},
+		{
+			name:       "[Fail] When: an option is nil and another repeats ; Should: report the nil Option first",
+			given:      map[string]int{"WithJournal": 2},
+			nilOptions: 1,
+			want:       []string{nilOptionText, "WithJournal given more than once"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, checkRepeats(tt.given, tt.nilOptions))
 		})
 	}
 }

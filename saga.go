@@ -3,6 +3,7 @@ package sagas
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"time"
@@ -157,7 +158,7 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 		}
 	}
 
-	rules = append(rules, checkRepeats(d.given, nilOptions, "Option")...)
+	rules = append(rules, checkRepeats(d.given, nilOptions)...)
 
 	errs := make([]error, 0, len(rules))
 	for _, rule := range rules {
@@ -165,6 +166,22 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 	}
 
 	return errs
+}
+
+func checkRepeats(given map[string]int, nilOptions int) []string {
+	var rules []string
+
+	if nilOptions > 0 {
+		rules = append(rules, "nil Option")
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(given)) {
+		if given[name] > 1 {
+			rules = append(rules, name+" given more than once")
+		}
+	}
+
+	return rules
 }
 
 // WithJournal sets the journal that records each run. Left out, a run uses a fresh in-memory journal.
