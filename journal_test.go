@@ -68,6 +68,27 @@ func scribbleEvent(e *Event) {
 	}
 }
 
+func prime(t *testing.T, j *MemoryJournal, prior []Event) {
+	t.Helper()
+
+	for i := range prior {
+		require.NoError(t, j.Append(t.Context(), &prior[i]))
+	}
+}
+
+func touchedBy(prior []Event, event *Event) []string {
+	touched := make([]string, 0, len(prior)+1)
+	for i := range prior {
+		touched = append(touched, prior[i].Execution)
+	}
+
+	if event != nil {
+		touched = append(touched, event.Execution)
+	}
+
+	return touched
+}
+
 func Test_MemoryJournal_Append(t *testing.T) {
 	t.Parallel()
 
@@ -78,6 +99,7 @@ func Test_MemoryJournal_Append(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		zero    bool
 		prior   []Event
 		event   *Event
 		wantErr error
@@ -86,6 +108,12 @@ func Test_MemoryJournal_Append(t *testing.T) {
 	}{
 		{
 			name:  "[Success] When: the first event of a new execution ; Should: write it",
+			event: new(journalEvent("a", 1)),
+			want:  map[string][]Event{"a": {journalEvent("a", 1)}},
+		},
+		{
+			name:  "[Success] When: the journal is a zero value ; Should: write the first event",
+			zero:  true,
 			event: new(journalEvent("a", 1)),
 			want:  map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
@@ -182,18 +210,12 @@ func Test_MemoryJournal_Append(t *testing.T) {
 			t.Parallel()
 
 			j := NewMemoryJournal()
-			for i := range tt.prior {
-				require.NoError(t, j.Append(t.Context(), &tt.prior[i]))
+			if tt.zero {
+				j = &MemoryJournal{}
 			}
 
-			touched := make([]string, 0, len(tt.prior)+1)
-			for i := range tt.prior {
-				touched = append(touched, tt.prior[i].Execution)
-			}
-
-			if tt.event != nil {
-				touched = append(touched, tt.event.Execution)
-			}
+			prime(t, j, tt.prior)
+			touched := touchedBy(tt.prior, tt.event)
 
 			err := j.Append(t.Context(), tt.event)
 			scribbleEvent(tt.event)

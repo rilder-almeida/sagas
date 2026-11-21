@@ -89,46 +89,46 @@ func (*orderStep) Execute(_ context.Context, s *orderState) error {
 
 const orderID = "order-7"
 
-type runIDRow struct {
-	name       string
-	id         string
-	runs       int
-	journaled  bool
-	script     map[int]error
-	wantErrs   []error
-	wantEvents []EventKind
-}
-
 func Test_Saga_Run_executionID(t *testing.T) {
 	t.Parallel()
 
 	completed := []EventKind{EventSagaStarted, EventStepStarted, EventStepSucceeded, EventSagaFinished}
 
-	tests := []runIDRow{
+	tests := []struct {
+		name       string
+		id         string
+		script     map[int]error
+		wantErrs   [][]error
+		wantEvents []EventKind
+	}{
 		{
-			name: "[Success] When: the state declares ExecutionID ; Should: store the events under that ID",
-			id:   orderID, runs: 1, journaled: true, wantEvents: completed,
+			name:     "[Success] When: the state declares ExecutionID ; Should: store the events under that ID",
+			id:       orderID,
+			wantErrs: [][]error{nil},
+
+			wantEvents: completed,
 		},
 		{
-			name: "[Success] When: two runs share an ID and the saga has no journal ; Should: complete both",
-			id:   orderID, runs: 2,
+			name:       "[Fail] When: a second run reuses a stored ID ; Should: return ErrExecutionExists, no RunError",
+			id:         orderID,
+			wantErrs:   [][]error{nil, {ErrExecutionExists}},
+			wantEvents: completed,
 		},
 		{
-			name: "[Fail] When: a second run reuses a stored ID ; Should: return ErrExecutionExists, no RunError",
-			id:   orderID, runs: 2, journaled: true, wantErrs: []error{ErrExecutionExists}, wantEvents: completed,
+			name:     "[Fail] When: the journal fails the saga-started event ; Should: return ErrJournal, no RunError",
+			id:       orderID,
+			script:   map[int]error{1: errJournalDown},
+			wantErrs: [][]error{{ErrJournal, errJournalDown}},
 		},
 		{
-			name: "[Fail] When: the journal fails the saga-started event ; Should: return ErrJournal, no RunError",
-			id:   orderID, runs: 1, journaled: true, script: map[int]error{1: errJournalDown},
-			wantErrs: []error{ErrJournal, errJournalDown},
+			name:     "[Fail] When: the ID breaks the name rule ; Should: return ErrInvalidRun before any event",
+			id:       "order:42",
+			wantErrs: [][]error{{ErrInvalidRun}},
 		},
 		{
-			name: "[Fail] When: the ID breaks the name rule ; Should: return ErrInvalidRun before any event",
-			id:   "order:42", runs: 1, journaled: true, wantErrs: []error{ErrInvalidRun},
-		},
-		{
-			name: "[Fail] When: the ID is empty ; Should: return ErrInvalidRun before any event",
-			id:   "", runs: 1, journaled: true, wantErrs: []error{ErrInvalidRun},
+			name:     "[Fail] When: the ID is empty ; Should: return ErrInvalidRun before any event",
+			id:       "",
+			wantErrs: [][]error{{ErrInvalidRun}},
 		},
 	}
 
@@ -138,20 +138,15 @@ func Test_Saga_Run_executionID(t *testing.T) {
 
 			journal := newScriptJournal(tt.script)
 
-			var opts []Option
-			if tt.journaled {
-				opts = append(opts, WithJournal(journal))
-			}
-
-			s, err := New[orderState]("order", &orderStep{}, opts...)
+			s, err := New[orderState]("order", &orderStep{}, WithJournal(journal))
 			require.NoError(t, err)
 
-			for range tt.runs {
-				err = s.Run(t.Context(), &orderState{ID: tt.id})
-			}
+			for run, wants := range tt.wantErrs {
+				runErr := s.Run(t.Context(), &orderState{ID: tt.id})
 
-			requireErrs(t, err, tt.wantErrs, nil)
-			assert.NotErrorAs(t, err, new(*RunError), "pre-start errors are not a RunError")
+				requireErrs(t, runErr, wants, nil)
+				assert.NotErrorAs(t, runErr, new(*RunError), "run %d: pre-start errors are not a RunError", run)
+			}
 
 			var kinds []EventKind
 			for _, e := range journal.Events(tt.id) {
@@ -159,6 +154,33 @@ func Test_Saga_Run_executionID(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wantEvents, kinds)
+		})
+	}
+}
+
+func Test_Saga_Run_withoutJournal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		runs int
+	}{
+		{name: "[Success] When: two runs share an ID and the saga has no journal ; Should: complete both", runs: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := New[orderState]("order", &orderStep{})
+			require.NoError(t, err)
+
+			for range tt.runs {
+				st := orderState{ID: orderID}
+
+				require.NoError(t, s.Run(t.Context(), &st))
+				assert.Equal(t, hotelRitz, st.Hotel)
+			}
 		})
 	}
 }
@@ -591,6 +613,7 @@ type runRow struct {
 	wantText           []string
 	cancelAfter        time.Duration
 	cancelCause        error
+	wantFailed         []string
 	wantKinds          map[string]*KindError
 	wantNotKinds       map[string]*KindError
 	wantAttempts       map[string]int
@@ -629,7 +652,7 @@ func Test_Saga_Run(t *testing.T) {
 				require.Len(t, results, len(runs))
 
 				for i := range runs {
-					assertRun(t, &tt, &runs[i], &results[i])
+					assertRun(t, &tt, &runs[i], &results[i], journal)
 				}
 
 				assertOrder(t, rec.snapshot(), tt.wantOrder)
@@ -638,7 +661,7 @@ func Test_Saga_Run(t *testing.T) {
 	}
 }
 
-func assertRun(t *testing.T, tt *runRow, got *ran, res *result) {
+func assertRun(t *testing.T, tt *runRow, got *ran, res *result, journal *scriptJournal) {
 	t.Helper()
 
 	err := got.err
@@ -649,7 +672,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *result) {
 		require.NotErrorIs(t, err, no)
 	}
 
-	var pending []string
+	var pending, failed []string
 
 	if err != nil {
 		runErr, ok := errors.AsType[*RunError](err)
@@ -658,14 +681,19 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *result) {
 		require.ErrorIs(t, err, ErrIncomplete)
 
 		pending = runErr.Pending
+		for _, se := range runErr.Steps {
+			failed = append(failed, se.Step)
+		}
 	}
+
+	assert.Equal(t, tt.wantFailed, failed)
 
 	assert.Equal(t, tt.wantStatus, res.Status)
 	assert.Equal(t, tt.wantPending, pending)
 	assert.Equal(t, tt.wantPending, res.pending())
 	assert.Equal(t, tt.wantState, got.state)
 	assertSteps(t, res, tt.wantSteps)
-	assertEvents(t, res, tt)
+	assertEvents(t, res, tt, journal.Events(res.Execution))
 
 	assertFailures(t, tt, got, res)
 }
@@ -747,10 +775,9 @@ func assertOrder(t *testing.T, calls []string, want [][2]string) {
 	}
 }
 
-func assertEvents(t *testing.T, res *result, tt *runRow) {
+func assertEvents(t *testing.T, res *result, tt *runRow, events []Event) {
 	t.Helper()
 
-	events := res.events
 	require.NotEmpty(t, events)
 	assert.Equal(t, EventSagaStarted, events[0].Kind)
 

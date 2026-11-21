@@ -88,7 +88,7 @@ const (
 	ZoneForwardOnly Zone = "forward-only"
 )
 
-// MemoryJournal is a Journal that keeps every execution in memory. Its zero value is not ready: use NewMemoryJournal.
+// MemoryJournal is a Journal that keeps every execution in memory. Its zero value is ready to use.
 type MemoryJournal struct {
 	mu      sync.Mutex
 	streams map[string][]Event
@@ -111,6 +111,10 @@ func (j *MemoryJournal) Append(_ context.Context, e *Event) error {
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
+
+	if j.streams == nil {
+		j.streams = map[string][]Event{}
+	}
 
 	stream := j.streams[e.Execution]
 	if e.Seq == len(stream)+1 {
