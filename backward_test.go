@@ -2,7 +2,9 @@ package sagas
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,8 +27,28 @@ type guardedUndoStep struct {
 	checker
 }
 
-func compStartOf(step string) string { return trailOf(EventCompensationStarted, step) }
-func undoneOf(step string) string    { return trailOf(EventCompensationSucceeded, step) }
+func compStartOf(step string) string  { return trailOf(EventCompensationStarted, step) }
+func undoneOf(step string) string     { return trailOf(EventCompensationSucceeded, step) }
+func undoFailedOf(step string) string { return trailOf(EventCompensationFailed, step) }
+func blockedA() string                { return trailOf(EventCompensationBlocked, "a") }
+func haltedOf(step string) string     { return trailOf(EventCompensationHalted, step) }
+
+func failingUndo(
+	name string,
+	policy CompensationFailurePolicy,
+	undo func(context.Context, *tripState) error,
+) *undoStep {
+	s := undoOnce(name, okAction, undo)
+	s.CompensationFailure = policy
+
+	return s
+}
+
+func chainTrail(tail ...string) [][]string {
+	return seq(append([]string{
+		opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("c"), failedOf("c"),
+	}, tail...)...)
+}
 
 func (r *recorder) undoable(name string) *undoStep {
 	return undoing(name, r.do(name), r.do("undo:"+name))
@@ -66,6 +88,20 @@ func backwardRows() []runRow {
 		permanentRow(),
 		predicateJournalRow(),
 		predicateSiblingRow(),
+		blockRow(),
+		continueRow(),
+		haltRow(),
+		blockAcrossRow(),
+		blockThenHaltRow(),
+		haltAtOnceRow(),
+		undoPanicRow(),
+		undoConflictRow(),
+		undoIntentRow(),
+		graceWaitingRow(),
+		graceRunningRow(),
+		graceLateConflictRow(),
+		policyCopyRow(CompensationContinue, CompensationBlock, stepCompensated),
+		policyCopyRow(CompensationBlock, CompensationContinue, stepBlocked),
 	}
 }
 
@@ -328,6 +364,402 @@ func predicateSiblingRow() runRow {
 			startOf("c"), failedB(), lostOf("c"), compStartOf("c"), undoneOf("c"), compStartOf("a"), undoneOf("a"),
 			closed,
 		)),
+	}
+}
+
+func policyRow(name string, policy CompensationFailurePolicy, a stepStatus, tail, pending []string) runRow {
+	return runRow{
+		name: name,
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), failingUndo("b", policy, alwaysFails), once("c", alwaysFails))
+		},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrFailed, "c": ErrFailed},
+		wantFailed:       []string{"c", "b"},
+		wantCompensating: []string{"b"},
+		wantErrText:      map[string]string{"b": errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"b": 1, "c": 1},
+		wantErrs:         []error{errAlwaysFails},
+		wantNotErrs:      []error{ErrCompensated},
+		wantSteps:        map[string]stepStatus{"a": a, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:      pending,
+		wantTrail:        chainTrail(slices.Concat([]string{compStartOf("b"), undoFailedOf("b")}, tail)...),
+	}
+}
+
+func blockRow() runRow {
+	return policyRow(
+		"[Fail] When: a compensation with CompensationBlock fails ; Should: block the earlier compensation",
+		CompensationBlock, stepBlocked, []string{blockedA(), closed}, []string{"a", "b"},
+	)
+}
+
+func continueRow() runRow {
+	return policyRow(
+		"[Fail] When: a compensation with CompensationContinue fails ; Should: still run the earlier compensation",
+		CompensationContinue, stepCompensated, []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"},
+	)
+}
+
+func haltRow() runRow {
+	return policyRow(
+		"[Fail] When: a compensation with CompensationHalt fails ; Should: halt the earlier compensation",
+		CompensationHalt, stepHalted, []string{haltedOf("a"), closed}, []string{"a", "b"},
+	)
+}
+
+func blockAcrossRow() runRow {
+	return runRow{
+		name: "[Fail] When: a blocked chain crosses a step without Compensate ; Should: block the step before it",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				rec.undoable(
+					"a",
+				),
+				rec.step("x"),
+				failingUndo("b", CompensationBlock, alwaysFails),
+				once("c", alwaysFails),
+			)
+		},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrFailed, "c": ErrFailed},
+		wantFailed:       []string{"c", "b"},
+		wantCompensating: []string{"b"},
+		wantErrText:      map[string]string{"b": errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"b": 1, "c": 1},
+		wantErrs:         []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"a": stepBlocked, "x": stepSucceeded, "b": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"a", "b"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("x"), doneOf("x"), startOf("b"), doneOf("b"),
+			startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"), blockedA(), closed,
+		),
+	}
+}
+
+func blockThenHaltRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation waits on a Block failure, then a later Halt failure ; Should: halt it",
+		steps: func(rec *recorder) Flow {
+			late := func(context.Context, *tripState) error {
+				time.Sleep(pause)
+
+				return errAlwaysFails
+			}
+
+			return Sequence(rec.undoable("a"), Parallel(
+				failingUndo("b", CompensationBlock, alwaysFails), failingUndo("d", CompensationHalt, late),
+			), once("c", alwaysFails))
+		},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrFailed, "c": ErrFailed, "d": ErrFailed},
+		wantFailed:       []string{"c", "b", "d"},
+		wantCompensating: []string{"b", "d"},
+		wantErrText: map[string]string{
+			"b": errAlwaysFails.Error(), "c": errAlwaysFails.Error(), "d": errAlwaysFails.Error(),
+		},
+		wantAttempts: map[string]int{"b": 1, "c": 1, "d": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"a": stepHalted, "b": stepCompensationFailed, "c": stepFailed, "d": stepCompensationFailed,
+		},
+		wantPending: []string{"a", "b", "d"},
+		wantTrail: afterA(
+			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d")),
+			seq(undoFailedOf("b"), undoFailedOf("d"), haltedOf("a"), closed),
+		),
+	}
+}
+
+func haltAtOnceRow() runRow {
+	return runRow{
+		name: "[Fail] When: a Halt failure happens while another compensation still runs ; " +
+			"Should: halt the waiting compensation at once",
+		steps: func(rec *recorder) Flow {
+			slow := func(context.Context, *tripState) error {
+				time.Sleep(pause)
+				rec.add(undoB)
+
+				return nil
+			}
+
+			return Sequence(rec.undoable("a"), Parallel(
+				undoOnce("b", okAction, slow), failingUndo("d", CompensationHalt, alwaysFails),
+			), once("c", alwaysFails))
+		},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"c": ErrFailed, "d": ErrFailed},
+		wantFailed:       []string{"c", "d"},
+		wantCompensating: []string{"d"},
+		wantErrText:      map[string]string{"c": errAlwaysFails.Error(), "d": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"c": 1, "d": 1},
+		wantErrs:         []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"a": stepHalted, "b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed,
+		},
+		wantPending: []string{"a", "d"},
+		wantTrail: afterA(
+			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d")),
+			seq(undoFailedOf("d"), haltedOf("a"), undoneOf("b"), closed),
+		),
+	}
+}
+
+func undoPanicRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation panics ; Should: fail it for good and apply its policy",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), failingUndo("b", CompensationBlock, panics), once("c", alwaysFails))
+		},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrPanic, "c": ErrFailed},
+		wantFailed:       []string{"c", "b"},
+		wantCompensating: []string{"b"},
+		wantErrText:      map[string]string{"b": panicBoom, "c": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"b": 1, "c": 1},
+		wantErrs:         []error{errAlwaysFails},
+		wantText:         []string{panicBoom},
+		wantSteps:        map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:      []string{"a", "b"},
+		wantTrail:        chainTrail(compStartOf("b"), undoFailedOf("b"), blockedA(), closed),
+	}
+}
+
+func undoConflictRow() runRow {
+	return runRow{
+		name: "[Fail] When: two parallel compensations change the same field ; Should: fail the later one for good",
+		steps: func(rec *recorder) Flow {
+			late := func(_ context.Context, s *tripState) error {
+				time.Sleep(pause)
+
+				s.Hotel = "undo-d"
+
+				return nil
+			}
+
+			return Sequence(Parallel(
+				undoOnce("b", okAction, rec.book(undoB, "undo-b")), undoOnce("d", okAction, late),
+			), once("c", alwaysFails))
+		},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"c": ErrFailed, "d": ErrConflict},
+		wantFailed:       []string{"c", "d"},
+		wantCompensating: []string{"d"},
+		wantErrText: map[string]string{
+			"c": errAlwaysFails.Error(), "d": `field Hotel changed by step "d" after step "b"`,
+		},
+		wantAttempts: map[string]int{"c": 1, "d": 1},
+		wantErrs:     []error{ErrConflict},
+		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed},
+		wantPending:  []string{"d"},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d"), undoneOf("b"), undoFailedOf("d")),
+			seq(closed),
+		),
+		wantState: tripState{Hotel: "undo-b"},
+	}
+}
+
+func undoIntentRow() runRow {
+	return runRow{
+		name: "[Fail] When: the intent append of a compensation fails ; Should: not run it and fail it with ErrJournal",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
+		},
+		script:           map[int]error{8: errJournalDown},
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrJournal, "c": ErrFailed},
+		wantFailed:       []string{"c", "b"},
+		wantCompensating: []string{"b"},
+		wantErrText:      map[string]string{"b": errJournalDown.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"b": 0, "c": 1},
+		wantErrs:         []error{ErrJournal, errJournalDown},
+		wantSteps:        map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:      []string{"a", "b"},
+		wantTrail:        chainTrail(undoFailedOf("b"), blockedA(), closed),
+	}
+}
+
+func graceWaitingRow() runRow {
+	return runRow{
+		name: "[Fail] When: the grace period ends while a compensation waits for its turn ; " +
+			"Should: fail it with ErrGraceEnded without running it",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				rec.undoable("a"), failingUndo("b", CompensationContinue, blockedOnCtx), once("c", alwaysFails),
+			)
+		},
+		opts:             []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:      pause,
+		cancelCause:      errStop,
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"a": ErrGraceEnded, "b": ErrUnknown, "c": ErrFailed},
+		wantFailed:       []string{"c", "b", "a"},
+		wantCompensating: []string{"a", "b"},
+		wantErrText: map[string]string{
+			"a": ErrGraceEnded.Error(), "b": canceledTxt, "c": errAlwaysFails.Error(),
+		},
+		wantAttempts: map[string]int{"a": 0, "b": 1, "c": 1},
+		wantCauseIs:  map[string]error{"b": ErrGraceEnded},
+		wantErrs:     []error{ErrGraceEnded},
+		wantSteps: map[string]stepStatus{
+			"a": stepCompensationFailed, "b": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"a", "b"},
+		wantTrail:   chainTrail(compStartOf("b"), undoFailedOf("b"), undoFailedOf("a"), closed),
+	}
+}
+
+func graceRunningRow() runRow {
+	return runRow{
+		name: "[Fail] When: the grace period ends while a compensation runs ; Should: fail it with ErrGraceEnded",
+		steps: func(*recorder) Flow {
+			return Sequence(undoOnce("b", okAction, blockedOnCtx), once("c", alwaysFails))
+		},
+		opts:             []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:      pause,
+		cancelCause:      errStop,
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrUnknown, "c": ErrFailed},
+		wantFailed:       []string{"c", "b"},
+		wantCompensating: []string{"b"},
+		wantErrText:      map[string]string{"b": canceledTxt, "c": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"b": 1, "c": 1},
+		wantCauseIs:      map[string]error{"b": ErrGraceEnded},
+		wantErrs:         []error{ErrGraceEnded},
+		wantSteps:        map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:      []string{"b"},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"),
+			closed,
+		),
+	}
+}
+
+func graceLateConflictRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation returns after the grace period and its commit conflicts ; " +
+			"Should: join ErrGraceEnded to its error",
+		steps: func(rec *recorder) Flow {
+			late := func(ctx context.Context, s *tripState) error {
+				<-ctx.Done()
+
+				s.Hotel = "undo-d"
+
+				return nil
+			}
+
+			return Sequence(Parallel(
+				undoOnce("b", okAction, rec.book(undoB, "undo-b")), undoOnce("d", okAction, late),
+			), once("c", alwaysFails))
+		},
+		opts:             []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:      pause,
+		cancelCause:      errStop,
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"c": ErrFailed, "d": ErrConflict},
+		wantFailed:       []string{"c", "d"},
+		wantCompensating: []string{"d"},
+		wantErrText: map[string]string{
+			"c": errAlwaysFails.Error(), "d": `field Hotel changed by step "d" after step "b"`,
+		},
+		wantAttempts: map[string]int{"c": 1, "d": 1},
+		wantErrs:     []error{ErrConflict, ErrGraceEnded},
+		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed},
+		wantPending:  []string{"d"},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d"), undoneOf("b")),
+			seq(undoFailedOf("d"), closed),
+		),
+		wantState: tripState{Hotel: "undo-b"},
+	}
+}
+
+func policyCopyRow(given, later CompensationFailurePolicy, a stepStatus) runRow {
+	tail, pending := []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"}
+	if a == stepBlocked {
+		tail, pending = []string{blockedA(), closed}, []string{"a", "b"}
+	}
+
+	return runRow{
+		name: fmt.Sprintf("[Fail] When: b has policy %s and Execute sets it to %s after New ; "+
+			"Should: apply %s in every run", given, later, given),
+		steps: func(rec *recorder) Flow {
+			b := failingUndo("b", given, alwaysFails)
+			c := once("c", func(context.Context, *tripState) error {
+				b.CompensationFailure = later
+
+				return errAlwaysFails
+			})
+
+			return Sequence(rec.undoable("a"), b, c)
+		},
+		runs:             2,
+		wantStatus:       StatusCompensationFailed,
+		wantKind:         ErrCompensationFailed,
+		wantKinds:        map[string]*KindError{"b": ErrFailed, "c": ErrFailed},
+		wantFailed:       []string{"c", "b"},
+		wantCompensating: []string{"b"},
+		wantErrText:      map[string]string{"b": errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:     map[string]int{"b": 1, "c": 1},
+		wantErrs:         []error{errAlwaysFails},
+		wantSteps:        map[string]stepStatus{"a": a, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:      pending,
+		wantTrail:        chainTrail(slices.Concat([]string{compStartOf("b"), undoFailedOf("b")}, tail)...),
+	}
+}
+
+func Test_decide(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		halted       bool
+		blockedBelow bool
+		want         compDecision
+	}{
+		{name: "[Success] When: nothing failed before ; Should: run the compensation", want: compRun},
+		{
+			name:         "[Fail] When: a compensation it waits on is blocked ; Should: block it",
+			blockedBelow: true,
+			want:         compBlocked,
+		},
+		{
+			name:         "[Fail] When: a Halt failure happened and one it waits on is blocked ; Should: halt it",
+			halted:       true,
+			blockedBelow: true,
+			want:         compHalted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, decide(tt.halted, tt.blockedBelow))
+		})
 	}
 }
 

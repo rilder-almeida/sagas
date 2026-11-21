@@ -79,7 +79,15 @@ func (r *runner[S]) stopped() bool {
 }
 
 func (r *runner[S]) record(ctx context.Context, e *Event) bool {
-	return r.rejected == nil && r.append(ctx, e) == nil
+	return r.persist(ctx, e) == nil
+}
+
+func (r *runner[S]) persist(ctx context.Context, e *Event) error {
+	if r.rejected != nil {
+		return r.rejected
+	}
+
+	return r.append(ctx, e)
 }
 
 type crew[S any] struct {

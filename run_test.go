@@ -645,6 +645,7 @@ type runRow struct {
 	cancelAfter        time.Duration
 	cancelCause        error
 	wantFailed         []string
+	wantCompensating   []string
 	wantKinds          map[string]*KindError
 	wantNotKinds       map[string]*KindError
 	wantAttempts       map[string]int
