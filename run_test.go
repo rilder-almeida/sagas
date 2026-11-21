@@ -46,6 +46,14 @@ func (r *repeatedError) Unwrap() error { return r.error }
 
 func failing(err error, times int) error { return &repeatedError{error: err, times: times} }
 
+type seriesError struct {
+	errs []error
+}
+
+func (s *seriesError) Error() string { return errors.Join(s.errs...).Error() }
+
+func inTurn(errs ...error) error { return &seriesError{errs: errs} }
+
 type scriptJournal struct {
 	*MemoryJournal
 
@@ -74,6 +82,11 @@ func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
 	limit := 1
 	if r, ok := errors.AsType[*repeatedError](err); ok {
 		err, limit = r.error, r.times
+	}
+
+	if s, ok := errors.AsType[*seriesError](err); ok {
+		limit = len(s.errs)
+		err = s.errs[min(j.failed[e.Seq], limit-1)]
 	}
 
 	if scripted && (limit == forever || j.failed[e.Seq] < limit) {

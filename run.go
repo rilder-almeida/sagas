@@ -101,6 +101,10 @@ func (r *runner[S]) resend(ctx context.Context) error {
 		return nil
 	}
 
+	if r.rejected != nil {
+		return r.rejected
+	}
+
 	if err := r.send(ctx, e); err != nil {
 		return err
 	}

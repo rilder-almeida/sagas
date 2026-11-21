@@ -102,6 +102,7 @@ func backwardRows() []runRow {
 		undoOutcomeRow(),
 		undoOutcomeTwiceRow(),
 		undoOutcomeDownRow(),
+		resendAfterRejectionRow(),
 		graceWaitingRow(),
 		graceRunningRow(),
 		graceIntentRow(),
@@ -653,6 +654,44 @@ func undoOutcomeTwiceRow() runRow {
 		wantRunOnly:    []string{"b"},
 		wantOrder:      [][2]string{{"b", undoB}},
 		wantTrail:      chainTrail(compStartOf("b"), undoneOf("b"), blockedOf("a"), closed),
+	}
+}
+
+func resendAfterRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal rejects the resend of a compensation success and a sibling compensation " +
+			"fails later ; Should: append nothing after the rejection and end ErrConcurrentWriter",
+		steps: func(rec *recorder) Flow {
+			b := failingUndo("b", CompensationBlock, func(context.Context, *tripState) error {
+				time.Sleep(pause)
+
+				return errAlwaysFails
+			})
+
+			return Sequence(Parallel(b, rec.undoable("c")), once("d", alwaysFails))
+		},
+		script:     map[int]error{10: inTurn(errJournalDown, ErrConcurrentWriter)},
+		wantStatus: statusUnfinished,
+		wantKind:   ErrConcurrentWriter,
+		wantKinds:  map[string]*KindError{"d": ErrFailed, comp("c"): ErrJournal, comp("b"): ErrFailed},
+		wantFailed: []string{"d", comp("c"), comp("b")},
+		wantErrText: map[string]string{
+			"d": errAlwaysFails.Error(), comp("c"): errJournalDown.Error(), comp("b"): errAlwaysFails.Error(),
+		},
+		wantAttempts:   map[string]int{"d": 1, comp("c"): 1, comp("b"): 1},
+		wantUnrecorded: []string{comp("c"), comp("b")},
+		wantErrs:       []error{ErrConcurrentWriter, ErrJournal, errJournalDown},
+		wantSteps: map[string]stepStatus{
+			"b": stepCompensationFailed, "c": stepCompensationFailed, "d": stepFailed,
+		},
+		wantPending: []string{"b", "c"},
+		wantOrder:   [][2]string{{"c", undoC}},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("b"), startOf("c"), doneOf("b"), doneOf("c")),
+			seq(startOf("d"), failedOf("d")),
+			together(compStartOf("b"), compStartOf("c")),
+		),
 	}
 }
 
