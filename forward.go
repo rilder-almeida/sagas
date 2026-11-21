@@ -323,6 +323,8 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	}
 
 	if f.out.kind != outcomeSuccess {
+		r.graceHit = r.graceHit || f.late
+
 		out := f.out
 		if f.late && r.saga.steps[i].zone != ZoneCompensable {
 			out = withGraceEnd(out)

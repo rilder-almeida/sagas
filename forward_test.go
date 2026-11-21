@@ -98,6 +98,88 @@ func pivotRows() []runRow {
 		pivotCommitFailsRow(),
 		pivotErrorAppendRow(),
 		forwardOnlyOwnFailureRow(),
+		lateSiblingAfterOwnFailureRow(),
+		forwardOnlyCommitFailsRow(),
+	}
+}
+
+func lateSiblingAfterOwnFailureRow() runRow {
+	return runRow{
+		name: "[Fail] When: a forward-only step fails on its own before the grace end and its sibling succeeds " +
+			"after it ; Should: end ErrIncomplete without matching the caller cause",
+		steps: func(rec *recorder) Flow {
+			y := act("y", func(ctx context.Context, s *tripState) error {
+				s.Hotel = hotelRitz
+
+				return lateSuccess(ctx, s)
+			})
+			z := once("z", func(context.Context, *tripState) error {
+				time.Sleep(pause * 3 / 2)
+
+				return errAlwaysFails
+			})
+
+			return Sequence(rec.undoable("a"), rec.pivot(), Parallel(y, z))
+		},
+		opts:         []Option{WithRecoveryTimeout(pause)},
+		cancelAfter:  pause,
+		cancelCause:  errStop,
+		wantStatus:   StatusIncomplete,
+		wantKind:     ErrIncomplete,
+		wantKinds:    map[string]*KindError{"z": ErrFailed},
+		wantFailed:   []string{"z"},
+		wantErrText:  map[string]string{"z": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"z": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{errStop, context.Canceled, ErrGraceEnded},
+		wantSteps: map[string]stepStatus{
+			"a": stepSucceeded, "p": stepSucceeded, "y": stepSucceeded, "z": stepFailed,
+		},
+		wantPending: []string{"z"},
+		wantTrail: slices.Concat(
+			seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p")),
+			together(startOf("y"), startOf("z")),
+			seq(failedOf("z"), doneOf("y"), closed),
+		),
+		wantZones: []StepZone{
+			{Name: "a", Zone: ZoneCompensable},
+			{Name: "p", Zone: ZonePivot},
+			{Name: "y", Zone: ZoneForwardOnly},
+			{Name: "z", Zone: ZoneForwardOnly},
+		},
+		wantState: tripState{Hotel: hotelRitz},
+	}
+}
+
+func forwardOnlyCommitFailsRow() runRow {
+	return runRow{
+		name: "[Fail] When: a forward-only step succeeds and its state does not encode ; " +
+			"Should: fail it with ErrInvalidState and end ErrIncomplete",
+		steps: func(rec *recorder) Flow {
+			z := act("z", func(_ context.Context, s *tripState) error {
+				s.Rate = math.NaN()
+
+				return nil
+			})
+
+			return Sequence(rec.undoable("a"), rec.pivot(), z)
+		},
+		wantStatus:   StatusIncomplete,
+		wantKind:     ErrIncomplete,
+		wantKinds:    map[string]*KindError{"z": ErrInvalidState},
+		wantFailed:   []string{"z"},
+		wantErrText:  map[string]string{"z": "NaN"},
+		wantAttempts: map[string]int{"z": 1},
+		wantErrs:     []error{ErrInvalidState},
+		wantNotErrs:  []error{ErrCompensated},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepFailed},
+		wantPending:  []string{"z"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
+		),
+		wantZones: []StepZone{
+			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
+		},
 	}
 }
 
@@ -205,21 +287,21 @@ func pivotErrorAppendRow() runRow {
 
 			return Sequence(rec.undoable("a"), p)
 		},
-		script:         map[int]error{5: errJournalDown},
-		wantStatus:     StatusCompensated,
-		wantKind:       ErrCompensated,
-		wantKinds:      map[string]*KindError{"p": ErrFailed},
-		wantFailed:     []string{"p"},
-		wantErrText:    map[string]string{"p": errAlwaysFails.Error()},
-		wantAttempts:   map[string]int{"p": 1},
-		wantUnrecorded: []string{"p"},
-		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown},
-		wantNotErrs:    []error{ErrIncomplete},
-		wantSteps:      map[string]stepStatus{"a": stepCompensated, "p": stepUnknown},
-		wantPending:    []string{"p"},
-		wantOrder:      [][2]string{{"a", undoA}},
-		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("p"), compStartOf("a"), undoneOf("a"), closed),
-		wantZones:      []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		script:          map[int]error{5: errJournalDown},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantKinds:       map[string]*KindError{"p": ErrFailed},
+		wantFailed:      []string{"p"},
+		wantErrText:     map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{"p": 1},
+		wantUnrecorded:  []string{"p"},
+		wantErrs:        []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantNotErrs:     []error{ErrIncomplete},
+		wantSteps:       map[string]stepStatus{"a": stepCompensated, "p": stepUnknown},
+		wantJournalOnly: []string{"p"},
+		wantOrder:       [][2]string{{"a", undoA}},
+		wantTrail:       seq(opened, startOf("a"), doneOf("a"), startOf("p"), compStartOf("a"), undoneOf("a"), closed),
+		wantZones:       []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -370,7 +452,7 @@ func pivotLateFailureRow() runRow {
 		wantErrText:   map[string]string{"p": errAlwaysFails.Error()},
 		wantAttempts:  map[string]int{"p": 1},
 		wantCauseIs:   map[string]error{"p": ErrGraceEnded},
-		wantErrs:      []error{errAlwaysFails, ErrGraceEnded},
+		wantErrs:      []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantTextCount: map[string]int{ErrGraceEnded.Error(): 1},
 		wantSteps:     map[string]stepStatus{"a": stepSucceeded, "p": stepFailed},
 		wantTrail:     seq(opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), closed),
@@ -500,7 +582,7 @@ func forwardOnlyLateFailureRow() runRow {
 		wantErrText:   map[string]string{"z": errAlwaysFails.Error()},
 		wantAttempts:  map[string]int{"z": 1},
 		wantCauseIs:   map[string]error{"z": context.DeadlineExceeded},
-		wantErrs:      []error{errAlwaysFails, ErrGraceEnded},
+		wantErrs:      []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantNotErrs:   []error{ErrCompensated},
 		wantTextCount: map[string]int{ErrGraceEnded.Error(): 1},
 		wantSteps:     map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepFailed},

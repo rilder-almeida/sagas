@@ -745,6 +745,7 @@ type runRow struct {
 	wantUnrecorded     []string
 	wantSteps          map[string]stepStatus
 	wantPending        []string
+	wantJournalOnly    []string
 	wantOrder          [][2]string
 	wantZones          []StepZone
 	wantTrail          [][]string
@@ -811,12 +812,25 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 
 	assert.Equal(t, tt.wantStatus, res.Status)
 	assert.Equal(t, tt.wantPending, pending)
-	assert.Equal(t, tt.wantPending, pendingOf(res.events))
+	assert.Equal(t, journalPending(res, tt), pendingOf(res.events))
 	assert.Equal(t, tt.wantState, got.state)
 	assertSteps(t, res, tt.wantSteps)
 	assertEvents(t, res, tt, journal.Events(res.Execution))
 
 	assertFailures(t, tt, got, res)
+}
+
+func journalPending(res *runRecord, tt *runRow) []string {
+	var want []string
+
+	for i := range res.Steps {
+		name := res.Steps[i].Name
+		if slices.Contains(tt.wantPending, name) || slices.Contains(tt.wantJournalOnly, name) {
+			want = append(want, name)
+		}
+	}
+
+	return want
 }
 
 func assertExclusive(t *testing.T, err error) {

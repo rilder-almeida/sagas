@@ -112,6 +112,7 @@ func backwardRows() []runRow {
 		graceLateSuccessRow(),
 		graceBlockedRow(),
 		graceHaltRow(),
+		graceTurnAfterReadRow(),
 		policyCopyRow(CompensationContinue, CompensationBlock, stepCompensated),
 		policyCopyRow(CompensationBlock, CompensationContinue, stepBlocked),
 	}
@@ -622,7 +623,7 @@ func graceWaitingRow() runRow {
 		},
 		wantAttempts: map[string]int{comp("a"): 0, comp("b"): 1, "c": 1},
 		wantCauseIs:  map[string]error{comp("b"): ErrGraceEnded},
-		wantErrs:     []error{ErrGraceEnded},
+		wantErrs:     []error{ErrGraceEnded, errStop},
 		wantSteps: map[string]stepStatus{
 			"a": stepCompensationFailed, "b": stepCompensationFailed, "c": stepFailed,
 		},
@@ -647,7 +648,7 @@ func graceRunningRow() runRow {
 		wantErrText:   map[string]string{comp("b"): canceledTxt, "c": errAlwaysFails.Error()},
 		wantAttempts:  map[string]int{comp("b"): 1, "c": 1},
 		wantCauseIs:   map[string]error{comp("b"): ErrGraceEnded},
-		wantErrs:      []error{ErrGraceEnded},
+		wantErrs:      []error{ErrGraceEnded, errStop},
 		wantTextCount: map[string]int{ErrGraceEnded.Error(): 1},
 		wantSteps:     map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
 		wantPending:   []string{"b"},
@@ -684,7 +685,7 @@ func graceLateConflictRow() runRow {
 		wantFailed:   []string{"c", comp("d")},
 		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): ErrGraceEnded.Error()},
 		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
-		wantErrs:     []error{ErrGraceEnded},
+		wantErrs:     []error{ErrGraceEnded, errStop},
 		wantNotErrs:  []error{ErrConflict},
 		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed},
 		wantPending:  []string{"d"},
@@ -744,7 +745,7 @@ func graceReadLateSuccessRow() runRow {
 		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
 		wantAttempts: map[string]int{"c": 1},
 		wantErrs:     []error{errAlwaysFails},
-		wantNotErrs:  []error{ErrGraceEnded},
+		wantNotErrs:  []error{ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensated},
 		wantTrail:    readLateTrail(undoneOf("b")),
 		wantState:    tripState{Hotel: undoneHotel},
@@ -771,7 +772,7 @@ func graceReadLateFailureRow() runRow {
 		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("b"): errAlwaysFails.Error()},
 		wantAttempts: map[string]int{"c": 1, comp("b"): 1},
 		wantErrs:     []error{errAlwaysFails},
-		wantNotErrs:  []error{ErrGraceEnded},
+		wantNotErrs:  []error{ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated},
 		wantPending:  []string{"b"},
 		wantTrail:    readLateTrail(undoFailedOf("b")),
@@ -801,7 +802,7 @@ func graceLateFailureRow() runRow {
 		wantErrText:   map[string]string{comp("b"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
 		wantAttempts:  map[string]int{comp("b"): 1, "c": 1},
 		wantCauseIs:   map[string]error{comp("b"): ErrGraceEnded},
-		wantErrs:      []error{errAlwaysFails, ErrGraceEnded},
+		wantErrs:      []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantTextCount: map[string]int{ErrGraceEnded.Error(): 1},
 		wantSteps:     map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
 		wantPending:   []string{"b"},
@@ -829,7 +830,7 @@ func graceIntentRow() runRow {
 		wantFailed:   []string{"c", comp("b")},
 		wantErrText:  map[string]string{comp("b"): canceledTxt, "c": errAlwaysFails.Error()},
 		wantAttempts: map[string]int{comp("b"): 0, "c": 1},
-		wantErrs:     []error{ErrJournal, ErrGraceEnded, context.Canceled},
+		wantErrs:     []error{ErrJournal, ErrGraceEnded, context.Canceled, errStop},
 		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"b"},
 		wantTrail:    seq(opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), undoFailedOf("b"), closed),
@@ -951,7 +952,7 @@ func graceLateSuccessRow() runRow {
 		wantFailed:   []string{"c", comp("b")},
 		wantErrText:  map[string]string{comp("b"): ErrGraceEnded.Error(), "c": errAlwaysFails.Error()},
 		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
-		wantErrs:     []error{ErrGraceEnded},
+		wantErrs:     []error{ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"b"},
 		wantTrail: seq(
@@ -980,7 +981,7 @@ func graceBlockedRow() runRow {
 		wantErrText:  map[string]string{comp("b"): canceledTxt, "c": errAlwaysFails.Error()},
 		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
 		wantCauseIs:  map[string]error{comp("b"): ErrGraceEnded},
-		wantErrs:     []error{ErrGraceEnded},
+		wantErrs:     []error{ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
 		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
@@ -1009,7 +1010,7 @@ func graceHaltRow() runRow {
 		},
 		wantAttempts: map[string]int{comp("a"): 0, comp("b"): 1, "c": 1},
 		wantCauseIs:  map[string]error{comp("b"): ErrGraceEnded},
-		wantErrs:     []error{ErrGraceEnded},
+		wantErrs:     []error{ErrGraceEnded, errStop},
 		wantSteps: map[string]stepStatus{
 			"x": stepHalted, "a": stepCompensationFailed, "b": stepCompensationFailed, "c": stepFailed,
 		},
@@ -1019,6 +1020,40 @@ func graceHaltRow() runRow {
 			startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"), undoFailedOf("a"), haltedOf("x"),
 			closed,
 		),
+	}
+}
+
+func graceTurnAfterReadRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation's turn comes after the grace end and no call returned late ; " +
+			"Should: fail it with ErrGraceEnded and match the caller cause",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), Parallel(
+				undoOnce("b", okAction, slowUndo(rec, nil)), undoOnce("d", okAction, rec.do("undo:d")),
+			), once("c", alwaysFails))
+		},
+		opts:         []Option{WithRecoveryTimeout(pause)},
+		script:       map[int]error{12: errAwaitThenStore},
+		cancelAfter:  pause,
+		cancelCause:  errStop,
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("a"): ErrGraceEnded},
+		wantFailed:   []string{"c", comp("a")},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("a"): ErrGraceEnded.Error()},
+		wantAttempts: map[string]int{"c": 1, comp("a"): 0},
+		wantErrs:     []error{ErrGraceEnded, errStop},
+		wantSteps: map[string]stepStatus{
+			"a": stepCompensationFailed, "b": stepCompensated, "c": stepFailed, "d": stepCompensated,
+		},
+		wantPending: []string{"a"},
+		wantTrail: afterA(
+			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d")),
+			seq(undoneOf("d"), undoneOf("b"), undoFailedOf("a"), closed),
+		),
+		wantState: tripState{Hotel: undoneHotel},
 	}
 }
 

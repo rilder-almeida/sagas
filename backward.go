@@ -106,6 +106,8 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 		return
 	}
 
+	r.graceHit = r.graceHit || graceEnded(grace)
+
 	switch decide(b.halted, blockedBelow) {
 	case compHalted:
 		r.skip(grace, b, i, EventCompensationHalted)
@@ -138,7 +140,9 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 		}
 
 		out := outcome[S]{kind: outcomeFailure, err: err, label: ErrJournal}
+
 		if graceEnded(grace) {
+			r.graceHit = true
 			out = withGraceEnd(out)
 		}
 
@@ -186,6 +190,7 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 	}
 
 	if f.late {
+		r.graceHit = true
 		out = withGraceEnd(out)
 	}
 

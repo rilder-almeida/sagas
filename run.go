@@ -63,6 +63,7 @@ type runner[S any] struct {
 	journalErrs []error
 	rejected    error
 	interrupted error
+	graceHit    bool
 	stopReason  error
 	store       *store[S]
 	runs        []stepRun
@@ -165,7 +166,7 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 		r.backward(grace)
 	}
 
-	if end != endCompleted && r.interrupted == nil && graceEnded(grace) {
+	if r.graceHit && r.interrupted == nil {
 		r.interrupted = context.Cause(ctx)
 	}
 
@@ -183,7 +184,24 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 
 	kind := endKind(status, r.rejected != nil, len(r.journalErrs) > 0)
 
-	return &RunError{Kind: kind, Steps: r.failures, Pending: pendingOf(r.events), causes: causes}
+	return &RunError{Kind: kind, Steps: r.failures, Pending: r.pending(), causes: causes}
+}
+
+func (r *runner[S]) pending() []string {
+	failedPivot := ""
+	if p := r.saga.pivot; p >= 0 && r.runs[p].status == runFailed {
+		failedPivot = r.saga.steps[p].name
+	}
+
+	var pending []string
+
+	for _, name := range pendingOf(r.events) {
+		if name != failedPivot {
+			pending = append(pending, name)
+		}
+	}
+
+	return pending
 }
 
 func (r *runner[S]) status(end forwardEnd) Status {
