@@ -24,7 +24,8 @@ type Step struct {
 type CompensationFailurePolicy string
 
 const (
-	// CompensationBlock stops the compensation of the saga at the failed compensation. It is the default.
+	// CompensationBlock blocks every compensation that waits on the failed one; other branches go on. It is the
+	// default.
 	CompensationBlock CompensationFailurePolicy = "block"
 	// CompensationContinue goes on with the compensations that remain.
 	CompensationContinue CompensationFailurePolicy = "continue"
