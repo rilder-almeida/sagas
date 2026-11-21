@@ -83,13 +83,17 @@ func (f MiddlewareFunc) Wrap(ctx context.Context, info CallInfo, call Call) erro
 
 // Chain returns middleware that runs mws around a call, the first one outermost. It panics if an item is nil.
 func Chain(mws ...Middleware) MiddlewareFunc {
+	checkChain(mws)
+
+	return compose(slices.Clone(mws))
+}
+
+func checkChain(mws []Middleware) {
 	for i, mw := range mws {
 		if isNilValue(mw) {
 			panic(fmt.Sprintf("sagas: Chain item %d is nil", i))
 		}
 	}
-
-	return compose(slices.Clone(mws))
 }
 
 func compose(mws []Middleware) MiddlewareFunc {

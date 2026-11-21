@@ -19,6 +19,10 @@ func decodeRecords(tb testing.TB, out *bytes.Buffer) []map[string]any {
 
 	var records []map[string]any
 
+	if out.Len() == 0 {
+		return records
+	}
+
 	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		var rec map[string]any
 
@@ -85,20 +89,23 @@ func Test_Slog_Wrap(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		direct    bool
-		info      CallInfo
-		wantPhase string
-		policy    RetryPolicy
-		sleep     time.Duration
-		attempts  []slogAttempt
-		wantErr   error
+		name        string
+		direct      bool
+		noLogger    bool
+		info        CallInfo
+		wantPhase   string
+		policy      RetryPolicy
+		sleep       time.Duration
+		attempts    []slogAttempt
+		wantRecords int
+		wantErr     error
 	}{
 		{
-			name:      "[Success] When: the call succeeds ; Should: log one info record with every attribute",
-			info:      inCall(PhaseExecute),
-			wantPhase: string(PhaseExecute),
-			attempts:  []slogAttempt{{wantLevel: levelInfo, wantAttempt: 1}},
+			name:        "[Success] When: the call succeeds ; Should: log one info record with every attribute",
+			info:        inCall(PhaseExecute),
+			wantPhase:   string(PhaseExecute),
+			attempts:    []slogAttempt{{wantLevel: levelInfo, wantAttempt: 1}},
+			wantRecords: 1,
 		},
 		{
 			name:      "[Fail] When: the call fails ; Should: log one warn record with the error",
@@ -107,13 +114,15 @@ func Test_Slog_Wrap(t *testing.T) {
 			attempts: []slogAttempt{
 				{err: Permanent(errCall), wantLevel: levelWarn, wantAttempt: 1, wantText: callFailedText},
 			},
-			wantErr: errCall,
+			wantErr:     errCall,
+			wantRecords: 1,
 		},
 		{
-			name:      "[Success] When: a pivot call succeeds ; Should: log the phase pivot",
-			info:      inCall(PhasePivot),
-			wantPhase: string(PhasePivot),
-			attempts:  []slogAttempt{{wantLevel: levelInfo, wantAttempt: 1}},
+			name:        "[Success] When: a pivot call succeeds ; Should: log the phase pivot",
+			info:        inCall(PhasePivot),
+			wantPhase:   string(PhasePivot),
+			attempts:    []slogAttempt{{wantLevel: levelInfo, wantAttempt: 1}},
+			wantRecords: 1,
 		},
 		{
 			name:      "[Success] When: the first compensate attempt fails ; Should: log attempts 1 and 2",
@@ -124,13 +133,15 @@ func Test_Slog_Wrap(t *testing.T) {
 				{err: errCall, wantLevel: levelWarn, wantAttempt: 1, wantText: callFailedText},
 				{wantLevel: levelInfo, wantAttempt: 2},
 			},
+			wantRecords: 2,
 		},
 		{
-			name:      "[Success] When: the call sleeps three seconds ; Should: log a duration of three seconds",
-			info:      inCall(PhaseExecute),
-			wantPhase: string(PhaseExecute),
-			sleep:     3 * time.Second,
-			attempts:  []slogAttempt{{wantLevel: levelInfo, wantAttempt: 1}},
+			name:        "[Success] When: the call sleeps three seconds ; Should: log a duration of three seconds",
+			info:        inCall(PhaseExecute),
+			wantPhase:   string(PhaseExecute),
+			sleep:       3 * time.Second,
+			attempts:    []slogAttempt{{wantLevel: levelInfo, wantAttempt: 1}},
+			wantRecords: 1,
 		},
 		{
 			name:      "[Fail] When: the call panics ; Should: log one warn record with the panic error",
@@ -140,15 +151,26 @@ func Test_Slog_Wrap(t *testing.T) {
 			attempts: []slogAttempt{
 				{panicValue: errBoom, wantLevel: levelWarn, wantAttempt: 1, wantText: "sagas: panic: boom"},
 			},
-			wantErr: errBoom,
+			wantErr:     errBoom,
+			wantRecords: 1,
 		},
 		{
-			name:      "[Fail] When: Wrap runs outside a pipeline call ; Should: log empty call fields and the error",
-			direct:    true,
-			info:      CallInfo{},
-			wantPhase: "",
-			attempts:  []slogAttempt{{err: errCall, wantLevel: levelWarn, wantAttempt: 0, wantText: callFailedText}},
-			wantErr:   errCall,
+			name:        "[Fail] When: Wrap runs outside a pipeline call ; Should: log empty call fields and the error",
+			direct:      true,
+			info:        CallInfo{},
+			wantPhase:   "",
+			attempts:    []slogAttempt{{err: errCall, wantLevel: levelWarn, wantAttempt: 0, wantText: callFailedText}},
+			wantErr:     errCall,
+			wantRecords: 1,
+		},
+		{
+			name:        "[Fail] When: Logger is nil and the call fails ; Should: return the error without a panic",
+			direct:      true,
+			noLogger:    true,
+			info:        CallInfo{Saga: "saga-1", Step: "step-1"},
+			attempts:    []slogAttempt{{err: errCall}},
+			wantRecords: 0,
+			wantErr:     errCall,
 		},
 	}
 
@@ -160,12 +182,18 @@ func Test_Slog_Wrap(t *testing.T) {
 				var out bytes.Buffer
 
 				mw := Slog{Logger: slog.New(slog.NewJSONHandler(&out, nil))}
+				if tt.noLogger {
+					mw = Slog{}
+				}
+
 				call := slogCall(tt.attempts, tt.sleep)
 
 				var err error
 
 				if tt.direct {
-					err = mw.Wrap(t.Context(), tt.info, func(ctx context.Context) error { return call(ctx, nil) })
+					require.NotPanics(t, func() {
+						err = mw.Wrap(t.Context(), tt.info, func(ctx context.Context) error { return call(ctx, nil) })
+					})
 				} else {
 					spec := &callSpec{
 						saga: tt.info.Saga, step: tt.info.Step, phase: tt.info.Phase, retry: tt.policy,
@@ -178,7 +206,7 @@ func Test_Slog_Wrap(t *testing.T) {
 				assertSlogErr(t, err, tt.wantErr)
 
 				records := decodeRecords(t, &out)
-				require.Len(t, records, len(tt.attempts))
+				require.Len(t, records, tt.wantRecords)
 
 				for i, rec := range records {
 					assert.Equal(t, tt.attempts[i].wantLevel, rec["level"])
@@ -195,22 +223,25 @@ func Test_Slog_Wrap(t *testing.T) {
 	}
 }
 
-func Test_Slog_Wrap_defaultLogger(t *testing.T) {
+func Test_Slog_logger(t *testing.T) {
 	t.Parallel()
 
+	set := slog.New(slog.DiscardHandler)
+
 	tests := []struct {
-		name      string
-		info      CallInfo
-		callErr   error
-		wantLevel string
-		wantText  string
+		name string
+		mw   Slog
+		want *slog.Logger
 	}{
 		{
-			name:      "[Fail] When: Logger is nil and the call fails ; Should: log one warn record to slog.Default",
-			info:      CallInfo{Saga: "saga-1", Step: "step-1"},
-			callErr:   errCall,
-			wantLevel: levelWarn,
-			wantText:  callFailedText,
+			name: "[Success] When: Logger is nil ; Should: return slog.Default",
+			mw:   Slog{},
+			want: slog.Default(),
+		},
+		{
+			name: "[Success] When: Logger is set ; Should: return it",
+			mw:   Slog{Logger: set},
+			want: set,
 		},
 	}
 
@@ -218,22 +249,7 @@ func Test_Slog_Wrap_defaultLogger(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var out bytes.Buffer
-
-			previous := slog.Default()
-
-			slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
-			t.Cleanup(func() { slog.SetDefault(previous) })
-
-			err := Slog{}.Wrap(t.Context(), tt.info, func(context.Context) error { return tt.callErr })
-			require.ErrorIs(t, err, tt.callErr)
-
-			records := decodeRecords(t, &out)
-			require.Len(t, records, 1)
-			assert.Equal(t, tt.wantLevel, records[0]["level"])
-			assert.Equal(t, tt.info.Saga, records[0]["saga"])
-			assert.Equal(t, tt.info.Step, records[0]["step"])
-			assertErrorAttr(t, records[0], tt.wantText)
+			assert.Same(t, tt.want, tt.mw.logger())
 		})
 	}
 }

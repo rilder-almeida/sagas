@@ -1641,16 +1641,9 @@ func Test_Chain(t *testing.T) {
 			wantErr:   errBoom,
 		},
 		{
-			name:      "[Fail] When: an item is nil ; Should: panic naming its position",
+			name:      "[Fail] When: an item is nil ; Should: panic naming its position and build nothing",
 			mws:       func(r *recorder) []Middleware { return []Middleware{tagMiddleware{r, "a"}, nil} },
 			wantPanic: "sagas: Chain item 1 is nil",
-		},
-		{
-			name: "[Fail] When: an item is a nil value with a type ; Should: panic naming its position",
-			mws: func(r *recorder) []Middleware {
-				return []Middleware{(*tagMiddleware)(nil), tagMiddleware{r, "b"}}
-			},
-			wantPanic: "sagas: Chain item 0 is nil",
 		},
 	}
 
@@ -1668,15 +1661,17 @@ func Test_Chain(t *testing.T) {
 
 			build := func() { chain = Chain(mws...) }
 
-			if tt.wantPanic != "" {
-				require.PanicsWithValue(t, tt.wantPanic, build)
-			} else {
+			if tt.wantPanic == "" {
 				require.NotPanics(t, build)
+			} else {
+				require.PanicsWithValue(t, tt.wantPanic, build)
+			}
 
-				if tt.overwrite {
-					mws[0] = tagged(rec, "changed")
-				}
+			if tt.overwrite {
+				mws[0] = tagged(rec, "changed")
+			}
 
+			if chain != nil {
 				err = chain.Wrap(t.Context(), CallInfo{}, func(context.Context) error {
 					rec.add(runMark)
 
@@ -1686,6 +1681,56 @@ func Test_Chain(t *testing.T) {
 
 			assert.Equal(t, tt.wantTrace, rec.snapshot())
 			assert.Equal(t, tt.wantErr, err)
+		})
+	}
+}
+
+func Test_checkChain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mws       []Middleware
+		wantPanic string
+	}{
+		{
+			name: "[Success] When: every item is set ; Should: not panic",
+			mws:  []Middleware{tagMiddleware{&recorder{}, "a"}, tagged(&recorder{}, "b")},
+		},
+		{
+			name: "[Success] When: no item is given ; Should: not panic",
+			mws:  nil,
+		},
+		{
+			name:      "[Fail] When: an item is nil ; Should: panic naming its position",
+			mws:       []Middleware{tagMiddleware{&recorder{}, "a"}, nil},
+			wantPanic: "sagas: Chain item 1 is nil",
+		},
+		{
+			name:      "[Fail] When: an item is a nil value with a type ; Should: panic naming its position",
+			mws:       []Middleware{(*tagMiddleware)(nil), tagMiddleware{&recorder{}, "b"}},
+			wantPanic: "sagas: Chain item 0 is nil",
+		},
+		{
+			name:      "[Fail] When: an item is a nil MiddlewareFunc ; Should: panic naming its position",
+			mws:       []Middleware{tagMiddleware{&recorder{}, "a"}, tagged(&recorder{}, "b"), MiddlewareFunc(nil)},
+			wantPanic: "sagas: Chain item 2 is nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			check := func() { checkChain(tt.mws) }
+
+			if tt.wantPanic == "" {
+				require.NotPanics(t, check)
+
+				return
+			}
+
+			require.PanicsWithValue(t, tt.wantPanic, check)
 		})
 	}
 }

@@ -34,12 +34,15 @@ func (s Slog) Wrap(ctx context.Context, info CallInfo, call Call) error {
 		attrs = append(attrs, slog.Any("error", err))
 	}
 
-	logger := s.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	logger.LogAttrs(ctx, level, "sagas: attempt", attrs...)
+	s.logger().LogAttrs(ctx, level, "sagas: attempt", attrs...)
 
 	return err
+}
+
+func (s Slog) logger() *slog.Logger {
+	if s.Logger == nil {
+		return slog.Default()
+	}
+
+	return s.Logger
 }
