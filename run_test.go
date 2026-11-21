@@ -490,35 +490,50 @@ func isClosed(ch <-chan struct{}) bool {
 	}
 }
 
-func (r *recorder) step(name string, opts ...StepOption) Option {
-	return Step(name, func(context.Context, *tripState) error {
+func (r *recorder) do(name string) func(context.Context, *tripState) error {
+	return func(context.Context, *tripState) error {
 		r.add(name)
 
 		return nil
-	}, opts...)
+	}
 }
 
-func (r *recorder) booking(name, hotel string, opts ...StepOption) Option {
-	return Step(name, func(_ context.Context, s *tripState) error {
+func (r *recorder) book(name, hotel string) func(context.Context, *tripState) error {
+	return func(_ context.Context, s *tripState) error {
 		r.add(name)
 
 		s.Hotel = hotel
 
 		return nil
-	}, opts...)
+	}
 }
 
-func (r *recorder) when(verdict bool, name string) StepOption {
-	return If(func(*tripState) bool {
+func (r *recorder) step(name string) *actStep { return act(name, r.do(name)) }
+
+func (r *recorder) booking(name string) *actStep { return act(name, r.book(name, hotelRitz)) }
+
+func (r *recorder) stepIf(name string, pred func(*tripState) bool) *ifStep {
+	return gated(name, r.do(name), pred)
+}
+
+func (r *recorder) bookingIf(name, hotel string, pred func(*tripState) bool) *ifStep {
+	return gated(name, r.book(name, hotel), pred)
+}
+
+func (r *recorder) pivot(name string) *pivotStep { return paying(name, r.do(name)) }
+
+func (r *recorder) when(verdict bool, name string) func(*tripState) bool {
+	return func(*tripState) bool {
 		r.add("if:" + name)
 
 		return verdict
-	})
+	}
 }
 
 type runRow struct {
 	name               string
-	steps              func(rec *recorder) []Option
+	steps              func(rec *recorder) Flow
+	opts               []Option
 	journal            func() Journal
 	runOpts            []RunOption
 	runs               int
@@ -558,7 +573,7 @@ func Test_Saga_Run(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				rec := &recorder{}
-				opts := tt.steps(rec)
+				opts := slices.Clone(tt.opts)
 
 				var journal Journal
 				if tt.journal != nil {
@@ -566,7 +581,7 @@ func Test_Saga_Run(t *testing.T) {
 					opts = append(opts, WithJournal(journal))
 				}
 
-				s, err := New[tripState]("trip", opts...)
+				s, err := New[tripState]("trip", tt.steps(rec), opts...)
 				require.NoError(t, err)
 
 				for _, got := range execute(s, &tt) {
@@ -793,9 +808,7 @@ func assertZones(t *testing.T, got, want []StepZone) {
 }
 
 func Benchmark_Saga_Run(b *testing.B) {
-	ok := func(context.Context, *tripState) error { return nil }
-
-	s, err := New[tripState]("trip", Step("a", ok), Step("b", ok, After("a")))
+	s, err := New[tripState]("trip", Sequence(act("a", okAction), act("b", okAction)))
 	require.NoError(b, err)
 
 	ctx := context.Background()

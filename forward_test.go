@@ -40,31 +40,38 @@ func scripted(errs map[int]error) func() Journal {
 	return func() Journal { return &scriptJournal{errs: errs} }
 }
 
-func fails(opts ...StepOption) Option {
-	return Step("b", alwaysFails, opts...)
-}
+func fails() *actStep { return act("b", alwaysFails) }
 
-func exits(name string, opts ...StepOption) Option {
-	return Step(name, func(context.Context, *tripState) error {
+func exits(name string) *actStep {
+	return act(name, func(context.Context, *tripState) error {
 		runtime.Goexit()
 
 		return nil
-	}, opts...)
+	})
 }
 
-func napping(name, hotel string, opts ...StepOption) Option {
-	return Step(name, func(_ context.Context, s *tripState) error {
+func napping(name, hotel string) *actStep {
+	return act(name, func(_ context.Context, s *tripState) error {
 		time.Sleep(pause)
 
 		s.Hotel = hotel
 
 		return nil
-	}, opts...)
+	})
+}
+
+func waiting(name string) *actStep {
+	return act(name, func(ctx context.Context, _ *tripState) error {
+		<-ctx.Done()
+
+		return ctx.Err()
+	})
 }
 
 func forwardRows() []runRow {
 	return []runRow{
 		completedGraphRow(),
+		sharedStepRow(),
 		skippedStepRow(),
 		predicateTrueRow(),
 		noPivotZonesRow(),
@@ -78,22 +85,22 @@ func forwardRows() []runRow {
 func completedGraphRow() runRow {
 	return runRow{
 		name: "[Success] When: the graph has parallel branches ; Should: run both branches at once and complete",
-		steps: func(rec *recorder) []Option {
+		steps: func(rec *recorder) Flow {
 			var both sync.WaitGroup
 
 			both.Add(2)
 
-			branch := func(name string) Option {
-				return Step(name, func(context.Context, *tripState) error {
+			branch := func(name string) Flow {
+				return act(name, func(context.Context, *tripState) error {
 					rec.add(name)
 					both.Done()
 					both.Wait()
 
 					return nil
-				}, After("a"))
+				})
 			}
 
-			return []Option{rec.step("a"), branch("b"), branch("c"), rec.booking("d", hotelRitz, After("b", "c"))}
+			return Sequence(rec.step("a"), Parallel(branch("b"), branch("c")), rec.booking("d"))
 		},
 		wantStatus: StatusCompleted,
 		wantTrail: afterA(
@@ -108,15 +115,31 @@ func completedGraphRow() runRow {
 	}
 }
 
+func sharedStepRow() runRow {
+	return runRow{
+		name: "[Success] When: one step ends two chains ; Should: run it once after both",
+		steps: func(rec *recorder) Flow {
+			c := rec.booking("c")
+
+			return Parallel(Sequence(rec.step("a"), c), Sequence(rec.step("b"), c))
+		},
+		wantStatus: StatusCompleted,
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("a"), startOf("b"), doneOf("a"), doneOf("b")),
+			seq(startOf("c"), doneOf("c"), closed),
+		),
+		wantSteps: map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded, "c": StepSucceeded},
+		wantOrder: [][2]string{{"a", "c"}, {"b", "c"}},
+		wantState: tripState{Hotel: hotelRitz},
+	}
+}
+
 func skippedStepRow() runRow {
 	return runRow{
-		name: "[Success] When: an If predicate is false ; Should: skip the step and still run its dependents",
-		steps: func(rec *recorder) []Option {
-			return []Option{
-				rec.step("a"),
-				rec.booking("b", "never", After("a"), rec.when(false, "b")),
-				rec.step("c", After("b")),
-			}
+		name: "[Success] When: an Enabled method returns false ; Should: skip the step and still run its dependents",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.bookingIf("b", "never", rec.when(false, "b")), rec.step("c"))
 		},
 		wantStatus: StatusCompleted,
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSkipped, "c": StepSucceeded},
@@ -130,12 +153,9 @@ func skippedStepRow() runRow {
 
 func predicateTrueRow() runRow {
 	return runRow{
-		name: "[Success] When: an If predicate is true ; Should: evaluate it before the action and run the step",
-		steps: func(rec *recorder) []Option {
-			return []Option{
-				rec.booking("a", hotelRitz),
-				rec.booking("b", "plaza", After("a"), rec.when(true, "b")),
-			}
+		name: "[Success] When: an Enabled method returns true ; Should: call it before Execute and run the step",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.booking("a"), rec.bookingIf("b", "plaza", rec.when(true, "b")))
 		},
 		wantStatus: StatusCompleted,
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepSucceeded},
@@ -148,8 +168,8 @@ func predicateTrueRow() runRow {
 func noPivotZonesRow() runRow {
 	return runRow{
 		name: "[Success] When: the saga has no pivot ; Should: record the compensable zone for every step",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), rec.step("b", After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.step("b"))
 		},
 		wantStatus: StatusCompleted,
 		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed),
@@ -162,12 +182,8 @@ func noPivotZonesRow() runRow {
 func pivotZonesRow() runRow {
 	return runRow{
 		name: "[Success] When: the saga has a pivot ; Should: record a zone per step and run the forward-only step",
-		steps: func(rec *recorder) []Option {
-			return []Option{
-				rec.step("a"),
-				rec.step("p", After("a"), Pivot()),
-				rec.step("z", After("p")),
-			}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.pivot("p"), rec.step("z"))
 		},
 		wantStatus: StatusCompleted,
 		wantTrail: seq(
@@ -184,8 +200,8 @@ func pivotZonesRow() runRow {
 func givenJournalRow() runRow {
 	return runRow{
 		name: "[Success] When: the caller passes a journal and an execution ID ; Should: record it there",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.booking("a", hotelRitz)}
+		steps: func(rec *recorder) Flow {
+			return rec.booking("a")
 		},
 		journal:       func() Journal { return newMemoryJournal() },
 		runOpts:       []RunOption{WithExecutionID("order-7")},
@@ -200,8 +216,8 @@ func givenJournalRow() runRow {
 func defaultJournalRow() runRow {
 	return runRow{
 		name: "[Success] When: two runs share an execution ID and no journal ; Should: complete both",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a")}
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
 		},
 		runOpts:       []RunOption{WithExecutionID("order-7")},
 		runs:          2,
@@ -215,8 +231,8 @@ func defaultJournalRow() runRow {
 func concurrentRunsRow() runRow {
 	return runRow{
 		name: "[Success] When: one saga runs many times at once ; Should: complete every run on its own state",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), rec.booking("b", hotelRitz, After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.booking("b"))
 		},
 		runs:       8,
 		concurrent: true,
@@ -260,8 +276,8 @@ func journalRows() []runRow {
 func stepFailsRow() runRow {
 	return runRow{
 		name: "[Fail] When: a step fails ; Should: record the failure, start nothing after it and return its Error",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), fails(After("a")), rec.step("c", After("b"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), fails(), rec.step("c"))
 		},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
@@ -277,8 +293,8 @@ func stepFailsRow() runRow {
 func goexitRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action ends by runtime.Goexit ; Should: record an unknown step and return",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), exits("b", After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), exits("b"))
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrUnknown},
@@ -293,11 +309,9 @@ func goexitRow() runRow {
 
 func predicatePanicRow() runRow {
 	return runRow{
-		name: "[Fail] When: an If predicate panics ; Should: fail the step without a started event",
-		steps: func(rec *recorder) []Option {
-			boom := If(func(*tripState) bool { panic("boom") })
-
-			return []Option{rec.step("a"), rec.step("b", After("a"), boom)}
+		name: "[Fail] When: an Enabled method panics ; Should: fail the step without a started event",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrPanic},
@@ -311,15 +325,15 @@ func predicatePanicRow() runRow {
 
 func predicateGoexitRow() runRow {
 	return runRow{
-		name: "[Fail] When: an If predicate ends by runtime.Goexit ; Should: fail the step without a started event",
-		steps: func(rec *recorder) []Option {
-			leave := If(func(*tripState) bool {
+		name: "[Fail] When: an Enabled method ends by runtime.Goexit ; Should: fail the step without a started event",
+		steps: func(rec *recorder) Flow {
+			leave := func(*tripState) bool {
 				runtime.Goexit()
 
 				return true
-			})
+			}
 
-			return []Option{rec.step("a"), rec.step("b", After("a"), leave)}
+			return Sequence(rec.step("a"), rec.stepIf("b", leave))
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
@@ -334,14 +348,8 @@ func predicateGoexitRow() runRow {
 func siblingCancelRow() runRow {
 	return runRow{
 		name: "[Fail] When: a step fails beside a running sibling ; Should: cancel it, wait for it, start nothing",
-		steps: func(rec *recorder) []Option {
-			waits := Step("c", func(ctx context.Context, _ *tripState) error {
-				<-ctx.Done()
-
-				return ctx.Err()
-			}, After("a"))
-
-			return []Option{rec.step("a"), fails(After("a")), waits, rec.step("d", After("b", "c"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(fails(), waiting("c")), rec.step("d"))
 		},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
@@ -364,12 +372,8 @@ func siblingCancelRow() runRow {
 func conflictRow() runRow {
 	return runRow{
 		name: "[Fail] When: two parallel steps change the same field ; Should: fail the later one with ErrConflict",
-		steps: func(rec *recorder) []Option {
-			return []Option{
-				rec.step("a"),
-				rec.booking("b", hotelRitz, After("a")),
-				napping("c", "plaza", After("a")),
-			}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(rec.booking("b"), napping("c", "plaza")))
 		},
 		wantStatus:   StatusUnfinished,
 		wantKinds:    map[string]*KindError{"c": ErrConflict},
@@ -385,15 +389,15 @@ func conflictRow() runRow {
 
 func stoppedBeforeStartRow() runRow {
 	return runRow{
-		name: "[Fail] When: a step fails before another step's predicate says go ; Should: not start that step",
-		steps: func(rec *recorder) []Option {
-			late := If(func(*tripState) bool {
+		name: "[Fail] When: a step fails before another step's Enabled says go ; Should: not start that step",
+		steps: func(rec *recorder) Flow {
+			late := func(*tripState) bool {
 				time.Sleep(pause)
 
 				return true
-			})
+			}
 
-			return []Option{rec.step("a"), fails(After("a")), rec.step("c", After("a"), late)}
+			return Sequence(rec.step("a"), Parallel(fails(), rec.stepIf("c", late)))
 		},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
@@ -409,8 +413,8 @@ func stoppedBeforeStartRow() runRow {
 func rejectionRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal rejects a mid-run event ; Should: stop and fail with ErrConcurrentWriter",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.booking("a", hotelRitz), rec.step("b", After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.booking("a"), rec.step("b"))
 		},
 		journal:     scripted(map[int]error{3: ErrConcurrentWriter}),
 		wantStatus:  StatusUnfinished,
@@ -426,8 +430,8 @@ func rejectionRow() runRow {
 func lateSiblingRow() runRow {
 	return runRow{
 		name: "[Fail] When: a sibling finishes after a rejection ; Should: commit and append nothing for it",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), rec.step("b", After("a")), napping("c", "late", After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(rec.step("b"), napping("c", "late")))
 		},
 		journal:     scripted(map[int]error{6: ErrConcurrentWriter}),
 		wantStatus:  StatusUnfinished,
@@ -441,11 +445,9 @@ func lateSiblingRow() runRow {
 
 func predicateAppendRow() runRow {
 	return runRow{
-		name: "[Fail] When: a predicate fails and its append fails ; Should: keep the step not started",
-		steps: func(rec *recorder) []Option {
-			boom := If(func(*tripState) bool { panic("boom") })
-
-			return []Option{rec.step("a"), rec.step("b", After("a"), boom)}
+		name: "[Fail] When: an Enabled method fails and its append fails ; Should: keep the step not started",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
 		},
 		journal:        scripted(map[int]error{4: errJournalDown}),
 		wantStatus:     StatusUnfinished,
@@ -463,8 +465,8 @@ func predicateAppendRow() runRow {
 func outcomeAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: the outcome append of a success fails ; Should: leave the step unknown, return ErrJournal",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.booking("a", hotelRitz)}
+		steps: func(rec *recorder) Flow {
+			return rec.booking("a")
 		},
 		journal:     scripted(map[int]error{3: errJournalDown}),
 		wantStatus:  StatusUnfinished,
@@ -479,8 +481,8 @@ func outcomeAppendRow() runRow {
 func failureAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: the outcome append of a failure fails ; Should: join the Error with ErrJournal",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), fails(After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), fails())
 		},
 		journal:        scripted(map[int]error{5: errJournalDown}),
 		wantStatus:     StatusUnfinished,
@@ -499,8 +501,8 @@ func failureAppendRow() runRow {
 func intentAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal fails the intent append ; Should: not start the step and return ErrJournal",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a")}
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
 		},
 		journal:    scripted(map[int]error{2: errJournalDown}),
 		wantStatus: StatusUnfinished,
@@ -512,9 +514,9 @@ func intentAppendRow() runRow {
 
 func predicateIntentRow() runRow {
 	return runRow{
-		name: "[Fail] When: the intent append of an If step fails ; Should: not run it, return ErrJournal",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), rec.booking("b", "never", After("a"), rec.when(true, "b"))}
+		name: "[Fail] When: the intent append of an Enabled step fails ; Should: not run it, return ErrJournal",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), rec.bookingIf("b", "never", rec.when(true, "b")))
 		},
 		journal:    scripted(map[int]error{4: errJournalDown}),
 		wantStatus: StatusUnfinished,
@@ -527,8 +529,8 @@ func predicateIntentRow() runRow {
 func finishedAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: the saga-finished append fails ; Should: keep the completed status, return ErrJournal",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.booking("a", hotelRitz)}
+		steps: func(rec *recorder) Flow {
+			return rec.booking("a")
 		},
 		journal:    scripted(map[int]error{4: errJournalDown}),
 		wantStatus: StatusCompleted,
@@ -542,8 +544,8 @@ func finishedAppendRow() runRow {
 func finishedRejectedRow() runRow {
 	return runRow{
 		name: "[Fail] When: the saga-finished append is rejected ; Should: stay unfinished, return ErrConcurrentWriter",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a")}
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
 		},
 		journal:     scripted(map[int]error{4: fmt.Errorf("%w: other writer", ErrConcurrentWriter)}),
 		wantStatus:  StatusUnfinished,

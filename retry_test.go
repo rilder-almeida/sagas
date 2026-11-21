@@ -481,3 +481,40 @@ func Test_runAttempts(t *testing.T) {
 		})
 	}
 }
+
+func Test_NoRetry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		change       func(*RetryPolicy)
+		wantPolicy   RetryPolicy
+		wantAttempts int
+	}{
+		{
+			name:         "[Success] When: NoRetry is called ; Should: return one attempt and defaults for the rest",
+			change:       func(*RetryPolicy) {},
+			wantPolicy:   RetryPolicy{Attempts: 1},
+			wantAttempts: 1,
+		},
+		{
+			name:         "[Success] When: a caller changes a returned policy ; Should: leave the next call unchanged",
+			change:       func(p *RetryPolicy) { p.Attempts = 9 },
+			wantPolicy:   RetryPolicy{Attempts: 1},
+			wantAttempts: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			first := NoRetry()
+			tt.change(&first)
+
+			got := NoRetry()
+			assert.Equal(t, tt.wantPolicy, got)
+			assert.Equal(t, tt.wantAttempts, got.attempts())
+		})
+	}
+}

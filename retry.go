@@ -66,6 +66,9 @@ func (p RetryPolicy) multiplier() float64 {
 	return DefaultMultiplier
 }
 
+// NoRetry returns the policy of a step that makes one attempt and never retries.
+func NoRetry() RetryPolicy { return RetryPolicy{Attempts: 1} }
+
 var errPermanent = errors.New("sagas: permanent")
 
 type permanentError struct{ err error }

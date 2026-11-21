@@ -54,10 +54,6 @@ func kindErrorRows() []kindRow {
 			ErrDuplicateStep,
 			"sagas: duplicate step",
 		},
-		{
-			"[Success] When: the kind is ErrUnknownDependency ; Should: return its message",
-			ErrUnknownDependency, "sagas: unknown dependency",
-		},
 		{"[Success] When: the kind is ErrCycle ; Should: return its message", ErrCycle, "sagas: cycle"},
 		{"[Success] When: the kind is ErrJournal ; Should: return its message", ErrJournal, "sagas: journal failure"},
 		{
@@ -133,10 +129,6 @@ func Test_KindError_Name(t *testing.T) {
 	}{
 		{"[Success] When: the kind is ErrInvalidStep ; Should: return its label", ErrInvalidStep, "invalid_step"},
 		{"[Success] When: the kind is ErrDuplicateStep ; Should: return its label", ErrDuplicateStep, "duplicate_step"},
-		{
-			"[Success] When: the kind is ErrUnknownDependency ; Should: return its label",
-			ErrUnknownDependency, "unknown_dependency",
-		},
 		{"[Success] When: the kind is ErrCycle ; Should: return its label", ErrCycle, "cycle"},
 		{"[Success] When: the kind is ErrJournal ; Should: return its label", ErrJournal, "journal"},
 		{
@@ -610,20 +602,19 @@ func errorRows() []runRow {
 	}
 }
 
-func waitingSibling(rec *recorder) []Option {
-	waits := Step("c", func(ctx context.Context, _ *tripState) error {
-		<-ctx.Done()
+func waitingSibling() func(*recorder) Flow {
+	return func(rec *recorder) Flow {
+		waits := waiting("c")
+		waits.Retry = NoRetry()
 
-		return ctx.Err()
-	}, After("a"), Retry(RetryPolicy{Attempts: 1}))
-
-	return []Option{rec.step("a"), rec.step("b", After("a")), waits}
+		return Sequence(rec.step("a"), Parallel(rec.step("b"), waits))
+	}
 }
 
 func rejectionStopRow() runRow {
 	return runRow{
 		name:         "[Fail] When: the journal rejects an event beside a sibling ; Should: name it as the cause",
-		steps:        waitingSibling,
+		steps:        waitingSibling(),
 		journal:      scripted(map[int]error{6: ErrConcurrentWriter}),
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 1},
@@ -644,7 +635,7 @@ func journalStopRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal fails an append beside a running sibling ; " +
 			"Should: name it as the cause",
-		steps:        waitingSibling,
+		steps:        waitingSibling(),
 		journal:      scripted(map[int]error{6: errJournalDown}),
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 1},
@@ -674,11 +665,10 @@ func marking() MiddlewareFunc {
 func markedPanicRow() runRow {
 	return runRow{
 		name: "[Fail] When: middleware wraps a panicking action ; Should: keep the marker and report ErrPanic",
-		steps: func(rec *recorder) []Option {
-			boom := Step("b", func(context.Context, *tripState) error { panic(errAlwaysFails) }, After("a"))
-
-			return []Option{rec.step("a"), boom, WithMiddleware(marking())}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), act("b", func(context.Context, *tripState) error { panic(errAlwaysFails) }))
 		},
+		opts:         []Option{WithMiddleware(marking())},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"b": 1},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
@@ -693,8 +683,8 @@ func markedPanicRow() runRow {
 func failedKindRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action returns a plain error ; Should: report ErrFailed in the error and the event",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), fails(After("a"))}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), fails())
 		},
 		wantStatus:     StatusUnfinished,
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
@@ -710,10 +700,10 @@ func failedKindRow() runRow {
 func panicKindRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action panics with an error value ; Should: report ErrPanic and match the value",
-		steps: func(rec *recorder) []Option {
-			return []Option{rec.step("a"), Step("b", func(context.Context, *tripState) error {
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), act("b", func(context.Context, *tripState) error {
 				panic(errAlwaysFails)
-			}, After("a"))}
+			}))
 		},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"b": 1},
@@ -729,12 +719,8 @@ func panicKindRow() runRow {
 func conflictKindRow() runRow {
 	return runRow{
 		name: "[Fail] When: two parallel steps change the same field ; Should: report ErrConflict as the kind",
-		steps: func(rec *recorder) []Option {
-			return []Option{
-				rec.step("a"),
-				rec.booking("b", hotelRitz, After("a")),
-				napping("c", "plaza", After("a")),
-			}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(rec.booking("b"), napping("c", "plaza")))
 		},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 1},
@@ -750,14 +736,8 @@ func conflictKindRow() runRow {
 func siblingCauseRow() runRow {
 	return runRow{
 		name: "[Fail] When: a step fails beside a running sibling ; Should: name the stopper once, without its error",
-		steps: func(rec *recorder) []Option {
-			waits := Step("c", func(ctx context.Context, _ *tripState) error {
-				<-ctx.Done()
-
-				return ctx.Err()
-			}, After("a"))
-
-			return []Option{rec.step("a"), fails(After("a")), waits}
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(fails(), waiting("c")))
 		},
 		wantStatus:         StatusUnfinished,
 		wantAttempts:       map[string]int{"b": 3, "c": 1},
@@ -779,9 +759,9 @@ func siblingCauseRow() runRow {
 func goexitHistoryRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action ends by runtime.Goexit on attempt 2 ; Should: keep the attempts and attempt 1",
-		steps: func(rec *recorder) []Option {
+		steps: func(rec *recorder) Flow {
 			count := counter()
-			leaves := Step("b", func(context.Context, *tripState) error {
+			leaves := act("b", func(context.Context, *tripState) error {
 				if count() == 1 {
 					return errFirst
 				}
@@ -789,9 +769,9 @@ func goexitHistoryRow() runRow {
 				runtime.Goexit()
 
 				return nil
-			}, After("a"))
+			})
 
-			return []Option{rec.step("a"), leaves}
+			return Sequence(rec.step("a"), leaves)
 		},
 		wantStatus:     StatusUnfinished,
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b")),
@@ -807,15 +787,15 @@ func goexitHistoryRow() runRow {
 
 func droppedPredicateRow() runRow {
 	return runRow{
-		name: "[Fail] When: a predicate fails after a rejection ; Should: report its error and not start the step",
-		steps: func(rec *recorder) []Option {
-			late := If(func(*tripState) bool {
+		name: "[Fail] When: an Enabled method fails after a rejection ; Should: report it and not start the step",
+		steps: func(rec *recorder) Flow {
+			late := func(*tripState) bool {
 				time.Sleep(pause)
 
 				panic("late")
-			})
+			}
 
-			return []Option{rec.step("a"), rec.step("b", After("a")), rec.step("c", After("a"), late)}
+			return Sequence(rec.step("a"), Parallel(rec.step("b"), rec.stepIf("c", late)))
 		},
 		journal:      scripted(map[int]error{5: ErrConcurrentWriter}),
 		wantStatus:   StatusUnfinished,
@@ -836,14 +816,14 @@ func droppedPredicateRow() runRow {
 func droppedOutcomeRow() runRow {
 	return runRow{
 		name: "[Fail] When: a sibling fails after a rejection ; Should: report its error and append nothing for it",
-		steps: func(rec *recorder) []Option {
-			late := Step("c", func(context.Context, *tripState) error {
+		steps: func(rec *recorder) Flow {
+			late := once("c", func(context.Context, *tripState) error {
 				time.Sleep(pause)
 
 				return errAlwaysFails
-			}, After("a"), Retry(RetryPolicy{Attempts: 1}))
+			})
 
-			return []Option{rec.step("a"), rec.step("b", After("a")), late}
+			return Sequence(rec.step("a"), Parallel(rec.step("b"), late))
 		},
 		journal:      scripted(map[int]error{6: ErrConcurrentWriter}),
 		wantStatus:   StatusUnfinished,
@@ -864,14 +844,11 @@ func droppedOutcomeRow() runRow {
 func callerCauseRow() runRow {
 	return runRow{
 		name: "[Fail] When: the caller cancels with a cause while a step runs ; Should: match the cause and report it",
-		steps: func(rec *recorder) []Option {
-			waits := Step("b", func(ctx context.Context, _ *tripState) error {
-				<-ctx.Done()
+		steps: func(rec *recorder) Flow {
+			waits := waiting("b")
+			waits.Retry = NoRetry()
 
-				return ctx.Err()
-			}, After("a"), Retry(RetryPolicy{Attempts: 1}))
-
-			return []Option{rec.step("a"), waits}
+			return Sequence(rec.step("a"), waits)
 		},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
@@ -892,12 +869,12 @@ func callerKindRow(
 ) runRow {
 	return runRow{
 		name: name,
-		steps: func(rec *recorder) []Option {
-			wraps := Step("b", func(context.Context, *tripState) error {
+		steps: func(rec *recorder) Flow {
+			wraps := once("b", func(context.Context, *tripState) error {
 				return fmt.Errorf("nested run: %w", wrapped)
-			}, After("a"), Retry(RetryPolicy{Attempts: 1}))
+			})
 
-			return []Option{rec.step("a"), wraps}
+			return Sequence(rec.step("a"), wraps)
 		},
 		wantStatus:  StatusUnfinished,
 		wantPending: pending,
@@ -932,12 +909,12 @@ func callerPanicRow() runRow {
 	)
 }
 
-func nestedRow(name string, inner []Option, attempts int, errText string, wantErrs []error) runRow {
+func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs []error) runRow {
 	return runRow{
 		name: name,
-		steps: func(rec *recorder) []Option {
-			nests := Step("b", func(ctx context.Context, _ *tripState) error {
-				s, err := New[tripState]("inner", inner...)
+		steps: func(rec *recorder) Flow {
+			nests := act("b", func(ctx context.Context, _ *tripState) error {
+				s, err := New[tripState]("inner", inner)
 				if err != nil {
 					return err
 				}
@@ -945,9 +922,10 @@ func nestedRow(name string, inner []Option, attempts int, errText string, wantEr
 				_, err = s.Run(ctx, &tripState{})
 
 				return err
-			}, After("a"), Retry(RetryPolicy{Attempts: attempts}))
+			})
+			nests.Retry = RetryPolicy{Attempts: attempts}
 
-			return []Option{rec.step("a"), nests}
+			return Sequence(rec.step("a"), nests)
 		},
 		wantStatus:   StatusUnfinished,
 		wantErrs:     wantErrs,
@@ -962,7 +940,7 @@ func nestedRow(name string, inner []Option, attempts int, errText string, wantEr
 func nestedPermanentRow() runRow {
 	return nestedRow(
 		"[Fail] When: an action returns a nested run that holds a permanent error ; Should: stop after 1 attempt",
-		[]Option{Step("x", func(context.Context, *tripState) error { return Permanent(errAlwaysFails) })},
+		act("x", func(context.Context, *tripState) error { return Permanent(errAlwaysFails) }),
 		3, errAlwaysFails.Error(), []error{errAlwaysFails, ErrFailed},
 	)
 }
