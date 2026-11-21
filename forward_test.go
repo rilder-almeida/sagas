@@ -36,10 +36,6 @@ func skipOf(step string) string                  { return trailOf(EventStepSkipp
 
 var errJournalDown = errors.New("journal down")
 
-func scripted(errs map[int]error) func() Journal {
-	return func() Journal { return &scriptJournal{errs: errs} }
-}
-
 func fails() *actStep { return act("b", alwaysFails) }
 
 func exits(name string) *actStep {
@@ -76,8 +72,6 @@ func forwardRows() []runRow {
 		predicateTrueRow(),
 		noPivotZonesRow(),
 		pivotZonesRow(),
-		givenJournalRow(),
-		defaultJournalRow(),
 		concurrentRunsRow(),
 	}
 }
@@ -194,37 +188,6 @@ func pivotZonesRow() runRow {
 		wantZones: []StepZone{
 			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
 		},
-	}
-}
-
-func givenJournalRow() runRow {
-	return runRow{
-		name: "[Success] When: the caller passes a journal and an execution ID ; Should: record it there",
-		steps: func(rec *recorder) Flow {
-			return rec.booking("a")
-		},
-		journal:       func() Journal { return newMemoryJournal() },
-		runOpts:       []RunOption{WithExecutionID("order-7")},
-		wantStatus:    StatusCompleted,
-		wantTrail:     seq(opened, startOf("a"), doneOf("a"), closed),
-		wantExecution: "order-7",
-		wantSteps:     map[string]StepStatus{"a": StepSucceeded},
-		wantState:     tripState{Hotel: hotelRitz},
-	}
-}
-
-func defaultJournalRow() runRow {
-	return runRow{
-		name: "[Success] When: two runs share an execution ID and no journal ; Should: complete both",
-		steps: func(rec *recorder) Flow {
-			return rec.step("a")
-		},
-		runOpts:       []RunOption{WithExecutionID("order-7")},
-		runs:          2,
-		wantStatus:    StatusCompleted,
-		wantTrail:     seq(opened, startOf("a"), doneOf("a"), closed),
-		wantExecution: "order-7",
-		wantSteps:     map[string]StepStatus{"a": StepSucceeded},
 	}
 }
 
@@ -416,7 +379,7 @@ func rejectionRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.booking("a"), rec.step("b"))
 		},
-		journal:     scripted(map[int]error{3: ErrConcurrentWriter}),
+		script:      map[int]error{3: ErrConcurrentWriter},
 		wantStatus:  StatusUnfinished,
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
@@ -433,7 +396,7 @@ func lateSiblingRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), Parallel(rec.step("b"), napping("c", "late")))
 		},
-		journal:     scripted(map[int]error{6: ErrConcurrentWriter}),
+		script:      map[int]error{6: ErrConcurrentWriter},
 		wantStatus:  StatusUnfinished,
 		wantTrail:   afterA(together(startOf("b"), startOf("c"))),
 		wantErrs:    []error{ErrConcurrentWriter},
@@ -449,7 +412,7 @@ func predicateAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
 		},
-		journal:        scripted(map[int]error{4: errJournalDown}),
+		script:         map[int]error{4: errJournalDown},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrPanic},
 		wantErrText:    map[string]string{"b": panicBoom},
@@ -468,7 +431,7 @@ func outcomeAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return rec.booking("a")
 		},
-		journal:     scripted(map[int]error{3: errJournalDown}),
+		script:      map[int]error{3: errJournalDown},
 		wantStatus:  StatusUnfinished,
 		wantErrs:    []error{ErrJournal, errJournalDown},
 		wantSteps:   map[string]StepStatus{"a": StepUnknown},
@@ -484,7 +447,7 @@ func failureAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), fails())
 		},
-		journal:        scripted(map[int]error{5: errJournalDown}),
+		script:         map[int]error{5: errJournalDown},
 		wantStatus:     StatusUnfinished,
 		wantKinds:      map[string]*KindError{"b": ErrFailed},
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error()},
@@ -504,7 +467,7 @@ func intentAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return rec.step("a")
 		},
-		journal:    scripted(map[int]error{2: errJournalDown}),
+		script:     map[int]error{2: errJournalDown},
 		wantStatus: StatusUnfinished,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]StepStatus{"a": StepNotStarted},
@@ -518,7 +481,7 @@ func predicateIntentRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), rec.bookingIf("b", "never", rec.when(true, "b")))
 		},
-		journal:    scripted(map[int]error{4: errJournalDown}),
+		script:     map[int]error{4: errJournalDown},
 		wantStatus: StatusUnfinished,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded, "b": StepNotStarted},
@@ -528,12 +491,12 @@ func predicateIntentRow() runRow {
 
 func finishedAppendRow() runRow {
 	return runRow{
-		name: "[Fail] When: the saga-finished append fails ; Should: keep the completed status, return ErrJournal",
+		name: "[Fail] When: the saga-finished append fails ; Should: stay unfinished, return ErrJournal",
 		steps: func(rec *recorder) Flow {
 			return rec.booking("a")
 		},
-		journal:    scripted(map[int]error{4: errJournalDown}),
-		wantStatus: StatusCompleted,
+		script:     map[int]error{4: errJournalDown},
+		wantStatus: StatusUnfinished,
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]StepStatus{"a": StepSucceeded},
 		wantTrail:  seq(opened, startOf("a"), doneOf("a")),
@@ -547,7 +510,7 @@ func finishedRejectedRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return rec.step("a")
 		},
-		journal:     scripted(map[int]error{4: fmt.Errorf("%w: other writer", ErrConcurrentWriter)}),
+		script:      map[int]error{4: fmt.Errorf("%w: other writer", ErrConcurrentWriter)},
 		wantStatus:  StatusUnfinished,
 		wantTrail:   seq(opened, startOf("a"), doneOf("a")),
 		wantErrs:    []error{ErrConcurrentWriter},

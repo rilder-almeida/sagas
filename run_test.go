@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -25,54 +26,109 @@ type graceKey struct{}
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type scriptJournal struct {
-	errs   map[int]error
-	failed map[int]bool
-	ctxs   []context.Context
+	*MemoryJournal
+
+	errs       map[int]error
+	failed     map[int]bool
+	ctxs       []context.Context
+	executions []string
+	mu         sync.Mutex
+}
+
+func newScriptJournal(errs map[int]error) *scriptJournal {
+	return &scriptJournal{MemoryJournal: NewMemoryJournal(), errs: errs, failed: map[int]bool{}}
 }
 
 func (j *scriptJournal) Append(ctx context.Context, e *Event) error {
+	j.mu.Lock()
 	j.ctxs = append(j.ctxs, ctx)
 
+	if e.Seq == 1 && !slices.Contains(j.executions, e.Execution) {
+		j.executions = append(j.executions, e.Execution)
+	}
+
 	err, scripted := j.errs[e.Seq]
-	if !scripted || j.failed[e.Seq] {
-		return nil
+	if scripted && !j.failed[e.Seq] {
+		j.failed[e.Seq] = true
+		j.mu.Unlock()
+
+		return err
 	}
 
-	if j.failed == nil {
-		j.failed = map[int]bool{}
-	}
+	j.mu.Unlock()
 
-	j.failed[e.Seq] = true
-
-	return err
+	return j.MemoryJournal.Append(ctx, e)
 }
 
-func Test_WithExecutionID(t *testing.T) {
+func (j *scriptJournal) results() []result {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	out := make([]result, 0, len(j.executions))
+	for _, execution := range j.executions {
+		out = append(out, buildResult(j.Events(execution)))
+	}
+
+	return out
+}
+
+type orderState struct {
+	ID    string
+	Hotel string
+}
+
+func (s orderState) ExecutionID() string { return s.ID }
+
+type orderStep struct{ Step }
+
+func (*orderStep) Execute(_ context.Context, s *orderState) error {
+	s.Hotel = hotelRitz
+
+	return nil
+}
+
+const orderID = "order-7"
+
+type runIDRow struct {
+	name       string
+	id         string
+	runs       int
+	journaled  bool
+	script     map[int]error
+	wantErrs   []error
+	wantEvents []EventKind
+}
+
+func Test_Saga_Run_executionID(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name          string
-		ids           []string
-		wantExecution string
-		wantErrs      []error
-		wantContains  []string
-	}{
+	completed := []EventKind{EventSagaStarted, EventStepStarted, EventStepSucceeded, EventSagaFinished}
+
+	tests := []runIDRow{
 		{
-			name:          "[Success] When: the option is given once ; Should: run with that execution ID",
-			ids:           []string{"order-42"},
-			wantExecution: "order-42",
+			name: "[Success] When: the state declares ExecutionID ; Should: store the events under that ID",
+			id:   orderID, runs: 1, journaled: true, wantEvents: completed,
 		},
 		{
-			name:         "[Fail] When: the option is given twice ; Should: reject the run with ErrInvalidRun",
-			ids:          []string{"order-42", "order-43"},
-			wantErrs:     []error{ErrInvalidRun},
-			wantContains: []string{"WithExecutionID given more than once"},
+			name: "[Success] When: two runs share an ID and the saga has no journal ; Should: complete both",
+			id:   orderID, runs: 2,
 		},
 		{
-			name:         "[Fail] When: the ID breaks the name rule ; Should: reject the run with ErrInvalidRun",
-			ids:          []string{"order:42"},
-			wantErrs:     []error{ErrInvalidRun},
-			wantContains: []string{nameRule},
+			name: "[Fail] When: a second run reuses a stored ID ; Should: return ErrExecutionExists, no RunError",
+			id:   orderID, runs: 2, journaled: true, wantErrs: []error{ErrExecutionExists}, wantEvents: completed,
+		},
+		{
+			name: "[Fail] When: the journal fails the saga-started event ; Should: return ErrJournal, no RunError",
+			id:   orderID, runs: 1, journaled: true, script: map[int]error{1: errJournalDown},
+			wantErrs: []error{ErrJournal, errJournalDown},
+		},
+		{
+			name: "[Fail] When: the ID breaks the name rule ; Should: return ErrInvalidRun before any event",
+			id:   "order:42", runs: 1, journaled: true, wantErrs: []error{ErrInvalidRun},
+		},
+		{
+			name: "[Fail] When: the ID is empty ; Should: return ErrInvalidRun before any event",
+			id:   "", runs: 1, journaled: true, wantErrs: []error{ErrInvalidRun},
 		},
 	}
 
@@ -80,22 +136,29 @@ func Test_WithExecutionID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := make([]RunOption, 0, len(tt.ids))
-			for _, id := range tt.ids {
-				opts = append(opts, WithExecutionID(id))
+			journal := newScriptJournal(tt.script)
+
+			var opts []Option
+			if tt.journaled {
+				opts = append(opts, WithJournal(journal))
 			}
 
-			cfg, err := checkRun(&tripState{}, opts)
-			for _, want := range tt.wantErrs {
-				require.ErrorIs(t, err, want)
+			s, err := New[orderState]("order", &orderStep{}, opts...)
+			require.NoError(t, err)
+
+			for range tt.runs {
+				err = s.Run(t.Context(), &orderState{ID: tt.id})
 			}
 
-			if len(tt.wantErrs) == 0 {
-				require.NoError(t, err)
+			requireErrs(t, err, tt.wantErrs, nil)
+			assert.NotErrorAs(t, err, new(*RunError), "pre-start errors are not a RunError")
+
+			var kinds []EventKind
+			for _, e := range journal.Events(tt.id) {
+				kinds = append(kinds, e.Kind)
 			}
 
-			requireText(t, err, tt.wantContains, nil)
-			assert.Equal(t, tt.wantExecution, cfg.execution)
+			assert.Equal(t, tt.wantEvents, kinds)
 		})
 	}
 }
@@ -105,78 +168,56 @@ func Test_checkRun(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		run           func() (runConfig, error)
+		run           func() (string, error)
 		wantExecution *regexp.Regexp
 		wantErrs      []error
 		wantContains  []string
 	}{
 		{
-			name:          "[Success] When: no option is given ; Should: draw a random 32-char hex execution",
-			run:           func() (runConfig, error) { return checkRun(&tripState{}, nil) },
+			name:          "[Success] When: the state has no ExecutionID ; Should: draw a random 32-char hex execution",
+			run:           func() (string, error) { return checkRun(&tripState{}) },
 			wantExecution: hexID,
 		},
 		{
-			name: "[Success] When: WithExecutionID is valid ; Should: keep the given execution",
-			run: func() (runConfig, error) {
-				return checkRun(&tripState{}, []RunOption{WithExecutionID("order-42")})
-			},
+			name:          "[Success] When: the state declares a valid ExecutionID ; Should: keep it",
+			run:           func() (string, error) { return checkRun(&orderState{ID: "order-42"}) },
 			wantExecution: regexp.MustCompile(`^order-42$`),
 		},
 		{
-			name:         "[Fail] When: an option is nil ; Should: return ErrInvalidRun",
-			run:          func() (runConfig, error) { return checkRun(&tripState{}, []RunOption{nil}) },
-			wantErrs:     []error{ErrInvalidRun},
-			wantContains: []string{"nil RunOption"},
-		},
-		{
-			name: "[Fail] When: WithExecutionID is given twice ; Should: return ErrInvalidRun",
-			run: func() (runConfig, error) {
-				return checkRun(&tripState{}, twice(WithExecutionID("order-42")))
-			},
-			wantErrs:     []error{ErrInvalidRun},
-			wantContains: []string{"WithExecutionID given more than once"},
-		},
-		{
-			name: "[Fail] When: the execution ID is empty ; Should: return ErrInvalidRun",
-			run: func() (runConfig, error) {
-				return checkRun(&tripState{}, []RunOption{WithExecutionID("")})
-			},
+			name:         "[Fail] When: the execution ID is empty ; Should: return ErrInvalidRun",
+			run:          func() (string, error) { return checkRun(&orderState{}) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: checkName(""),
 		},
 		{
-			name: "[Fail] When: the execution ID holds a colon ; Should: return ErrInvalidRun",
-			run: func() (runConfig, error) {
-				return checkRun(&tripState{}, []RunOption{WithExecutionID("order:42")})
-			},
+			name:         "[Fail] When: the execution ID holds a colon ; Should: return ErrInvalidRun",
+			run:          func() (string, error) { return checkRun(&orderState{ID: "order:42"}) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
-			name: "[Fail] When: the execution ID starts with a dash ; Should: return ErrInvalidRun",
-			run: func() (runConfig, error) {
-				return checkRun(&tripState{}, []RunOption{WithExecutionID("-x")})
-			},
+			name:         "[Fail] When: the execution ID starts with a dash ; Should: return ErrInvalidRun",
+			run:          func() (string, error) { return checkRun(&orderState{ID: "-x"}) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
 			name:         "[Fail] When: s is nil ; Should: return ErrInvalidState",
-			run:          func() (runConfig, error) { return checkRun[tripState](nil, nil) },
+			run:          func() (string, error) { return checkRun[tripState](nil) },
 			wantErrs:     []error{ErrInvalidState},
 			wantContains: []string{"state is nil"},
 		},
 		{
 			name:         "[Fail] When: the initial state holds NaN ; Should: return ErrInvalidState",
-			run:          func() (runConfig, error) { return checkRun(&floatState{F: math.NaN()}, nil) },
+			run:          func() (string, error) { return checkRun(&floatState{F: math.NaN()}) },
 			wantErrs:     []error{ErrInvalidState},
 			wantContains: []string{"F"},
 		},
 		{
-			name:         "[Fail] When: an option and s are both bad ; Should: join both errors",
-			run:          func() (runConfig, error) { return checkRun[tripState](nil, []RunOption{nil}) },
+			name:         "[Fail] When: the ID and the state are both bad ; Should: join both errors",
+			run:          func() (string, error) { return checkRun(&floatIDState{F: math.NaN(), ID: "a b"}) },
 			wantErrs:     []error{ErrInvalidRun, ErrInvalidState},
-			wantContains: []string{"nil RunOption", "state is nil"},
+			wantContains: []string{nameRule, "F"},
 		},
 	}
 
@@ -184,21 +225,28 @@ func Test_checkRun(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := tt.run()
+			execution, err := tt.run()
 			requireErrs(t, err, tt.wantErrs, nil)
 			requireText(t, err, tt.wantContains, nil)
 
 			if tt.wantExecution == nil {
-				assert.Empty(t, cfg.execution)
+				assert.Empty(t, execution)
 
 				return
 			}
 
-			assert.Regexp(t, tt.wantExecution, cfg.execution)
-			assert.Empty(t, checkName(cfg.execution))
+			assert.Regexp(t, tt.wantExecution, execution)
+			assert.Empty(t, checkName(execution))
 		})
 	}
 }
+
+type floatIDState struct {
+	F  float64
+	ID string
+}
+
+func (s floatIDState) ExecutionID() string { return s.ID }
 
 func Test_newID(t *testing.T) {
 	t.Parallel()
@@ -287,7 +335,7 @@ func Test_runner_append(t *testing.T) {
 			s, err := oneStep()
 			require.NoError(t, err)
 
-			j := &scriptJournal{errs: tt.script}
+			j := newScriptJournal(tt.script)
 			r := &runner[tripState]{
 				saga: s, execution: "exec-1", writer: "writer-1", journal: j,
 			}
@@ -534,8 +582,7 @@ type runRow struct {
 	name               string
 	steps              func(rec *recorder) Flow
 	opts               []Option
-	journal            func() Journal
-	runOpts            []RunOption
+	script             map[int]error
 	runs               int
 	concurrent         bool
 	wantStatus         Status
@@ -555,7 +602,6 @@ type runRow struct {
 	wantTextCount      map[string]int
 	wantErrText        map[string]string
 	wantUnrecorded     []string
-	wantExecution      string
 	wantSteps          map[string]StepStatus
 	wantPending        []string
 	wantOrder          [][2]string
@@ -573,19 +619,17 @@ func Test_Saga_Run(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				rec := &recorder{}
-				opts := slices.Clone(tt.opts)
+				journal := newScriptJournal(tt.script)
 
-				var journal Journal
-				if tt.journal != nil {
-					journal = tt.journal()
-					opts = append(opts, WithJournal(journal))
-				}
-
-				s, err := New[tripState]("trip", tt.steps(rec), opts...)
+				s, err := New[tripState]("trip", tt.steps(rec), append(slices.Clone(tt.opts), WithJournal(journal))...)
 				require.NoError(t, err)
 
-				for _, got := range execute(s, &tt) {
-					assertRun(t, &tt, &got, journal)
+				runs := execute(s, &tt)
+				results := journal.results()
+				require.Len(t, results, len(runs))
+
+				for i := range runs {
+					assertRun(t, &tt, &runs[i], &results[i])
 				}
 
 				assertOrder(t, rec.snapshot(), tt.wantOrder)
@@ -594,10 +638,10 @@ func Test_Saga_Run(t *testing.T) {
 	}
 }
 
-func assertRun(t *testing.T, tt *runRow, got *ran, journal Journal) {
+func assertRun(t *testing.T, tt *runRow, got *ran, res *result) {
 	t.Helper()
 
-	res, err := &got.res, got.err
+	err := got.err
 
 	requireErrs(t, err, tt.wantErrs, tt.wantText)
 
@@ -605,17 +649,28 @@ func assertRun(t *testing.T, tt *runRow, got *ran, journal Journal) {
 		require.NotErrorIs(t, err, no)
 	}
 
+	var pending []string
+
+	if err != nil {
+		runErr, ok := errors.AsType[*RunError](err)
+		require.True(t, ok, "a failed run is not a RunError: %v", err)
+		assert.Same(t, ErrIncomplete, runErr.Kind)
+		require.ErrorIs(t, err, ErrIncomplete)
+
+		pending = runErr.Pending
+	}
+
 	assert.Equal(t, tt.wantStatus, res.Status)
-	assert.Equal(t, tt.wantPending, res.Pending())
+	assert.Equal(t, tt.wantPending, pending)
+	assert.Equal(t, tt.wantPending, res.pending())
 	assert.Equal(t, tt.wantState, got.state)
 	assertSteps(t, res, tt.wantSteps)
-	assertEvents(t, res, tt, journal)
+	assertEvents(t, res, tt)
 
-	assertFailures(t, tt, got)
+	assertFailures(t, tt, got, res)
 }
 
 type ran struct {
-	res   Result
 	err   error
 	state tripState
 }
@@ -634,7 +689,7 @@ func execute(s *Saga[tripState], tt *runRow) []ran {
 				time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
 			}
 
-			out[i].res, out[i].err = s.Run(ctx, &out[i].state, tt.runOpts...)
+			out[i].err = s.Run(ctx, &out[i].state)
 		}
 		if tt.concurrent {
 			wg.Go(call)
@@ -670,7 +725,7 @@ func requireErrs(t *testing.T, err error, wants []error, text []string) {
 	}
 }
 
-func assertSteps(t *testing.T, res *Result, want map[string]StepStatus) {
+func assertSteps(t *testing.T, res *result, want map[string]StepStatus) {
 	t.Helper()
 
 	got := make(map[string]StepStatus, len(res.Steps))
@@ -692,10 +747,10 @@ func assertOrder(t *testing.T, calls []string, want [][2]string) {
 	}
 }
 
-func assertEvents(t *testing.T, res *Result, tt *runRow, journal Journal) {
+func assertEvents(t *testing.T, res *result, tt *runRow) {
 	t.Helper()
 
-	events := res.Events()
+	events := res.events
 	require.NotEmpty(t, events)
 	assert.Equal(t, EventSagaStarted, events[0].Kind)
 
@@ -724,19 +779,9 @@ func assertEvents(t *testing.T, res *Result, tt *runRow, journal Journal) {
 		}
 	}
 
-	if tt.wantExecution == "" {
-		assert.Regexp(t, hexID, res.Execution)
-	} else {
-		assert.Equal(t, tt.wantExecution, res.Execution)
-	}
-
+	assert.Regexp(t, hexID, res.Execution)
 	assertTrail(t, trail, tt.wantTrail)
-
 	assertZones(t, events[0].Steps, tt.wantZones)
-
-	if stored, ok := journal.(*memoryJournal); ok {
-		assert.Equal(t, events, stored.events(res.Execution))
-	}
 }
 
 func seq(events ...string) [][]string {
@@ -816,7 +861,7 @@ func Benchmark_Saga_Run(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, runErr := s.Run(ctx, &tripState{}); runErr != nil {
+		if runErr := s.Run(ctx, &tripState{}); runErr != nil {
 			b.Fatal(runErr)
 		}
 	}

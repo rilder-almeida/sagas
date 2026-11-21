@@ -68,7 +68,7 @@ func oneStep() (*Saga[tripState], error) {
 func Test_New(t *testing.T) {
 	t.Parallel()
 
-	journal := newMemoryJournal()
+	journal := NewMemoryJournal()
 	a := act("a", okAction)
 
 	tests := []struct {
@@ -265,14 +265,18 @@ func Test_New_stepSettings(t *testing.T) {
 				step := act("a", tt.execute)
 				step.Retry, step.AttemptTimeout = tt.settings.Retry, tt.settings.AttemptTimeout
 
-				s, err := New[tripState](tripName, step)
+				journal := newScriptJournal(nil)
+
+				s, err := New[tripState](tripName, step, WithJournal(journal))
 				require.NoError(t, err)
 
 				step.Step = tt.changed
 
 				start := time.Now()
-				res, runErr := s.Run(t.Context(), &tripState{})
+				runErr := s.Run(t.Context(), &tripState{})
 				elapsed := time.Since(start)
+
+				res := journal.results()[0]
 
 				require.ErrorIs(t, runErr, tt.wantErr)
 				assert.Equal(t, tt.wantErr == nil, runErr == nil)
@@ -340,13 +344,13 @@ func Test_WithJournal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			j := &scriptJournal{}
+			j := newScriptJournal(nil)
 
 			s, err := New[tripState](tripName, act("a", okAction), tt.opts(j)...)
 			require.ErrorIs(t, err, tt.wantErr)
 
 			if s != nil {
-				_, runErr := s.Run(t.Context(), &tripState{})
+				runErr := s.Run(t.Context(), &tripState{})
 				require.NoError(t, runErr)
 			}
 
@@ -419,7 +423,7 @@ func Test_WithRecoveryTimeout(t *testing.T) {
 					ctx, cancel := context.WithCancel(t.Context())
 					time.AfterFunc(pause, cancel)
 
-					_, runErr := s.Run(ctx, &tripState{})
+					runErr := s.Run(ctx, &tripState{})
 					require.ErrorIs(t, runErr, ErrGraceEnded)
 				}
 
@@ -531,7 +535,7 @@ func Test_WithMiddleware(t *testing.T) {
 			}
 
 			if s != nil {
-				_, runErr := s.Run(t.Context(), &tripState{})
+				runErr := s.Run(t.Context(), &tripState{})
 				require.NoError(t, runErr)
 			}
 

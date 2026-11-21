@@ -26,7 +26,10 @@ const (
 	nameConflict = "conflict"
 )
 
-var errLookalike = errors.New("sagas: state conflict")
+var (
+	errLookalike           = errors.New("sagas: state conflict")
+	errLookalikeIncomplete = errors.New("sagas: incomplete")
+)
 
 var (
 	errFirst    = errors.New("first attempt")
@@ -449,7 +452,7 @@ func Test_kindOf(t *testing.T) {
 	}
 }
 
-func assertFailures(t *testing.T, tt *runRow, got *ran) {
+func assertFailures(t *testing.T, tt *runRow, got *ran, res *result) {
 	t.Helper()
 
 	failures := failuresOf(got.err)
@@ -475,7 +478,7 @@ func assertFailures(t *testing.T, tt *runRow, got *ran) {
 		assertPrevious(t, se.Previous, tt.wantPreviousIs[step])
 		assertCause(t, se.Cause, causeList(tt.wantCauseIs[step]), tt.wantCauseText[step])
 
-		result := resultOf(t, got, step)
+		result := resultOf(t, res, step)
 		if slices.Contains(tt.wantUnrecorded, step) {
 			assert.Equal(t, EventError{}, result.Err)
 			assert.Zero(t, result.Attempts)
@@ -496,7 +499,7 @@ func assertFailures(t *testing.T, tt *runRow, got *ran) {
 	}
 
 	for step, text := range tt.wantEventCauseText {
-		assert.Contains(t, resultOf(t, got, step).Err.Cause, text)
+		assert.Contains(t, resultOf(t, res, step).Err.Cause, text)
 	}
 
 	for text, count := range tt.wantTextCount {
@@ -507,13 +510,8 @@ func assertFailures(t *testing.T, tt *runRow, got *ran) {
 func failuresOf(err error) map[string]int {
 	failures := map[string]int{}
 
-	var joined interface{ Unwrap() []error }
-	if !errors.As(err, &joined) {
-		return failures
-	}
-
-	for _, e := range joined.Unwrap() {
-		if se, isStep := errors.AsType[*Error](e); isStep {
+	if runErr, ok := errors.AsType[*RunError](err); ok {
+		for _, se := range runErr.Steps {
 			failures[se.Step]++
 		}
 	}
@@ -551,14 +549,11 @@ func assertEventMirror(t *testing.T, event EventError, se *Error) {
 func failureOf(t *testing.T, err error, step string) *Error {
 	t.Helper()
 
-	var joined interface{ Unwrap() []error }
+	runErr, ok := errors.AsType[*RunError](err)
+	require.True(t, ok, "the run error is not a RunError: %v", err)
 
-	ok := errors.As(err, &joined)
-	require.True(t, ok, "the run error is not a joined error: %v", err)
-
-	for _, e := range joined.Unwrap() {
-		var se *Error
-		if errors.As(e, &se) && se.Step == step {
+	for _, se := range runErr.Steps {
+		if se.Step == step {
 			return se
 		}
 	}
@@ -568,18 +563,18 @@ func failureOf(t *testing.T, err error, step string) *Error {
 	return nil
 }
 
-func resultOf(t *testing.T, got *ran, step string) StepResult {
+func resultOf(t *testing.T, res *result, step string) stepResult {
 	t.Helper()
 
-	for i := range got.res.Steps {
-		if got.res.Steps[i].Name == step {
-			return got.res.Steps[i]
+	for i := range res.Steps {
+		if res.Steps[i].Name == step {
+			return res.Steps[i]
 		}
 	}
 
 	require.FailNow(t, "no result for step "+step)
 
-	return StepResult{}
+	return stepResult{}
 }
 
 func errorRows() []runRow {
@@ -599,6 +594,7 @@ func errorRows() []runRow {
 		journalStopRow(),
 		markedPanicRow(),
 		nestedPermanentRow(),
+		nestedMiddlewareRow(),
 	}
 }
 
@@ -615,7 +611,7 @@ func rejectionStopRow() runRow {
 	return runRow{
 		name:         "[Fail] When: the journal rejects an event beside a sibling ; Should: name it as the cause",
 		steps:        waitingSibling(),
-		journal:      scripted(map[int]error{6: ErrConcurrentWriter}),
+		script:       map[int]error{6: ErrConcurrentWriter},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
@@ -636,7 +632,7 @@ func journalStopRow() runRow {
 		name: "[Fail] When: the journal fails an append beside a running sibling ; " +
 			"Should: name it as the cause",
 		steps:        waitingSibling(),
-		journal:      scripted(map[int]error{6: errJournalDown}),
+		script:       map[int]error{6: errJournalDown},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"), lostOf("c"))),
@@ -797,7 +793,7 @@ func droppedPredicateRow() runRow {
 
 			return Sequence(rec.step("a"), Parallel(rec.step("b"), rec.stepIf("c", late)))
 		},
-		journal:      scripted(map[int]error{5: ErrConcurrentWriter}),
+		script:       map[int]error{5: ErrConcurrentWriter},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 0},
 		wantErrs:     []error{ErrConcurrentWriter},
@@ -825,7 +821,7 @@ func droppedOutcomeRow() runRow {
 
 			return Sequence(rec.step("a"), Parallel(rec.step("b"), late))
 		},
-		journal:      scripted(map[int]error{6: ErrConcurrentWriter}),
+		script:       map[int]error{6: ErrConcurrentWriter},
 		wantStatus:   StatusUnfinished,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
@@ -919,9 +915,7 @@ func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs [
 					return err
 				}
 
-				_, err = s.Run(ctx, &tripState{})
-
-				return err
+				return s.Run(ctx, &tripState{})
 			})
 			nests.Retry = RetryPolicy{Attempts: attempts}
 
@@ -943,4 +937,172 @@ func nestedPermanentRow() runRow {
 		act("x", func(context.Context, *tripState) error { return Permanent(errAlwaysFails) }),
 		3, errAlwaysFails.Error(), []error{errAlwaysFails, ErrFailed},
 	)
+}
+
+func nestedMiddlewareRow() runRow {
+	return runRow{
+		name: "[Fail] When: step middleware returns a nested run error without calling the step ; " +
+			"Should: label the outer step ErrFailed, not an inner kind",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), act("b", okAction))
+		},
+		opts:         []Option{WithMiddleware(nestingMiddleware())},
+		wantStatus:   StatusUnfinished,
+		wantErrs:     []error{errAlwaysFails, ErrIncomplete, ErrFailed},
+		wantSteps:    map[string]StepStatus{"a": StepSucceeded, "b": StepFailed},
+		wantKinds:    map[string]*KindError{"b": ErrFailed},
+		wantErrText:  map[string]string{"b": `step "x" failed after 3 attempts: ` + errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"b": 3},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB()),
+
+		wantPreviousIs: map[string][]error{"b": {ErrIncomplete, ErrIncomplete}},
+	}
+}
+
+func nestingMiddleware() MiddlewareFunc {
+	return func(ctx context.Context, info CallInfo, call Call) error {
+		if info.Step != "b" {
+			return call(ctx)
+		}
+
+		inner, err := New[tripState]("inner", act("x", alwaysFails))
+		if err != nil {
+			return err
+		}
+
+		return inner.Run(ctx, &tripState{})
+	}
+}
+
+func Test_RunError_Error(t *testing.T) {
+	t.Parallel()
+
+	payFailed := &Error{Kind: ErrFailed, Step: payStep, Attempts: 1, Err: errAlwaysFails}
+
+	tests := []struct {
+		name string
+		err  RunError
+		want string
+	}{
+		{
+			name: "[Success] When: a step failed ; Should: read the kind, then the step error",
+			err:  RunError{Kind: ErrIncomplete, Steps: []*Error{payFailed}},
+			want: "sagas: incomplete: " + payFailed.Error(),
+		},
+		{
+			name: "[Success] When: a step and the journal failed ; Should: join the texts with a semicolon",
+			err:  RunError{Kind: ErrIncomplete, Steps: []*Error{payFailed}, causes: []error{errJournalDown}},
+			want: "sagas: incomplete: " + payFailed.Error() + "; " + errJournalDown.Error(),
+		},
+		{
+			name: "[Success] When: only the journal failed ; Should: read the kind, then the journal error",
+			err:  RunError{Kind: ErrIncomplete, causes: []error{errJournalDown}},
+			want: "sagas: incomplete: " + errJournalDown.Error(),
+		},
+		{
+			name: "[Success] When: nothing caused the end ; Should: read only the kind",
+			err:  RunError{Kind: ErrIncomplete},
+			want: "sagas: incomplete",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.err.Error())
+		})
+	}
+}
+
+func Test_RunError_Is(t *testing.T) {
+	t.Parallel()
+
+	payFailed := &Error{Kind: ErrFailed, Step: payStep, Err: errAlwaysFails}
+
+	tests := []struct {
+		name   string
+		err    *RunError
+		target error
+		want   bool
+	}{
+		{
+			name:   "[Success] When: the target is the Kind ; Should: match",
+			err:    &RunError{Kind: ErrIncomplete},
+			target: ErrIncomplete,
+			want:   true,
+		},
+		{
+			name:   "[Success] When: a step error holds the target ; Should: match through the chain",
+			err:    &RunError{Kind: ErrIncomplete, Steps: []*Error{payFailed}},
+			target: errAlwaysFails,
+			want:   true,
+		},
+		{
+			name:   "[Success] When: a journal error holds the target ; Should: match through the chain",
+			err:    &RunError{Kind: ErrIncomplete, causes: []error{fmt.Errorf("%w: %w", ErrJournal, errJournalDown)}},
+			target: ErrJournal,
+			want:   true,
+		},
+		{
+			name:   "[Fail] When: the target is another Kind ; Should: not match",
+			err:    &RunError{Kind: ErrIncomplete},
+			target: ErrCompensated,
+		},
+		{
+			name:   "[Fail] When: a caller error has the same text as the Kind ; Should: not match",
+			err:    &RunError{Kind: ErrIncomplete},
+			target: errLookalikeIncomplete,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, errors.Is(tt.err, tt.target))
+		})
+	}
+}
+
+func Test_RunError_Unwrap(t *testing.T) {
+	t.Parallel()
+
+	first := &Error{Kind: ErrFailed, Step: "a"}
+	second := &Error{Kind: ErrUnknown, Step: "b"}
+
+	tests := []struct {
+		name string
+		err  RunError
+		want []error
+	}{
+		{
+			name: "[Success] When: steps and other errors are set ; Should: return the steps first, in order",
+			err:  RunError{Steps: []*Error{first, second}, causes: []error{ErrConcurrentWriter, errJournalDown}},
+			want: []error{first, second, ErrConcurrentWriter, errJournalDown},
+		},
+		{
+			name: "[Success] When: only steps are set ; Should: return the step errors",
+			err:  RunError{Steps: []*Error{first}},
+			want: []error{first},
+		},
+		{
+			name: "[Success] When: only other errors are set ; Should: return them",
+			err:  RunError{causes: []error{errJournalDown}},
+			want: []error{errJournalDown},
+		},
+		{
+			name: "[Success] When: nothing is set ; Should: return no errors",
+			err:  RunError{},
+			want: []error{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.err.Unwrap())
+		})
+	}
 }

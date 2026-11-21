@@ -68,7 +68,7 @@ func scribbleEvent(e *Event) {
 	}
 }
 
-func Test_memoryJournal_Append(t *testing.T) {
+func Test_MemoryJournal_Append(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -181,7 +181,7 @@ func Test_memoryJournal_Append(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			j := newMemoryJournal()
+			j := NewMemoryJournal()
 			for i := range tt.prior {
 				require.NoError(t, j.Append(t.Context(), &tt.prior[i]))
 			}
@@ -205,9 +205,103 @@ func Test_memoryJournal_Append(t *testing.T) {
 			assert.Equal(t, tt.wantMsg, errText(err))
 
 			for execution, want := range tt.want {
-				scribble(j.events(execution))
-				assert.Equal(t, want, j.events(execution), execution)
+				scribble(j.Events(execution))
+				assert.Equal(t, want, j.Events(execution), execution)
 			}
+		})
+	}
+}
+
+func Test_NewMemoryJournal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		seed       []Event
+		readSecond bool
+		want       []Event
+	}{
+		{
+			name: "[Success] When: nothing was appended ; Should: hold no events",
+			want: []Event{},
+		},
+		{
+			name: "[Success] When: an event went to the first journal ; Should: hold it there",
+			seed: []Event{journalEvent("a", 1)},
+			want: []Event{journalEvent("a", 1)},
+		},
+		{
+			name:       "[Success] When: an event went to the first journal ; Should: leave a second journal empty",
+			seed:       []Event{journalEvent("a", 1)},
+			readSecond: true,
+			want:       []Event{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			first, second := NewMemoryJournal(), NewMemoryJournal()
+			for i := range tt.seed {
+				require.NoError(t, first.Append(t.Context(), &tt.seed[i]))
+			}
+
+			read := first
+			if tt.readSecond {
+				read = second
+			}
+
+			assert.Equal(t, tt.want, read.Events("a"))
+		})
+	}
+}
+
+func Test_MemoryJournal_Events(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		stored    []Event
+		execution string
+		scribble  bool
+		want      []Event
+	}{
+		{
+			name:      "[Success] When: the execution has events ; Should: return them in Seq order",
+			stored:    []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			execution: "a",
+			want:      []Event{journalEvent("a", 1), journalEvent("a", 2)},
+		},
+		{
+			name:      "[Success] When: the execution is unknown ; Should: return no events",
+			stored:    []Event{journalEvent("a", 1)},
+			execution: "b",
+			want:      []Event{},
+		},
+		{
+			name:      "[Success] When: the caller changes a returned event ; Should: return the stored ones",
+			stored:    []Event{journalEvent("a", 1), journalEvent("a", 2)},
+			execution: "a",
+			scribble:  true,
+			want:      []Event{journalEvent("a", 1), journalEvent("a", 2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			j := NewMemoryJournal()
+			for i := range tt.stored {
+				require.NoError(t, j.Append(t.Context(), &tt.stored[i]))
+			}
+
+			if tt.scribble {
+				scribble(j.Events(tt.execution))
+			}
+
+			assert.Equal(t, tt.want, j.Events(tt.execution))
 		})
 	}
 }
@@ -330,7 +424,7 @@ func Test_sameEvent(t *testing.T) {
 	}
 }
 
-func Test_memoryJournal_Append_concurrent(t *testing.T) {
+func Test_MemoryJournal_Append_concurrent(t *testing.T) {
 	t.Parallel()
 
 	const seqs = 20
@@ -358,7 +452,7 @@ func Test_memoryJournal_Append_concurrent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			j := newMemoryJournal()
+			j := NewMemoryJournal()
 			results := make([][][]error, tt.executions)
 
 			var wg sync.WaitGroup
@@ -372,13 +466,13 @@ func Test_memoryJournal_Append_concurrent(t *testing.T) {
 			wg.Wait()
 
 			for x := range tt.executions {
-				assertRaceOutcome(t, j.events(strconv.Itoa(x)), results[x])
+				assertRaceOutcome(t, j.Events(strconv.Itoa(x)), results[x])
 			}
 		})
 	}
 }
 
-func raceExecution(t *testing.T, j *memoryJournal, execution string, results [][]error, writers int) {
+func raceExecution(t *testing.T, j *MemoryJournal, execution string, results [][]error, writers int) {
 	t.Helper()
 
 	for i := range results {
@@ -426,10 +520,10 @@ func assertRaceOutcome(t *testing.T, events []Event, results [][]error) {
 	}
 }
 
-func Benchmark_memoryJournal_Append(b *testing.B) {
+func Benchmark_MemoryJournal_Append(b *testing.B) {
 	const streamLen = 64
 
-	j := newMemoryJournal()
+	j := NewMemoryJournal()
 	e := journalEvent("", 0)
 	n := 0
 

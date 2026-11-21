@@ -88,16 +88,19 @@ const (
 	ZoneForwardOnly Zone = "forward-only"
 )
 
-type memoryJournal struct {
+// MemoryJournal is a Journal that keeps every execution in memory. Its zero value is not ready: use NewMemoryJournal.
+type MemoryJournal struct {
 	mu      sync.Mutex
 	streams map[string][]Event
 }
 
-func newMemoryJournal() *memoryJournal {
-	return &memoryJournal{streams: map[string][]Event{}}
+// NewMemoryJournal returns an empty MemoryJournal.
+func NewMemoryJournal() *MemoryJournal {
+	return &MemoryJournal{streams: map[string][]Event{}}
 }
 
-func (j *memoryJournal) Append(_ context.Context, e *Event) error {
+// Append stores a copy of e as the Journal contract says.
+func (j *MemoryJournal) Append(_ context.Context, e *Event) error {
 	if e == nil {
 		return fmt.Errorf("%w: nil event", errInvalidEvent)
 	}
@@ -130,7 +133,8 @@ func (j *memoryJournal) Append(_ context.Context, e *Event) error {
 	return fmt.Errorf("%w: execution %q seq %d", rejection, e.Execution, e.Seq)
 }
 
-func (j *memoryJournal) events(execution string) []Event {
+// Events returns a copy of the events of an execution in Seq order, which the caller may change freely.
+func (j *MemoryJournal) Events(execution string) []Event {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 

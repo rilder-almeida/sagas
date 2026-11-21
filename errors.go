@@ -112,6 +112,43 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
+// RunError reports a run that began and did not complete cleanly. Steps holds every failed step in failure order, and
+// Pending lists the steps that still need action. errors.Is also walks the step errors, the journal errors and the
+// state write-back error; read the kind of the run itself with errors.As and its Kind field.
+type RunError struct {
+	Kind    *KindError
+	Steps   []*Error
+	Pending []string
+	causes  []error
+}
+
+// Error reads the message of Kind, then the texts of Unwrap joined with a semicolon.
+func (e *RunError) Error() string {
+	errs := e.Unwrap()
+	if len(errs) == 0 {
+		return e.Kind.Error()
+	}
+
+	return e.Kind.Error() + ": " + strings.Join(texts(errs), "; ")
+}
+
+// Unwrap returns the step errors, then the journal rejection, the journal errors and the write-back error.
+func (e *RunError) Unwrap() []error {
+	errs := make([]error, 0, len(e.Steps)+len(e.causes))
+	for _, step := range e.Steps {
+		errs = append(errs, step)
+	}
+
+	return append(errs, e.causes...)
+}
+
+// Is reports whether target is the Kind of e.
+func (e *RunError) Is(target error) bool {
+	kind, ok := target.(*KindError)
+
+	return ok && kind == e.Kind
+}
+
 func text(err error) string {
 	if err == nil {
 		return ""

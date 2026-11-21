@@ -42,8 +42,7 @@ const (
 	StepHalted             StepStatus = "halted"
 )
 
-// StepResult is where one step of a run ended, with its attempts, errors, committed fields and times.
-type StepResult struct {
+type stepResult struct {
 	Name            string
 	Status          StepStatus
 	Attempts        int
@@ -54,19 +53,14 @@ type StepResult struct {
 	End             time.Time
 }
 
-// Result is the outcome of one execution, built from its journal events. It describes a run that ended: a step
-// still running looks unknown, and a compensation still running looks failed.
-type Result struct {
+type result struct {
 	Execution string
 	Status    Status
-	Steps     []StepResult
+	Steps     []stepResult
 	events    []Event
 }
 
-// Pending lists, in step order and from the events alone, every step that needs action: an unknown step; a failed,
-// blocked or halted compensation; and, once the pivot succeeded, a forward-only step that failed or did not start.
-// During a journal outage, the error Run returns is the complete list: the journal holds only what it recorded.
-func (r *Result) Pending() []string {
+func (r *result) pending() []string {
 	var zones []StepZone
 
 	for i := range r.events {
@@ -95,11 +89,6 @@ func (r *Result) Pending() []string {
 	return pending
 }
 
-// Events returns a copy of the run's events that the caller may change freely.
-func (r *Result) Events() []Event {
-	return copyEvents(r.events)
-}
-
 func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
 	switch status {
 	case StepUnknown, StepCompensationFailed, StepBlocked, StepHalted:
@@ -113,8 +102,8 @@ func owed(status StepStatus, zone Zone, pivot StepStatus) bool {
 	return false
 }
 
-func buildResult(events []Event) Result {
-	r := Result{Status: StatusUnfinished, events: copyEvents(events)}
+func buildResult(events []Event) result {
+	r := result{Status: StatusUnfinished, events: copyEvents(events)}
 	r.Steps = foldStepsSharingChanged(r.events)
 
 	for k := range r.Steps {
@@ -136,21 +125,21 @@ func buildResult(events []Event) Result {
 	return r
 }
 
-func foldStepsSharingChanged(events []Event) []StepResult {
-	var steps []StepResult
+func foldStepsSharingChanged(events []Event) []stepResult {
+	var steps []stepResult
 
 	for i := range events {
 		e := &events[i]
 
 		if e.Kind == EventSagaStarted {
-			steps = make([]StepResult, len(e.Steps))
+			steps = make([]stepResult, len(e.Steps))
 
 			for k := range e.Steps {
 				steps[k].Name, steps[k].Status = e.Steps[k].Name, StepNotStarted
 			}
 		}
 
-		if k := slices.IndexFunc(steps, func(s StepResult) bool { return s.Name == e.Step }); k >= 0 {
+		if k := slices.IndexFunc(steps, func(s stepResult) bool { return s.Name == e.Step }); k >= 0 {
 			applyEventSharingChanged(&steps[k], e)
 		}
 	}
@@ -158,7 +147,7 @@ func foldStepsSharingChanged(events []Event) []StepResult {
 	return steps
 }
 
-func applyEventSharingChanged(s *StepResult, e *Event) {
+func applyEventSharingChanged(s *stepResult, e *Event) {
 	switch e.Kind {
 	case EventStepStarted:
 		s.Status, s.Start = StepUnknown, e.Time
