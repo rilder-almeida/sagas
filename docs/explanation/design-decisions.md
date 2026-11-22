@@ -102,7 +102,7 @@ The whole pivot call runs in one retry loop that the caller's cancel does not st
 
 ### A pivot failure that the journal cannot record
 
-Even when the journal cannot record the failure, a pivot that failed counts as failed. The library knows that the pivot did not apply. It then compensates the compensable zone. Keeping the pivot unknown stops the run half way for no reason. A pivot that succeeded but whose commit failed counts as unknown, because it did apply and the saga cannot undo it.
+A pivot that failed counts as failed. A journal that cannot record the failure does not change this. The library knows that the pivot did not apply. It then compensates the compensable zone. Keeping the pivot unknown stops the run half way for no reason. A pivot that succeeded but whose commit failed counts as unknown, because it did apply and the saga cannot undo it.
 
 ## Retries and time
 
