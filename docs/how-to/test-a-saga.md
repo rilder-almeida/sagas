@@ -1,10 +1,10 @@
 # How to test a saga
 
-This page answers six questions about tests for your own saga. A saga is a business operation split into steps. The answers use the `sagastest` package, which turns the rules of the library into test helpers. The [glossary](../glossary.md) defines the terms of the library. The section ["The `sagastest` contract"](../explanation/guarantees.md#the-sagastest-contract) of the guarantees page explains why each helper exists.
+This page answers six questions about tests for your own saga. A saga is a business operation split into steps. Either every step completes, or the library undoes the part that ran. A saga can have one exception, the pivot. The pivot is the step at the point of no return. It applies whole or not at all, so a failed pivot did not apply. After the pivot succeeds, the saga only moves forward. The answers use the `sagastest` package, which turns the rules of the library into test helpers. The [glossary](../glossary.md) defines the terms of the library. The section ["The `sagastest` contract"](../explanation/guarantees.md#the-sagastest-contract) of the guarantees page explains why each helper exists.
 
 The examples test the trip saga of the [tutorial](../tutorial/book-a-trip.md). Its code is in [`examples/trip`](../../examples/trip). In your tests, replace these names with your own:
 
-- `trip` is the type of the state. The state is the value that a run reads and writes.
+- `trip` is the type of the state. The state is the value that a run reads and writes. Every method of every step shares it.
 - `services` holds the fakes and the flow, and `newServices` makes a fresh one. The flow is the set of steps in their order, which you build with `sagas.Sequence` or `sagas.Parallel`. A fake is a test double of an outside service that keeps its data in memory.
 - `newTrips()[0]` is a state value for a run in which every step succeeds.
 
@@ -44,13 +44,13 @@ A `Setup` is a function that builds one `sagastest.Case`. A case is one test tha
    - `State` is a pointer to the state of the run.
    - `Flow` is the same flow that you gave to `sagas.New`. The helpers read the steps from it.
    - `Check` looks at the fakes after the run and returns an error for an effect that stays behind.
-   - `Late` sends the action of a step to the fakes again, with the idempotency key that the helper passes. The action is the method that a step runs forward. An execution is one run of the saga over one state value. The idempotency key is unique for each execution and step. If the library calls the step again, the key stays the same.
+   - `Late` sends the action of a step to the fakes again, with the idempotency key that the helper passes. The action is the method that a step runs forward. An execution is one run of the saga over one state value, and the execution ID names it. The idempotency key is unique for each execution and step. If the library calls the step again or undoes the step, the key stays the same. The step sends the key to the outside service.
 
 5. Write `Check` so that it accepts every end that a helper makes. A helper ends a case in one of three ways:
 
-   - The run is compensated: the library undid the steps, and every compensation succeeded. A compensation is the method `Compensate` that undoes a step.
-   - The run completed: each step succeeded or the library skipped it, and the journal recorded the end. The journal is the record of what an execution intends and did.
-   - The run ended `sagas.ErrIncomplete`. The pivot is the step after which the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. Unknown means that the pivot call timed out, stopped on a cancel or panicked, so nobody knows whether the pivot applied. A person must finish the run.
+   - The run is compensated. A compensation is the method `Compensate` that undoes the effect of a step in business terms. It adds a new fact and does not erase the old one. The library runs it for every started step that has one, and only a step before the pivot can have one. In a compensated run, the library undid the steps, and every compensation succeeded.
+   - The run completed: each step succeeded or the library skipped it, and the journal recorded the end. The journal is the append-only record of what an execution intends and did. The library writes each intent before the call.
+   - The run ended `sagas.ErrIncomplete`. The pivot is the step at the point of no return. It applies whole or not at all, so a failed pivot did not apply. After the pivot succeeds, the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. Unknown means that the pivot call timed out, stopped on a cancel or panicked, so nobody knows whether the pivot applied. A person must finish the run. The library never undoes it.
 
    The trip `Check` accepts one flight and one room after a charge, and no booking without a charge:
 
@@ -122,7 +122,7 @@ An error from `Late` goes to the test log only. `Check` decides the case. With `
 
 ## How do I prove the pivot and the forward-only steps?
 
-The pivot is the step after which the saga only moves forward. The forward-only steps come after the pivot. `sagastest.Pivot` tests both.
+The pivot is the step at the point of no return. It applies whole or not at all, so a failed pivot did not apply. After the pivot succeeds, the saga only moves forward. The forward-only steps come after the pivot. A failure or an unknown outcome of a forward-only step never undoes anything. `sagastest.Pivot` tests both.
 
 1. Call `sagastest.Pivot` in a test:
 
@@ -134,7 +134,7 @@ The pivot is the step after which the saga only moves forward. The forward-only 
 
 2. Run the test with `go test`.
 
-An attempt is one call of an action, of a compensation or of the pivot. `sagastest.Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
+An attempt is one call of an action, of a compensation or of the pivot. `sagastest.Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and then the helper returns a timeout. To the library, the reply looks lost. Then the result depends on the attempts of the pivot:
 
 - If the pivot has two or more attempts, the run must complete. A clean run is a run with no fault. The final state of the run must equal the state of a clean run, by `reflect.DeepEqual`. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field.
 - If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. A pending step is a step that a person still must finish or undo. Only the pivot is pending, and no compensation runs.
@@ -143,7 +143,7 @@ An attempt is one call of an action, of a compensation or of the pivot. `sagaste
 
 ## How do I prove my journal?
 
-A journal is the append-only record of what an execution intends and did. You pass your own journal to `sagas.New` with `sagas.WithJournal`. `sagastest.Journal` runs the rules that every journal must obey.
+The journal is the append-only record of what an execution intends and did. The library writes each intent before the call. You pass your own journal to `sagas.New` with `sagas.WithJournal`. `sagastest.Journal` runs the rules that every journal must obey.
 
 1. Call `sagastest.Journal` in a test with a function that returns a fresh, empty journal on each call. Replace `sagas.NewMemoryJournal` with the constructor of your journal:
 

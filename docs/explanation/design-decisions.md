@@ -10,7 +10,7 @@ The library replaces the whole old API and ships as `v0.1.0`. The module path st
 
 ### A definition apart from its runs
 
-`sagas.New` builds and checks an immutable definition and returns `(*Saga[S], error)`. `Run` starts one execution of it. Many executions can run at the same time. The rejected design was one mutable saga object that you configure and run in place. That object cannot run twice at once. Every problem in a definition comes back as an error from `New`, and `New` never panics.
+`sagas.New` builds and checks an immutable definition of the steps, their order and the options, and returns `(*Saga[S], error)`. `Run` starts one execution of it. Many executions can run at the same time. The rejected design was one mutable saga object that you configure and run in place. That object cannot run twice at once. Every problem in a definition comes back as an error from `New`, and `New` never panics.
 
 ### One typed state
 
@@ -120,7 +120,7 @@ A retry loop stops at the first of four events. The attempts run out. An error c
 
 ### One grace period for recovery
 
-While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome, a cancel or a journal fault. If the run stops before the pivot applies, backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
+While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome, a cancel or a journal fault. If the run stops before the pivot applies, backward recovery runs the compensations in reverse order. If another `Run` call appended to the execution first, backward recovery does not run them. Forward recovery finishes the pivot and the forward-only zone instead of undoing anything. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
 
 ### The grace end has a name
 
@@ -160,7 +160,7 @@ If the journal cannot write the intent, the action does not run. If the journal 
 
 ### A single writer
 
-Each event has a sequence number and a writer token. The writer token is a random value that each `Run` makes once. The journal appends only the next number. An exact resend by the same writer succeeds, so a lost reply does not stop a healthy run. Any other event at a taken number is a rejection. A second writer on a running execution stops the run without compensation, because that writer owns the execution now. The rejected design lets the journal assign the numbers and keeps an explicit ownership claim. That adds two concepts, the claim and the numbers that the journal assigns, and a larger contract for every journal.
+Each event has a sequence number and a writer token. The writer token is a random value that each `Run` makes once. The journal appends only the next number. An exact resend by the same writer succeeds, so a lost reply does not stop a healthy run. Any other event at a taken number is a rejection. This rule is a condition on the write, not an acknowledgment. A second writer on a running execution stops the run without compensation, because that writer owns the execution now. The rejected design lets the journal assign the numbers and keeps an explicit ownership claim. That adds two concepts, the claim and the numbers that the journal assigns, and a larger contract for every journal.
 
 ### Events build the result
 

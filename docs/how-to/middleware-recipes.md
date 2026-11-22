@@ -1,16 +1,16 @@
 # Middleware recipes and run settings
 
-This page answers seven questions about a running saga. A saga is a business operation split into steps. Each answer is code that you copy and adapt. The code uses only the Go standard library and the `sagas` package. The [glossary](../glossary.md) defines the terms of the library. The [guarantees](../explanation/guarantees.md) page explains why the library works this way.
+This page answers seven questions about a running saga. A saga is a business operation split into steps. Either every step completes, or the library undoes the part that ran. A saga can have one exception, the pivot. The pivot is the step at the point of no return. It applies whole or not at all, so a failed pivot did not apply. After the pivot succeeds, the saga only moves forward. Each answer is code that you copy and adapt. The code uses only the Go standard library and the `sagas` package. The [glossary](../glossary.md) defines the terms of the library. The [guarantees](../explanation/guarantees.md) page explains why the library works this way.
 
 The examples use these names from your own code:
 
-- `order` is the type of your saga state. The state is the value that a run reads and writes.
-- `reserve` and `ship` are two of your step types. A step is a named unit of work. Each type embeds `sagas.Step`. `reserve` also has a compensation: a `Compensate` method that undoes the effect of the step.
+- `order` is the type of your saga state. The state is the value that a run reads and writes. Every method of every step shares it.
+- `reserve` and `ship` are two of your step types. A step is a named unit of work. It has a name, settings and an action, the method that it runs forward. Each type embeds `sagas.Step`. `reserve` also has a compensation, a `Compensate` method that undoes the effect of the step in business terms. A compensation adds a new fact and does not erase the old one. The library runs it for every started step that has one, and only a step before the pivot can have one.
 - `flow` is the `Flow` that you build with `sagas.Sequence` or `sagas.Parallel`. A flow is the set of steps in their order.
 
 ## Before you start: how middleware runs
 
-Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. The action is the method that a step runs forward. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. An execution is one run of the saga over one state value, and the execution ID names it. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
+Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. An execution is one run of the saga over one state value, and the execution ID names it. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
 
 Your `Wrap` must obey three rules:
 
@@ -62,7 +62,7 @@ A semaphore is a counter of free slots. A buffered channel is a semaphore. Each 
 
 If you pass the same `limit` to several sagas, they share its 10 slots.
 
-The time that a call waits for a slot counts in the `AttemptTimeout` of an action. `AttemptTimeout` is a field of `sagas.Step` that bounds each attempt of an action. If the context ends during the wait, the attempt returns the context error, and the outcome is unknown. The pivot is the step after which the saga only moves forward. If the run then undoes the steps before the pivot, it also compensates this step, although the step never ran. The compensation must accept a step that never applied.
+The time that a call waits for a slot counts in the `AttemptTimeout` of an action. `AttemptTimeout` is a field of `sagas.Step` that bounds each attempt of an action. If the context ends during the wait, the attempt returns the context error, and the outcome is unknown. The pivot is the step at the point of no return. It applies whole or not at all, so a failed pivot did not apply. After the pivot succeeds, the saga only moves forward. If the run later undoes the steps before the pivot, it also compensates this step, although the step never ran. The compensation must accept a step that never applied.
 
 ## How do I limit how fast calls start?
 
@@ -178,7 +178,7 @@ A circuit breaker counts the attempts of a service that end in a failure or an u
    step := &ship{breaker: carrier}
    ```
 
-The breaker lets every compensation through, because a rejected compensation leaves the undo for a person. A rejected call is a failure, so the retry policy of the step decides whether to try again. The retry policy is the `Retry` field of the step. The [retry section](#how-do-i-use-one-retry-setting-on-several-steps) below shows it.
+The breaker lets every compensation through, because a rejected compensation leaves the undo for a person. A rejected call is a failure. A retry policy sets how many attempts a call gets and how long to wait between them. The `Retry` field of `sagas.Step` holds it. The policy of a step governs its compensation too. So the retry policy of the step decides whether to try again after a rejected call. The [retry section](#how-do-i-use-one-retry-setting-on-several-steps) below shows it.
 
 ## How do I stop the retries on an error that cannot heal?
 
@@ -276,7 +276,7 @@ A compensation can still fail after its last attempt. The `CompensationFailure` 
 - `sagas.CompensationHalt` stops every compensation that remains.
 - `sagas.CompensationContinue` stops nothing.
 
-With each policy, the failed compensation stays undone, and a person must finish that undo by hand. With `CompensationBlock` and `CompensationHalt`, the person also runs the compensations that the policy stopped. To set the halt policy on a step, write:
+With each policy, a person must finish the undo of the step whose compensation failed. With `CompensationBlock` and `CompensationHalt`, the person also runs the compensations that the policy stopped. To set the halt policy on a step, write:
 
 ```go
 hold.CompensationFailure = sagas.CompensationHalt
@@ -322,7 +322,7 @@ When your context ends, the library keeps working for a grace period, five minut
    }
    ```
 
-   A nil error means that the run completed: each step succeeded or the library skipped it, and the journal recorded the end. The journal is the record of what an execution intends and did. A deadline that passed after the last step started does not change that.
+   A nil error means that the run completed: each step succeeded or the library skipped it, and the journal recorded the end. The journal is the append-only record of what an execution intends and did. The library writes each intent before the call. A deadline that passed after the last step started does not change that.
 
 The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
 

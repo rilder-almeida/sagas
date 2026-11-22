@@ -6,13 +6,13 @@ You need Go 1.27 or later. You do not need to know about sagas. This page explai
 
 ## What you build
 
-A saga is a business operation split into steps. Either every step completes, or the library undoes the part that ran. The pivot, in the list below, is the one exception. A step undoes its work with a compensation. A compensation is a method that cancels the effect of the step in business terms.
+A saga is a business operation split into steps. Either every step completes, or the library undoes the part that ran. A saga can have one exception, the pivot. The pivot is the step at the point of no return. It applies whole or not at all, so a failed pivot did not apply. After the pivot succeeds, the saga only moves forward. A step undoes its work with a compensation. A compensation is a method that cancels the effect of the step in business terms. It adds a new fact and does not erase the old one. The library runs it for every started step that has one, and only a step before the pivot can have one.
 
 The trip saga has four steps, in this order:
 
 1. `flight` books a seat. Its compensation cancels the seat.
 2. `hotel` books a room. Its compensation cancels the room.
-3. `charge` charges the card. You cannot take a charge back, so this step is the pivot. The pivot is the point of no return. After the pivot succeeds, the saga only moves forward.
+3. `charge` charges the card. You cannot take a charge back, so this step is the pivot.
 4. `email` sends a confirmation. It comes after the pivot, so it has no compensation.
 
 The finished program is in the folder [`examples/trip`](../../examples/trip) of the repository. The code of Steps 2 to 7 comes from it. Two parts are your own: the tests `TestCompensations` and `TestPivot` of Step 7, and the change of Step 8.
@@ -41,7 +41,7 @@ The file holds four simulated services: `airline`, `hotels`, `payments` and `mai
 
 ## Step 2: write the state
 
-The state is the value that every step reads and writes. Make a file `trip.go` with this code:
+The state is the value that every step and every compensation reads and writes. Make a file `trip.go` with this code:
 
 ```go
 package main
@@ -81,11 +81,11 @@ type trip struct {
 func (t *trip) ExecutionID() string { return t.ID }
 ```
 
-One run of the saga over one state value is an execution. The `ExecutionID` method gives the execution a name. Here the name is the trip ID, so two requests for `trip-42` are the same execution.
+One run of the saga over one state value is an execution. The `ExecutionID` method gives the execution a name. Here the name is the trip ID, so two requests for `trip-42` are the same execution. Without this method, the library draws a random name, and a repeated request looks like a new execution.
 
 ## Step 3: write the steps
 
-A step is a type that embeds `sagas.Step`. Its `Execute` method is the action, the work that the step does forward. The library takes the name of the step from the name of the type. Add the `flight` step to `trip.go`:
+A step is a named unit of work. It has a name, settings such as the number of attempts, and an action. In code, a step is a type that embeds `sagas.Step`. Its `Execute` method is the action, the work that the step does forward. The library takes the name of the step from the name of the type. Add the `flight` step to `trip.go`:
 
 ```go
 type flight struct {
@@ -115,7 +115,7 @@ func (f *flight) Compensate(ctx context.Context, _ *trip) error {
 }
 ```
 
-The library can call a method more than once. An attempt is one call. After a timeout, for example, the library makes another attempt. `sagas.IdempotencyKey(ctx)` returns the idempotency key, a key that is the same on every attempt of the step and on its compensation. The airline uses the key to book only once.
+The library can call a method more than once. An attempt is one call. After a timeout, for example, the library makes another attempt. `sagas.IdempotencyKey(ctx)` returns the idempotency key. The key is unique for each execution and step. It is the same on every attempt of the step and on its compensation. The airline uses the key to book only once.
 
 The `Compensate` method is the compensation. It cancels by the key, not by the ID in the state. If the reply of the airline gets lost, the state holds no ID, but the key still finds the booking. If the airline answers `errNotFound`, the flight never booked. Nothing needs a cancel, so the compensation returns nil, which means success.
 
@@ -305,7 +305,7 @@ func execute(stdout, stderr io.Writer) int {
 }
 ```
 
-If each step succeeded or the library skipped it, and the library recorded the end, `Run` returns nil. If the run began and ended any other way, `Run` returns a `*sagas.RunError`. Its `Kind` names how the run ended. Its `Pending` lists the steps that a person still must finish or undo. A run that did not begin returns its own error, such as `sagas.ErrInvalidRun`.
+If each step succeeded or the library skipped it, and the library recorded the end, `Run` returns nil. If the run began and ended any other way, `Run` returns a `*sagas.RunError`. Its `Kind` names how the run ended. Its `Pending` lists the steps that a person still must finish or undo. Its `Steps` holds one error for each action or compensation that did not succeed, in order. A run that did not begin returns its own error, such as `sagas.ErrInvalidRun`.
 
 Make a file `main.go`:
 
@@ -433,7 +433,7 @@ The hotel step failed three times, because a step makes three attempts by defaul
 
 ### Lose the reply of the flight
 
-`sagastest.Unknown` calls the step. Then it returns `context.DeadlineExceeded`, so the reply looks lost. The booking landed, but the saga does not know it. Such an outcome is unknown. `sagastest.OnAttempts(1)` limits the fault to the first attempt:
+`sagastest.Unknown` calls the step. Then it returns `context.DeadlineExceeded`, so the reply looks lost. The booking landed, but the saga does not know it. If the call timed out, stopped on a cancel or panicked, its outcome is unknown: nobody knows whether the effect outside happened. `sagastest.OnAttempts(1)` limits the fault to the first attempt:
 
 ```go
 func Example_lostReply() {
@@ -474,7 +474,7 @@ func Example_crash() {
 }
 ```
 
-A panic stops the attempts at once, because a retry only repeats a code defect. The run ended incomplete: it passed the pivot and stopped before the end. If the outcome of the pivot stays unknown, a run also ends incomplete. The `email` step is pending. A person must find out whether the email went out.
+A panic stops the attempts at once, because a retry only repeats a code defect. The run ended incomplete: it passed the pivot and stopped before the end. If the outcome of the pivot stays unknown, a run also ends incomplete. The library never undoes an incomplete run. The `email` step is pending. A person must find out whether the email went out.
 
 Run `go test .` again. The output starts with `ok`.
 
