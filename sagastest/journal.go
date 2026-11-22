@@ -110,7 +110,7 @@ func freshRules(tb testing.TB, newJournal func() sagas.Journal) bool {
 	if err := second.Append(ctx, otherEvent(1)); err != nil {
 		ruleFailedf(
 			tb,
-			"fresh journal",
+			ruleFresh,
 			"newJournal returned a journal that is not empty: Append of seq 1 on the second journal returned %v",
 			err,
 		)
@@ -134,6 +134,9 @@ func sequenceRules(tb testing.TB, newJournal func() sagas.Journal) {
 	wantNil(tb, ruleGap, "Append of seq 1", gap.Append(ctx, journalEvent(1)))
 	wantError(tb, ruleGap, "Append of seq 3 after seq 1", gap.Append(ctx, journalEvent(seqThird)))
 
+	empty := newJournal()
+	wantError(tb, ruleGap, "Append of seq 2 on an empty journal", empty.Append(ctx, journalEvent(seqSecond)))
+
 	low := newJournal()
 	wantError(tb, ruleSeqBelowOne, "Append of seq 0", low.Append(ctx, journalEvent(0)))
 	wantError(tb, ruleSeqBelowOne, "Append of seq -1", low.Append(ctx, journalEvent(-1)))
@@ -154,7 +157,7 @@ func sequenceRules(tb testing.TB, newJournal func() sagas.Journal) {
 	wantError(tb, ruleDifferentEvent, "Append of another event at taken seq 2", later)
 	wantSentinel(
 		tb,
-		"rejection at a later seq",
+		ruleRejectionLater,
 		"Append of another event at taken seq 2",
 		later,
 		sagas.ErrConcurrentWriter,
