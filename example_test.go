@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -84,26 +85,32 @@ func newTrip(hotelErr error, opts ...sagas.Option) *sagas.Saga[trip] {
 	return saga
 }
 
-func printRun(t *trip, err error) {
-	var runErr *sagas.RunError
+func printRun(w io.Writer, t *trip, runErr error) error {
+	var failed *sagas.RunError
 
 	switch {
-	case err == nil:
-		fmt.Printf("%s: completed\n", t.ID)
-	case errors.As(err, &runErr):
-		failed := make([]string, 0, len(runErr.Steps))
-		for _, s := range runErr.Steps {
-			failed = append(failed, s.Step)
+	case runErr == nil:
+		_, err := fmt.Fprintf(w, "%s: completed\n", t.ID)
+
+		return err
+	case errors.As(runErr, &failed):
+		steps := make([]string, 0, len(failed.Steps))
+		for _, s := range failed.Steps {
+			steps = append(steps, s.Step)
 		}
 
-		fmt.Printf("%s: %s, failed: %v, pending: %v\n", t.ID, runErr.Kind.Name(), failed, runErr.Pending)
+		_, err := fmt.Fprintf(w, "%s: %s, failed: %v, pending: %v\n", t.ID, failed.Kind.Name(), steps, failed.Pending)
+
+		return err
 	default:
-		panic(err)
+		return runErr
 	}
 }
 
 func ExampleNew() {
-	fmt.Print(newTrip(nil).Mermaid())
+	if _, err := fmt.Print(newTrip(nil).Mermaid()); err != nil {
+		panic(err)
+	}
 
 	// Output:
 	// flowchart TD
@@ -122,10 +129,14 @@ func ExampleSaga_Run() {
 	ctx := context.Background()
 
 	clean := &trip{ID: tripID}
-	printRun(clean, newTrip(nil).Run(ctx, clean))
+	if err := printRun(os.Stdout, clean, newTrip(nil).Run(ctx, clean)); err != nil {
+		panic(err)
+	}
 
 	failing := &trip{ID: tripID}
-	printRun(failing, newTrip(sagas.Permanent(errNoRooms)).Run(ctx, failing))
+	if err := printRun(os.Stdout, failing, newTrip(sagas.Permanent(errNoRooms)).Run(ctx, failing)); err != nil {
+		panic(err)
+	}
 
 	// Output:
 	// trip-42: completed
@@ -138,7 +149,9 @@ func ExampleIdempotencyKey() {
 		panic(err)
 	}
 
-	fmt.Println(t.Flight)
+	if _, err := fmt.Println(t.Flight); err != nil {
+		panic(err)
+	}
 
 	// Output:
 	// trip-42/flight

@@ -42,9 +42,11 @@ func ExampleFail() {
 
 	err = saga.Run(context.Background(), &shop{})
 
-	fmt.Println("compensated:", errors.Is(err, sagas.ErrCompensated))
-	fmt.Println("boom:", errors.Is(err, errBoom))
-	fmt.Println("charge calls:", step.calls.Load())
+	_, writeErr := fmt.Printf("compensated: %t\nboom: %t\ncharge calls: %d\n",
+		errors.Is(err, sagas.ErrCompensated), errors.Is(err, errBoom), step.calls.Load())
+	if writeErr != nil {
+		panic(writeErr)
+	}
 
 	// Output:
 	// compensated: true
@@ -168,7 +170,9 @@ func ExampleCompensations() {
 	sagastest.Compensations(tb, setup)
 
 	for _, msg := range tb.errors {
-		fmt.Println(msg)
+		if _, err := fmt.Println(msg); err != nil {
+			panic(err)
+		}
 	}
 
 	// Output:
@@ -190,7 +194,9 @@ func ExampleJournal() {
 	sagastest.Journal(tb, func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} })
 
 	for _, msg := range tb.errors {
-		fmt.Println(msg)
+		if _, err := fmt.Println(msg); err != nil {
+			panic(err)
+		}
 	}
 
 	// Output:

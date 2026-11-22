@@ -224,32 +224,37 @@ func Test_newServices(t *testing.T) {
 	}
 }
 
-func tryTrip(faults ...sagas.Middleware) {
+func tryTrip(w io.Writer, faults ...sagas.Middleware) error {
 	rec := sagastest.NewRecorder()
 	mw := append([]sagas.Middleware{rec.Middleware()}, faults...)
 	svc := newServices()
 
 	saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(mw...))
 	if err != nil {
-		fmt.Println(err)
-
-		return
+		return err
 	}
 
 	state := newTrips()[0]
-	if reportErr := report(os.Stdout, state.ID, saga.Run(context.Background(), &state)); reportErr != nil {
-		fmt.Println(reportErr)
+	if reportErr := report(w, state.ID, saga.Run(context.Background(), &state)); reportErr != nil {
+		return reportErr
 	}
 
 	for _, call := range rec.Calls() {
-		fmt.Println(call.Step, call.Phase, call.Attempt, call.Err)
+		if _, err = fmt.Fprintln(w, call.Step, call.Phase, call.Attempt, call.Err); err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("flights held:", svc.airline.Held())
+	_, err = fmt.Fprintln(w, "flights held:", svc.airline.Held())
+
+	return err
 }
 
 func Example_clean() {
-	tryTrip()
+	if err := tryTrip(os.Stdout); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: completed
 	// flight execute 1 <nil>
@@ -260,7 +265,11 @@ func Example_clean() {
 }
 
 func Example_hotelDown() {
-	tryTrip(sagastest.Fail("hotel", errHotelDown, sagastest.OnPhase(sagas.PhaseExecute)))
+	hotelDown := sagastest.Fail("hotel", errHotelDown, sagastest.OnPhase(sagas.PhaseExecute))
+	if err := tryTrip(os.Stdout, hotelDown); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: compensated, pending: []
 	// flight execute 1 <nil>
@@ -273,7 +282,10 @@ func Example_hotelDown() {
 }
 
 func Example_lostReply() {
-	tryTrip(sagastest.Unknown("flight", sagastest.OnAttempts(1)))
+	if err := tryTrip(os.Stdout, sagastest.Unknown("flight", sagastest.OnAttempts(1))); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: completed
 	// flight execute 1 context deadline exceeded
@@ -285,7 +297,10 @@ func Example_lostReply() {
 }
 
 func Example_crash() {
-	tryTrip(sagastest.Panic("email"))
+	if err := tryTrip(os.Stdout, sagastest.Panic("email")); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: incomplete, pending: [email]
 	// flight execute 1 <nil>
