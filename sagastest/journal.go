@@ -3,6 +3,7 @@ package sagastest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -199,6 +200,15 @@ func concurrencyRules(tb testing.TB, newJournal func() sagas.Journal) {
 	tb.Helper()
 
 	j := newJournal()
+
+	for seq := 1; seq <= seqThird; seq++ {
+		raceForSeq(tb, j, seq)
+	}
+}
+
+func raceForSeq(tb testing.TB, j sagas.Journal, seq int) {
+	tb.Helper()
+
 	ctx := tb.Context()
 	errs := make([]error, concurrentWriters)
 
@@ -206,13 +216,18 @@ func concurrencyRules(tb testing.TB, newJournal func() sagas.Journal) {
 
 	for i := range errs {
 		wg.Go(func() {
-			e := journalEvent(1)
+			e := journalEvent(seq)
 			e.Writer = strconv.Itoa(i)
 			errs[i] = j.Append(ctx, e)
 		})
 	}
 
 	wg.Wait()
+
+	rejection := sagas.ErrConcurrentWriter
+	if seq == 1 {
+		rejection = sagas.ErrExecutionExists
+	}
 
 	wins := 0
 
@@ -222,18 +237,18 @@ func concurrencyRules(tb testing.TB, newJournal func() sagas.Journal) {
 		switch {
 		case err == nil:
 			wins++
-		case !errors.Is(err, sagas.ErrExecutionExists):
+		case !errors.Is(err, rejection):
 			wrong = err
 		default:
 		}
 	}
 
 	if wins != 1 {
-		ruleFailedf(tb, ruleConcurrent, "%d of %d appends of seq 1 by different writers returned nil, want exactly 1",
-			wins, concurrentWriters)
+		ruleFailedf(tb, ruleConcurrent, "%d of %d appends of seq %d by different writers returned nil, want exactly 1",
+			wins, concurrentWriters, seq)
 	}
 
-	wantSentinel(tb, ruleConcurrent, "a losing append of seq 1", wrong, sagas.ErrExecutionExists)
+	wantSentinel(tb, ruleConcurrent, fmt.Sprintf("a losing append of seq %d", seq), wrong, rejection)
 }
 
 func contextRules(tb testing.TB, newJournal func() sagas.Journal) {

@@ -151,7 +151,8 @@ func (j swapsSentinel) Append(ctx context.Context, e *sagas.Event) error {
 type acceptsSecondWriter struct {
 	*sagas.MemoryJournal
 
-	mu sync.Mutex
+	mu      sync.Mutex
+	fromSeq int
 }
 
 func (j *acceptsSecondWriter) Append(ctx context.Context, e *sagas.Event) error {
@@ -163,7 +164,7 @@ func (j *acceptsSecondWriter) Append(ctx context.Context, e *sagas.Event) error 
 	}
 
 	stored := j.Events(e.Execution)
-	if e.Seq >= 1 && e.Seq <= len(stored) && stored[e.Seq-1].Writer != e.Writer {
+	if e.Seq >= j.fromSeq && e.Seq <= len(stored) && stored[e.Seq-1].Writer != e.Writer {
 		return nil
 	}
 
@@ -178,6 +179,28 @@ func (j acceptsGapOnEmpty) Append(ctx context.Context, e *sagas.Event) error {
 	}
 
 	return j.MemoryJournal.Append(ctx, e)
+}
+
+type swapsSentinelForSecondWriter struct {
+	*sagas.MemoryJournal
+
+	mu sync.Mutex
+}
+
+func (j *swapsSentinelForSecondWriter) Append(ctx context.Context, e *sagas.Event) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	err := j.MemoryJournal.Append(ctx, e)
+	if e == nil || !errors.Is(err, sagas.ErrConcurrentWriter) {
+		return err
+	}
+
+	if stored := j.Events(e.Execution); e.Seq <= len(stored) && stored[e.Seq-1].Writer != e.Writer {
+		return fmt.Errorf("%w: swapped", sagas.ErrExecutionExists)
+	}
+
+	return err
 }
 
 type ignoresContext struct{ *sagas.MemoryJournal }
@@ -339,15 +362,17 @@ func Test_Journal(t *testing.T) {
 			newJournal: func() sagas.Journal {
 				return swapsSentinel{sagas.NewMemoryJournal(), sagas.ErrConcurrentWriter, sagas.ErrExecutionExists}
 			},
-			wantRules: []string{ruleRejectionLater},
+			wantRules: []string{ruleRejectionLater, ruleConcurrent},
 			wantCauses: []string{
-				"Append of another event at taken seq 2 returned",
+				"Append of another event at taken seq 2 returned", "a losing append of seq 3 returned",
 				"want an error wrapping " + sagas.ErrConcurrentWriter.Error(),
 			},
 		},
 		{
-			name:       "[Fail] When: the journal accepts a second writer at a taken Seq ; Should: report two winners",
-			newJournal: func() sagas.Journal { return &acceptsSecondWriter{MemoryJournal: sagas.NewMemoryJournal()} },
+			name: "[Fail] When: the journal accepts a second writer at a taken Seq ; Should: report two winners",
+			newJournal: func() sagas.Journal {
+				return &acceptsSecondWriter{MemoryJournal: sagas.NewMemoryJournal(), fromSeq: 1}
+			},
 			wantRules:  []string{ruleConcurrent},
 			wantCauses: []string{"returned nil, want exactly 1"},
 		},
@@ -382,6 +407,25 @@ func Test_Journal(t *testing.T) {
 			},
 			wantRules:  []string{ruleExactResend},
 			wantCauses: []string{"Append of the same event again returned"},
+		},
+		{
+			name: "[Fail] When: the journal accepts a second writer at seq 2 ; Should: report two winners at seq 2",
+			newJournal: func() sagas.Journal {
+				return &acceptsSecondWriter{MemoryJournal: sagas.NewMemoryJournal(), fromSeq: seqSecond}
+			},
+			wantRules:  []string{ruleConcurrent},
+			wantCauses: []string{"appends of seq 2 by different writers returned nil, want exactly 1"},
+		},
+		{
+			name: "[Fail] When: the journal swaps the sentinel above seq 1 ; Should: report the loser at seq 2",
+			newJournal: func() sagas.Journal {
+				return &swapsSentinelForSecondWriter{MemoryJournal: sagas.NewMemoryJournal()}
+			},
+			wantRules: []string{ruleConcurrent},
+			wantCauses: []string{
+				"a losing append of seq 2 returned",
+				"want an error wrapping " + sagas.ErrConcurrentWriter.Error(),
+			},
 		},
 	}
 
