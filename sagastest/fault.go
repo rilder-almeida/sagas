@@ -43,7 +43,12 @@ func (f *fault) matches(info sagas.CallInfo) bool {
 }
 
 // Fail returns err without running the call of the step called step, which must equal CallInfo.Step.
+// It panics when err is nil, because a nil error would turn the fault into a silent skip.
 func Fail(step string, err error, opts ...FaultOption) sagas.MiddlewareFunc {
+	if err == nil {
+		panic("sagastest: Fail needs a non-nil error")
+	}
+
 	f := newFault(step, opts)
 
 	return sagas.MiddlewareFunc(func(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {

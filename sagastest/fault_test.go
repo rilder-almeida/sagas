@@ -159,24 +159,34 @@ func Test_Fail(t *testing.T) {
 	tests := []struct {
 		name      string
 		step      string
+		inject    error
 		wantErr   error
+		wantPanic bool
 		wantCalls int
 	}{
 		{
 			name:      "[Fail] When: the step name matches ; Should: return the error and skip the call",
 			step:      probeName,
+			inject:    errBoom,
 			wantErr:   errBoom,
 			wantCalls: 0,
 		},
 		{
 			name:      "[Success] When: another step name is given ; Should: leave the run untouched",
 			step:      "other",
+			inject:    errBoom,
 			wantCalls: 1,
 		},
 		{
 			name:      "[Success] When: the step name is misspelled ; Should: never fire",
 			step:      "probe ",
+			inject:    errBoom,
 			wantCalls: 1,
+		},
+		{
+			name:      "[Fail] When: the error is nil ; Should: panic at construction",
+			step:      probeName,
+			wantPanic: true,
 		},
 	}
 
@@ -184,7 +194,13 @@ func Test_Fail(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			calls, err := runProbe(t, sagas.NoRetry(), nil, Fail(tt.step, errBoom))
+			if tt.wantPanic {
+				assert.PanicsWithValue(t, "sagastest: Fail needs a non-nil error", func() { Fail(tt.step, tt.inject) })
+
+				return
+			}
+
+			calls, err := runProbe(t, sagas.NoRetry(), nil, Fail(tt.step, tt.inject))
 
 			assertErr(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantCalls, calls)
