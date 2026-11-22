@@ -14,12 +14,12 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Dependency | A step that must finish before another step starts. | the order of `sagas.Sequence`, read back in `StepReport.After` |
 | Outcome | How one attempt of a step ended: success, failure or unknown. | `EventStepSucceeded`, `EventStepFailed`, `EventStepUnknown` |
 | Success | The call returned `nil`. | `nil` |
-| Failure | The call returned an error that is not a timeout, a cancel or a panic. | `*sagas.Error` of kind `ErrFailed` |
+| Failure | The call returned an error that is not a timeout, a cancel or a panic. | `*sagas.Error` of kind `ErrFailed`, or `ErrConflict` or `ErrInvalidState` for a failed commit |
 | Unknown | The call timed out, was canceled or panicked. The effect outside is not known. | `*sagas.Error` of kind `ErrUnknown`, or `ErrPanic` for a panic |
 | Compensation | The method that undoes the effect of a step in business terms. It adds a new fact and does not erase the old one. It runs for every started step of the compensable zone that has one. | `Compensate(ctx, *S) error` |
-| Compensable step | A step before the pivot that has a compensation. | a step with `Compensate`, in `ZoneCompensable` |
-| Step without compensation | A step before the pivot that has nothing to undo, such as a validation or a query. | a step with no `Compensate` |
-| Pivot | The point of no return. It is atomic: it applies whole or not at all. An error means that it did not apply. After it succeeds, the saga only moves forward. | `Pivot(ctx, *S) error`, `ZonePivot` |
+| Compensable step | A step in the compensable zone that has a compensation. | a step with `Compensate`, in `ZoneCompensable` |
+| Step without compensation | A step in the compensable zone that has nothing to undo, such as a validation or a query. | a step with no `Compensate` |
+| Pivot | The point of no return. It is atomic: it applies whole or not at all. A failure means that it did not apply. After it succeeds, the saga only moves forward. | `Pivot(ctx, *S) error`, `ZonePivot` |
 | Compensable zone | The steps before the pivot. In a saga with no pivot, every step. A failure here undoes them. | `ZoneCompensable` |
 | Forward-only zone | The steps after the pivot. A failure here never undoes anything. | `ZoneForwardOnly` |
 | Backward recovery | Running compensations in reverse order after a failure in the compensable zone. | `PhaseCompensate` |
@@ -30,13 +30,13 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Permanent error | An error that stops the retries at once. | `sagas.Permanent(err)` |
 | Journal | The append-only record of what an execution intends and did. The library writes each intent before the call. | `sagas.Journal` |
 | Event | One record in the journal. The library never consumes, removes or acknowledges it. | `sagas.Event` |
-| Expected sequence | The condition on a journal write. The journal refuses an event whose sequence number does not follow the last one of its execution. An exact resend by the same writer is the one exception. The condition keeps one writer per execution. It is not an acknowledgment. | `Event.Seq` |
-| Commit | Applying the state changes of a successful attempt to the committed state at once. Each commit is a journal event. | no code name |
+| Expected sequence | The condition on a journal write. The journal refuses an event whose sequence number does not follow the last one of its execution. An exact resend by the same `Run` call is the one exception. The condition keeps one writer per execution. It is not an acknowledgment. | `Event.Seq` |
+| Commit | Applying the state changes of a successful attempt to the committed state at once. The committed state is the state that the successful attempts so far changed. Each commit is a journal event. | no code name |
 | Conflict | Two concurrent steps changed the same top-level field of the state. The later commit fails. | `ErrConflict` |
 | Handler | The function that runs one action or one compensation. | `sagas.Call` |
 | Middleware | A value that wraps a handler to add behavior, such as logging, a limit or fault injection. | `sagas.Middleware` |
 | Result | What `Run` reports: `nil` for a completed run, else a `*RunError` that names the kind of end, the failed steps and the pending steps. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
-| Completed | Every step succeeded or was skipped. | `nil`, `StatusCompleted` |
+| Completed | Every step succeeded, or the library skipped it. | `nil`, `StatusCompleted` |
 | Compensated | A step failed before the pivot, or the pivot returned an error, and every compensation succeeded. | `ErrCompensated` |
 | Compensation failed | A compensation did not succeed. A person must finish the undo. | `ErrCompensationFailed` |
 | Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person or a new run must finish it. The library never undoes it. | `ErrIncomplete` |

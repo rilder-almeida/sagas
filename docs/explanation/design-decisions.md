@@ -1,12 +1,12 @@
 # Design decisions
 
-This page explains why the library looks the way it does. Each entry gives the decision, the reason, and the main alternative that the design rejects. The page groups the entries by topic. The [guarantees](guarantees.md) page describes the promises that follow from these choices. The [glossary](../glossary.md) defines the core terms, and this page defines each other term where it first appears.
+This page explains why the library looks the way it does. Each entry gives the decision, the reason, and the main alternative that the design rejects. The page groups the entries by topic. The [guarantees](guarantees.md) page describes the promises that follow from these choices. The [glossary](../glossary.md) defines the core terms. This page explains each other term that it needs where the term first appears.
 
 ## The shape of the library
 
 ### A breaking rewrite
 
-The library replaces the whole old API and ships as `v0.1.0`. The module path stays the same. The old API hid compensation, which is the central idea of the pattern, so a fix of its internals was not enough. Current users must migrate. The old irregular tags stay in place, because deleting a published tag breaks users who depend on it.
+The library replaces the whole old API and ships as `v0.1.0`. The module path stays the same. The old API hid compensation, which is the central idea of the pattern, so a fix of its internals was not enough. Current users must migrate. The old tags, such as `v.0.0.11a`, do not follow semantic versioning. They stay in place, because deleting a published tag breaks users who depend on it.
 
 ### A definition apart from its runs
 
@@ -22,7 +22,7 @@ The core module imports only the Go standard library. The repository ships the p
 
 ### Go 1.27
 
-The module requires Go 1.27, and CI runs on it. The state rules follow the `encoding/json/v2` package of that release. The rejected option was Go 1.26, which reaches every release that upstream still supports. The author chose to require the newer release. Users on Go 1.26 cannot import the module.
+The module requires Go 1.27, and CI runs on it. The library needs it because the state rules use the `encoding/json/v2` package of that release. Go supports its two newest releases. The rejected option was to require Go 1.26, which lets users of both releases import the module. Users on Go 1.26 cannot import the module.
 
 ### One way to do each thing
 
@@ -34,7 +34,7 @@ Every configurable value has an exported constant for its default, such as `Defa
 
 ### Option types are function types
 
-`Option` is a function type with an unexported parameter. Callers write the same code as with an interface. The rejected interface form needed a lint exception for a pattern that the package uses nowhere else. A nil option, or an option given twice, is an error from `New`. The reason is that "last one wins" makes the first line lie to the reader.
+`Option` is a function type with an unexported parameter. Callers write the same code as with an interface. The rejected interface form needed an exception to the `ireturn` lint rule. That rule rejects a function that returns an interface. The package uses the pattern nowhere else. A nil option, or an option given twice, is an error from `New`. The reason is that "last one wins" makes the first line lie to the reader.
 
 ## Steps and the flow
 
@@ -46,11 +46,11 @@ The optional `Wrap` method is middleware for that one step. It runs inside the m
 
 ### `Sequence` and `Parallel` order the steps
 
-`Sequence` runs its items one after another. `Parallel` runs its items together. One pointer is one step, so a step that appears in two places runs once, with the dependencies of both places. Any graph without a cycle can be written this way. The rejected design was an `After` list of step names. It repeats names across steps. A typo in a name does not fail at compile time. It fails at run time, in `New`.
+`sagas.Sequence` and `sagas.Parallel` take steps or groups and return a `Flow`, the value that `New` takes as its second argument. One step is also a `Flow`. `Sequence` runs its items one after another. `Parallel` runs its items together. One pointer is one step, so a step that appears in two places runs once, with the dependencies of both places. You can write any graph without a cycle this way. The rejected design was an `After` list of step names. It repeats names across steps. A typo in a name does not fail at compile time. It fails at run time, in `New`.
 
 ### Names use a short ASCII set
 
-A saga name, a step name and an execution ID hold only ASCII letters, digits, `-`, `_` and `.`. They start with a letter or a digit. Log and metric systems change other characters, and `Mermaid` writes each name as it is. The design therefore rejects Unicode letters.
+A saga name, a step name and an execution ID hold only ASCII letters, digits, `-`, `_` and `.`. They start with a letter or a digit. Log and metric systems change other characters. `Mermaid` is the `Saga` method that draws the saga as a Mermaid diagram. It writes each name as it is. The design therefore rejects Unicode letters.
 
 ### A saga needs at least one step, and nothing nil
 
@@ -58,7 +58,7 @@ A saga name, a step name and an execution ID hold only ASCII letters, digits, `-
 
 ### `Inspect` reports a flow the way `New` does
 
-`Inspect` runs the same checks as `New` and returns one report for each step. The report holds the name, the settings, one flag for each step method and the resolved dependencies. `New` calls `Inspect`, so both return the same errors. A step type that gets one method from two embedded fields is rejected, at every depth, as the Go selector rules treat it. Without that rule, a method silently disappears from the step. The design rejects an exported `Compensator` interface, because it covers one method, and a function that checks the whole flow was the request.
+`Inspect` runs the same checks as `New` and returns one report for each step. The report holds the name, the settings, one flag for each step method and the resolved dependencies. `New` calls `Inspect`, so both return the same errors. `New` rejects a step type that gets one method from two embedded fields, at every depth, as the Go selector rules treat it. Without that rule, a method silently disappears from the step. The design rejects an exported `Compensator` interface, because it covers one method, and a function that checks the whole flow was the request.
 
 ### A conditional step is skipped, not started
 
@@ -82,13 +82,13 @@ On the first failure, the library cancels the running steps, starts nothing new 
 
 `CompensationFailure` on a step picks the policy for a failed compensation. `CompensationBlock` is the default. It stops every later compensation along the reversed graph, across steps that have no compensation, and lets independent branches go on. `CompensationHalt` stops all remaining compensations. `CompensationContinue` stops nothing. There is no saga-wide default, because one fixed behavior cannot fit every architecture, and the author of each step knows its risk. A policy on a step without `Compensate` is an error. `CompensationContinue` is an explicit departure from the classic model, kept for systems where undoing the rest is worth more than stopping.
 
-### Each compensation is decided at its turn
+### The library decides each compensation at its turn
 
 The library decides a compensation after every compensation that it waits on ends. An earlier halt wins, then a block, and otherwise the compensation runs. The rejected design marked a compensation blocked at the moment of the failure. With two failures, the events of a later step then depend on timing.
 
 ## The pivot
 
-### Pivot rules are checked when you build the saga
+### `New` enforces the pivot rules
 
 `New` enforces at most one pivot. Every other step comes before or after it. The pivot has no compensation and no `Enabled`. No step after the pivot has a compensation. Real sagas often have a point of no return, and no Go library enforced these rules. The pivot must be atomic, and the forward-only steps must be idempotent. Both facts are in the contract, and `sagastest` exercises them.
 
@@ -116,19 +116,19 @@ A retry loop stops at the first of four events. The attempts run out. An error c
 
 ### The attempt timeout covers the action only
 
-`AttemptTimeout` bounds each attempt of the action. A compensation attempt has no timeout of its own. Recovery has one bound, `RecoveryTimeout`, and a second option for the same idea was rejected. Middleware can still cut each compensation attempt, because it reads the phase.
+`AttemptTimeout` bounds each attempt of the action. A compensation attempt has no timeout of its own. Recovery has one bound, `RecoveryTimeout`. The design rejects a second option for the same idea. Middleware can still cut each compensation attempt, because it reads the phase.
 
 ### One grace period for recovery
 
-While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure or a cancel: the compensations, or the pivot and the forward-only zone. The design rejects two clocks. One started at each phase and sums the phases. The other started at the first failure and still depends on the phase. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
+While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure or a cancel. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure or at the pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
 
 ### The grace end has a name
 
-A grace timer ends the recovery context with `ErrGraceEnded`, so a caller can test for it with `errors.Is`. A plain cancel hides why recovery stopped. The library joins `ErrGraceEnded` to the error of each compensation and each journal append that the grace end stopped. The grace end can fail a compensation alone. The error then has the kind `ErrGraceEnded`. The kind `ErrFailed` says that the caller's code failed, and it did not. A late success still counts. A late compensation counts as compensated, and a late forward success is committed. The library starts nothing new after the grace end.
+A grace timer ends the recovery context with `ErrGraceEnded`, so a caller can test for it with `errors.Is`. A plain cancel hides why recovery stopped. The library joins `ErrGraceEnded` to the error of each compensation and each journal append that the grace end stopped. The grace end can fail a compensation alone. The error then has the kind `ErrGraceEnded`. The kind `ErrFailed` says that the caller's code failed, and it did not. A late success still counts. A late compensation counts as compensated, and the library commits a late forward success. The library starts nothing new after the grace end.
 
 ### What matches the caller's cause
 
-The error of `Run` matches the cause of the caller's context only where the cancel interrupted work. If the two differ, it matches both `ctx.Err()` and the cause. The rejected rule matches after every cancel, so a real forward-only failure looks like a cancel.
+A caller can cancel its context with a reason through `context.WithCancelCause`, and `context.Cause(ctx)` returns that reason. The error of `Run` matches the cause of the caller's context only where the cancel interrupted work. If `ctx.Err()` and the cause differ, it matches both. The rejected rule matches after every cancel, so a real forward-only failure looks like a cancel.
 
 ### A late cancel does not undo finished work
 
@@ -138,11 +138,11 @@ If every step succeeded and the cancel came late, the run completes. The rejecte
 
 ### The state follows plain rules
 
-The state is a closed set of plain types, and `New` names the field path and the rule of any state that breaks them. The rule list follows the JSON encoding of Go 1.27. The design rejects two other ways. One rejects every standard library type, which needs build information and refuses types that round-trip, such as `time.Month`. The other encodes a sample value in `New` and decodes it again. That needs a generator for every hard case, and its error names a difference, not a rule.
+The state is a closed set of plain types, and `New` names the field path and the rule of any state that breaks them. The rule list follows the JSON encoding of Go 1.27. The design rejects two other ways. One rejects every standard library type, which needs a list that the library must keep current and refuses types that round-trip, such as `time.Month`. The other encodes a sample value in `New` and decodes it again. That needs a generator for every hard case, and its error names a difference, not a rule.
 
 ### Attempts work on a private copy
 
-Each attempt works on a private copy of the committed state. A successful attempt commits its changes at once, and a failed attempt drops the copy. The commit is a three-way merge of top-level fields. Two concurrent changes to one field fail the later commit with `ErrConflict`. The design rejects a contract of "disjoint fields" that only the race detector checks, because a mistake then corrupts the state silently. It also rejects a lock for each step, which serializes the saga.
+Each attempt works on a private copy of the committed state. A successful attempt commits its changes at once, and a failed attempt drops the copy. The commit is a three-way merge of top-level fields. The merge compares three states field by field. They are the state at the start of the attempt, the copy of the attempt and the current committed state. Two concurrent changes to one field fail the later commit with `ErrConflict`. The design rejects a contract of "disjoint fields" that only the race detector checks, because a mistake then corrupts the state silently. It also rejects a lock for each step, which serializes the saga.
 
 ### A rejected run writes its state back
 
@@ -164,7 +164,7 @@ Each event has a sequence number and a writer token. The writer token is a rando
 
 ### Events build the result
 
-The saga-started event carries every step name and its zone. Compensations that were blocked or halted have their own events. The result builder reads only events, so a reader with only the journal can rebuild the outcome. The rejected design lets the builder also read the saga definition. Then the journal stops being the source of the result. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
+The saga-started event carries every step name and its zone. Compensations that were blocked or halted have their own events. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
 
 ### The run error can owe more than the journal
 
@@ -172,13 +172,13 @@ After an unclear append, `Pending` can list more than the journal shows, and nev
 
 ### Appends honor their context
 
-Every append gets the grace context and honors it. A stuck journal then cannot hold `Run` past the grace period. The last events can be missing in that case, and the error matches `ErrJournal`.
+Every append gets the grace context. The caller's cancel does not end this context. It ends with the grace period. The journal honors it. A stuck journal then cannot hold `Run` past the grace period. The last events can be missing in that case, and the error matches `ErrJournal`.
 
 ## Middleware and errors
 
 ### The core is a fixed pipeline
 
-Each attempt of a step runs through a pipeline of private middleware in one order. The order is retry, call info, timeout, recovery, your middleware, the `Wrap` method of the step, and the call. A step without `Wrap` skips that layer. One function builds it. The core does not export these pieces, because the guarantees must not depend on a user who installs them. Your middleware wraps every attempt and counts in the attempt timeout.
+Each attempt of a step runs through a pipeline of private middleware in one order. The order is retry, timeout, panic recovery, a guard, your middleware, the `Wrap` method of the step, and the call. The guard fails an attempt whose chain never ran the call. The timeout layer applies to the action only. Panic recovery here means catching a panic, and it differs from the recovery after a failure. A step without `Wrap` skips that layer. One function builds it. The core does not export these pieces, because the guarantees must not depend on a user who installs them. Your middleware wraps every attempt and counts in the attempt timeout.
 
 ### Middleware is a value with `Wrap`
 
@@ -186,7 +186,7 @@ Each attempt of a step runs through a pipeline of private middleware in one orde
 
 ### Load control is middleware
 
-The core has no concurrency limit and no rate limit. A limit in the saga cannot be shared across sagas and does not limit throughput. A semaphore or a rate limit is middleware that the application writes.
+The core has no concurrency limit and no rate limit. A limit inside one saga serves that saga only, and it does not limit throughput. A semaphore or a rate limit is middleware that the application writes.
 
 ### Middleware cannot hide a failure
 
@@ -194,33 +194,33 @@ The pipeline keeps the result of the last call. If middleware returns nil after 
 
 ### A panic is an ordinary error to middleware
 
-The innermost handler turns a panic into a `*PanicError` with the value and the stack. Your middleware sees it as a normal error, and `Slog` can log it. A recovery layer outside your middleware catches a panic of the middleware itself.
+The innermost handler turns a panic into a `*PanicError` with the value and the stack. Your middleware sees it as a normal error, and `Slog` can log it. `Slog` is the middleware of the library that logs each call through `log/slog`. A panic-recovery layer outside your middleware catches a panic of the middleware itself.
 
 ### One typed error for steps
 
-Every error of a step is a `*sagas.Error` with a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep` and `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. A run that did not begin gives `ErrInvalidRun` or `ErrExecutionExists`. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
+Every error of a step is a `*sagas.Error` with a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. An error before the saga-started event is stored returns as it is, such as `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
 
 ### The state names the execution
 
-A state can have `ExecutionID() string`. Without it, `Run` draws a random ID. A caller option copies a value that the state already holds. The docs always use a business ID, because a random ID cannot recognize a repeated request.
+A state can have `ExecutionID() string`. Without it, `Run` draws a random ID. The rejected design was a `Run` option for the ID. It copies a value that the state already holds. The docs always use a business ID, because a random ID cannot recognize a repeated request.
 
 ### Enums are strings
 
-Every exported enum is a string type whose value is its own lowercase text, such as `"forward-only"`. No `String` method is needed, and the stored text in a journal is readable. The rejected design used integers with a table of names written by hand. That table holds each name twice, and a missed row fails without an error.
+Every exported enum is a string type whose value is its own lowercase text, such as `"forward-only"`. The enums need no `String` method, and the stored text in a journal is readable. The rejected design used integers with a table of names written by hand. That table holds each name twice, and a missed row fails without an error.
 
 ## Testing
 
 ### `sagastest` takes a per-case setup
 
-`Setup` returns a fresh `Case` for each case, with fresh fakes. A fake is a test double of an outside service. A `Case` holds the saga, the state, a `Check`, the flow and `Late`. The rejected design returned each part as a separate result. A function with four results breaks the lint rule. Each new field then breaks every setup.
+`Setup` returns a fresh `Case` for each case, with fresh fakes. A fake is a test double of an outside service. A `Case` holds the saga, the state, a `Check`, the `Flow` and `Late`. The guarantees page describes each field. The rejected design returned each part as a separate result. A function with four results breaks the `function-result-limit` lint rule, which caps a function at three results. Each new field then breaks every setup.
 
 ### The helpers learn the steps from the flow
 
 The helpers call `Inspect` on `Case.Flow`. A step that cannot start in its own case fails the test with its name and the reason. The rejected design finds the steps from a clean run. A disabled step then stays untested with no warning. If a clean run records no call, the helper fails once and names both causes.
 
-### A late step is a hook
+### A late action is a hook
 
-`Late` sends the action of a step again to your fakes with the idempotency key. This tests the third compensation case, a step that lands after its compensation. The rejected design runs the saga twice over shared fakes. That needs an `ExecutionID` on the state, and the second run compensates the step again.
+`Late` sends the action of a step again to your fakes with the idempotency key, as a late call. This tests the third compensation case, an action that lands late, after its compensation. The rejected design runs the saga twice over shared fakes. That needs an `ExecutionID` on the state, and the second run compensates the step again.
 
 ### The twice case starts from an applied step
 
