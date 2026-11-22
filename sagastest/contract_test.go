@@ -19,6 +19,7 @@ const (
 	refundFailsUnapplied defect = "refund fails unapplied"
 	refundTwice          defect = "refund twice"
 	noTombstone          defect = "no tombstone"
+	refundLandedTwice    defect = "refund landed twice"
 )
 
 const (
@@ -70,7 +71,7 @@ func (l *ledger) refund(key string) error {
 	switch {
 	case !l.charged[key] && l.defect == refundFailsUnapplied:
 		return errNoCharge
-	case l.refunds[key] > 0 && l.defect != refundTwice:
+	case l.refunds[key] > 0 && l.defect != refundTwice && (l.defect != refundLandedTwice || !l.charged[key]):
 		return nil
 	}
 
@@ -350,7 +351,8 @@ func Test_Compensations(t *testing.T) {
 			wantSetups: 4,
 		},
 		{
-			name: "[Fail] When: the refund fails on a charge that never landed ; Should: report each case of the step",
+			name: "[Fail] When: the refund fails on a charge that never landed ; " +
+				"Should: report the cases where the charge never landed",
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
@@ -358,7 +360,6 @@ func Test_Compensations(t *testing.T) {
 			},
 			wantErrors: []string{
 				`step "charge", case "never applied": Run returned sagas: compensation failed`,
-				`step "charge", case "compensation runs twice": Run returned sagas: compensation failed`,
 				`step "charge", case "step lands after its compensation": Run returned sagas: compensation failed`,
 			},
 			wantSetups: 4,
@@ -370,6 +371,20 @@ func Test_Compensations(t *testing.T) {
 				t.Helper()
 
 				return shopSetup(t, refundTwice, chargeThenShip, lateCharge)
+			},
+			wantErrors: []string{
+				`step "charge", case "compensation runs twice": ` +
+					`Check: refunded more than once: key "run-1/charge" refunded 2 times`,
+			},
+			wantSetups: 4,
+		},
+		{
+			name: "[Fail] When: the refund of a landed charge has no guard against a second refund ; " +
+				"Should: report the Check error of the twice case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, refundLandedTwice, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
 				`step "charge", case "compensation runs twice": ` +

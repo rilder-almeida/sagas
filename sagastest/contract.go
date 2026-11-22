@@ -123,7 +123,7 @@ const (
 var errTrigger = errors.New("sagastest: injected failure of the step action")
 
 // Compensations proves, for every step with Compensate, that its compensation is a no-op when the step never
-// applied, is idempotent, and tolerates the step landing after it. Each case is a fresh Case from setup.
+// applied, is idempotent over a landed step, and tolerates the step landing after it. Each case is a fresh Case.
 func Compensations[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 
@@ -159,20 +159,16 @@ func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) b
 	tb.Helper()
 
 	rec := NewRecorder()
-	mw := []sagas.Middleware{
-		rec.Middleware(), Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute)),
-	}
+	mw := []sagas.Middleware{rec.Middleware(), Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute))}
 
 	if kind == caseTwice {
-		mw = append(mw, compensateTwice(step))
+		mw = []sagas.Middleware{rec.Middleware(), Panic(step, OnPhase(sagas.PhaseExecute)), compensateTwice(step)}
 	}
 
 	ctx := tb.Context()
 	c, err := runCase(ctx, setup, mw...)
 
-	i := slices.IndexFunc(rec.Calls(), func(call Call) bool {
-		return call.Step == step && call.Phase == sagas.PhaseExecute
-	})
+	i := slices.IndexFunc(rec.Calls(), func(call Call) bool { return call.Step == step })
 	if i < 0 {
 		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, "+
 			"so its compensation is untested", step, kind, err)
