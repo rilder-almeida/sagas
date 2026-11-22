@@ -1,6 +1,7 @@
 package sagastest
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"sync"
@@ -26,6 +27,10 @@ const (
 	ruleRejectionLater = "rejection at a later seq"
 	ruleStoredCopy     = "stored copy"
 	ruleConcurrent     = "concurrent writers"
+	ruleDoneContext    = "done context"
+	ruleInvalidEvent   = "invalid event"
+	ruleTimeZone       = "time zone resend"
+	ruleExactResend    = "exact resend"
 )
 
 // Journal proves the journal contract against any sagas.Journal. Each call of newJournal returns a fresh empty journal.
@@ -39,6 +44,9 @@ func Journal(tb testing.TB, newJournal func() sagas.Journal) {
 	sequenceRules(tb, newJournal)
 	copyRules(tb, newJournal)
 	concurrencyRules(tb, newJournal)
+	contextRules(tb, newJournal)
+	invalidEventRules(tb, newJournal)
+	resendRules(tb, newJournal)
 }
 
 func journalEvent(seq int) *sagas.Event {
@@ -223,4 +231,44 @@ func concurrencyRules(tb testing.TB, newJournal func() sagas.Journal) {
 	}
 
 	wantSentinel(tb, ruleConcurrent, "a losing append of seq 1", wrong, sagas.ErrExecutionExists)
+}
+
+func contextRules(tb testing.TB, newJournal func() sagas.Journal) {
+	tb.Helper()
+
+	j := newJournal()
+	done, cancel := context.WithCancel(tb.Context())
+
+	cancel()
+
+	wantError(tb, ruleDoneContext, "Append of seq 1 with a done context", j.Append(done, journalEvent(1)))
+	wantNil(tb, ruleDoneContext, "Append of another event at seq 1 after a done context",
+		j.Append(tb.Context(), otherEvent(1)))
+}
+
+func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {
+	tb.Helper()
+
+	j := newJournal()
+
+	wantError(tb, ruleInvalidEvent, "Append of a nil event", j.Append(tb.Context(), nil))
+	wantError(tb, ruleInvalidEvent, "Append of an event with seq 0", j.Append(tb.Context(), journalEvent(0)))
+}
+
+func resendRules(tb testing.TB, newJournal func() sagas.Journal) {
+	tb.Helper()
+
+	ctx := tb.Context()
+
+	zoned := newJournal()
+	wantNil(tb, ruleTimeZone, "Append of seq 1", zoned.Append(ctx, journalEvent(1)))
+
+	again := journalEvent(1)
+	again.Time = again.Time.In(time.FixedZone("zone", int(time.Hour/time.Second)))
+	wantNil(tb, ruleTimeZone, "Append of an equal instant in another zone", zoned.Append(ctx, again))
+
+	exact := newJournal()
+	e := journalEvent(1)
+	wantNil(tb, ruleExactResend, "Append of seq 1", exact.Append(ctx, e))
+	wantNil(tb, ruleExactResend, "Append of the same event again", exact.Append(ctx, e))
 }
