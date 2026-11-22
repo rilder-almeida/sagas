@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -887,8 +886,10 @@ func Test_Pivot(t *testing.T) {
 				assert.Contains(t, fake.errors[i], want)
 			}
 
-			for _, cause := range tt.wantCauses {
-				assert.Contains(t, strings.Join(fake.errors, "\n"), cause)
+			require.LessOrEqual(t, len(tt.wantCauses), len(fake.errors))
+
+			for i, cause := range tt.wantCauses {
+				assert.Contains(t, fake.errors[i], cause)
 			}
 
 			assert.Equal(t, tt.wantSetups, setups)
