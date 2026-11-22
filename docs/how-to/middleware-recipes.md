@@ -276,7 +276,7 @@ A compensation can still fail after its last attempt. The `CompensationFailure` 
 - `sagas.CompensationHalt` stops every compensation that remains.
 - `sagas.CompensationContinue` stops nothing.
 
-`CompensationBlock` and `CompensationHalt` hand the execution to a person, who finishes the undo by hand. To set the halt policy on a step, write:
+With each policy, the failed compensation stays undone, and a person must finish that undo by hand. With `CompensationBlock` and `CompensationHalt`, the person also runs the compensations that the policy stopped. To set the halt policy on a step, write:
 
 ```go
 hold.CompensationFailure = sagas.CompensationHalt
@@ -322,8 +322,8 @@ When your context ends, the library keeps working for a grace period, five minut
    }
    ```
 
-   A nil error means that the run completed: every step that ran succeeded. A deadline that passed after the last step started does not change that.
+   A nil error means that the run completed: each step succeeded or the library skipped it, and the journal recorded the end. The journal is the record of what an execution intends and did. A deadline that passed after the last step started does not change that.
 
-The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. The journal is the record of what an execution did. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
+The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
 
 Do not test the error of a step for `context.Canceled` to learn whether you canceled. A step can return that error for its own reasons.

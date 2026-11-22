@@ -120,7 +120,7 @@ A retry loop stops at the first of four events. The attempts run out. An error c
 
 ### One grace period for recovery
 
-While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome, a cancel or a journal fault. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
+While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome, a cancel or a journal fault. If the run stops before the pivot applies, backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
 
 ### The grace end has a name
 
@@ -132,7 +132,7 @@ A caller can cancel its context with a reason through `context.WithCancelCause`,
 
 ### A late cancel does not undo finished work
 
-If every step succeeded and the cancel came late, the run completes. The rejected design compensates in that case, and it undoes a saga that already reached its goal.
+If every step succeeded, the cancel came late and the journal recorded the end, the run completes. The rejected design compensates in that case, and it undoes a saga that already reached its goal.
 
 ## State and commits
 

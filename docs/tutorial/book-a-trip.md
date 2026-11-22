@@ -6,7 +6,7 @@ You need Go 1.27 or later. You do not need to know about sagas. This page explai
 
 ## What you build
 
-A saga is a business operation split into steps. Either every step completes, or the library undoes the part that ran. A step undoes its work with a compensation. A compensation is a method that cancels the effect of the step in business terms.
+A saga is a business operation split into steps. Either every step completes, or the library undoes the part that ran. The pivot, in the list below, is the one exception. A step undoes its work with a compensation. A compensation is a method that cancels the effect of the step in business terms.
 
 The trip saga has four steps, in this order:
 
@@ -305,7 +305,7 @@ func execute(stdout, stderr io.Writer) int {
 }
 ```
 
-If every step completed, `Run` returns nil. Otherwise it returns a `*sagas.RunError`. Its `Kind` names how the run ended. Its `Pending` lists the steps that a person still must finish.
+If each step succeeded or the library skipped it, and the library recorded the end, `Run` returns nil. If the run began and ended any other way, `Run` returns a `*sagas.RunError`. Its `Kind` names how the run ended. Its `Pending` lists the steps that a person still must finish or undo. A run that did not begin returns its own error, such as `sagas.ErrInvalidRun`.
 
 Make a file `main.go`:
 
@@ -474,7 +474,7 @@ func Example_crash() {
 }
 ```
 
-A panic stops the attempts at once, because a retry only repeats a code defect. The run ended incomplete, which means that it passed the pivot and stopped before the end. The `email` step is pending. A person must find out whether the email went out.
+A panic stops the attempts at once, because a retry only repeats a code defect. The run ended incomplete: it passed the pivot and stopped before the end. If the outcome of the pivot stays unknown, a run also ends incomplete. The `email` step is pending. A person must find out whether the email went out.
 
 Run `go test .` again. The output starts with `ok`.
 

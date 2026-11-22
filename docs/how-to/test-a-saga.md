@@ -49,8 +49,8 @@ A `Setup` is a function that builds one `sagastest.Case`. A case is one test tha
 5. Write `Check` so that it accepts every end that a helper makes. A helper ends a case in one of three ways:
 
    - The run is compensated: the library undid the steps, and every compensation succeeded. A compensation is the method `Compensate` that undoes a step.
-   - The run completed: every step succeeded.
-   - The run ended `sagas.ErrIncomplete`. The pivot is the step after which the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. Unknown means that nobody knows whether the pivot applied. A person must finish the run.
+   - The run completed: each step succeeded or the library skipped it, and the journal recorded the end. The journal is the record of what an execution intends and did.
+   - The run ended `sagas.ErrIncomplete`. The pivot is the step after which the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. Unknown means that the pivot call timed out, stopped on a cancel or panicked, so nobody knows whether the pivot applied. A person must finish the run.
 
    The trip `Check` accepts one flight and one room after a charge, and no booking without a charge:
 
@@ -134,16 +134,16 @@ The pivot is the step after which the saga only moves forward. The forward-only 
 
 2. Run the test with `go test`.
 
-An attempt is one call of `Execute`, `Pivot` or `Compensate`. `Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
+An attempt is one call of an action, of a compensation or of the pivot. `sagastest.Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
 
-- If the pivot has two or more attempts, the run must complete. The final state of the run must equal the state of a clean run, by `reflect.DeepEqual`. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field.
-- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. A pending step is a step that a person still must finish. Only the pivot is pending, and no compensation runs.
+- If the pivot has two or more attempts, the run must complete. A clean run is a run with no fault. The final state of the run must equal the state of a clean run, by `reflect.DeepEqual`. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field.
+- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. A pending step is a step that a person still must finish or undo. Only the pivot is pending, and no compensation runs.
 
-`Pivot` then runs each forward-only step twice in one run, each step in a fresh case. Each such run must complete. So each step must be idempotent: a second call has the same effect as the first.
+`sagastest.Pivot` then runs each forward-only step twice in one run, each step in a fresh case. Each such run must complete. So each step must be idempotent: a second call has the same effect as the first.
 
 ## How do I prove my journal?
 
-A journal is the append-only record of an execution. You pass your own journal to `sagas.New` with `sagas.WithJournal`. `sagastest.Journal` runs the rules that every journal must obey.
+A journal is the append-only record of what an execution intends and did. You pass your own journal to `sagas.New` with `sagas.WithJournal`. `sagastest.Journal` runs the rules that every journal must obey.
 
 1. Call `sagastest.Journal` in a test with a function that returns a fresh, empty journal on each call. Replace `sagas.NewMemoryJournal` with the constructor of your journal:
 
