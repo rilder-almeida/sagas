@@ -76,7 +76,7 @@ A compensation starts after the compensations of the started steps that depended
 
 ### Stop the siblings, then compensate
 
-On the first failure, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes the two phases. A step that ignores its context blocks `Run`, and the contract says so.
+On the first failure, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes forward work and compensation. A step that ignores its context blocks `Run`, and the contract says so.
 
 ### The step sets its failure policy
 
@@ -98,11 +98,11 @@ The library has no separate "retriable" step kind. The 1992 paper uses that name
 
 ### The pivot retries on a context that a cancel does not stop
 
-The whole pivot call runs in one retry loop that the caller's cancel does not stop. The rejected design used two loops, one on the caller's context and one detached. It breaks the single retry loop and needs a rule to count attempts across them. A pivot that panics is not retried. A panic is a code defect, and a retry repeats it.
+The whole pivot call runs in one retry loop that the caller's cancel does not stop. The rejected design used two loops, one on the caller's context and one detached. It breaks the single retry loop and needs a rule to count attempts across them. The library does not retry a pivot that panics. A panic is a code defect, and a retry repeats it.
 
 ### A pivot failure that the journal cannot record
 
-A pivot that failed counts as failed. The library knows that the pivot did not apply, although the journal can fail to record the failure. It then compensates the compensable zone. Keeping the pivot unknown stops the run half way for no reason. A pivot that succeeded but whose commit failed counts as unknown, because it did apply and the saga cannot undo it.
+Even when the journal cannot record the failure, a pivot that failed counts as failed. The library knows that the pivot did not apply. It then compensates the compensable zone. Keeping the pivot unknown stops the run half way for no reason. A pivot that succeeded but whose commit failed counts as unknown, because it did apply and the saga cannot undo it.
 
 ## Retries and time
 
@@ -146,7 +146,7 @@ Each attempt works on a private copy of the committed state. A successful attemp
 
 ### A rejected run writes its state back
 
-After another writer stops the run mid-way, `Run` writes the state committed so far into your state value. The rejected design leaves the state as it was, and it hides an effect that really happened. If nothing ran, your state keeps its value.
+A writer is one `Run` call. After another writer stops the run mid-way, `Run` writes the state committed so far into your state value. The rejected design leaves the state as it was, and it hides an effect that really happened. If nothing ran, your state keeps its value.
 
 ## The journal
 
@@ -164,7 +164,7 @@ Each event has a sequence number and a writer token. The writer token is a rando
 
 ### Events build the result
 
-The saga-started event carries every step name and its zone. A blocked compensation and a halted compensation each have their own event. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
+The saga-started event, the first journal event of a run, carries every step name and its zone. A blocked compensation and a halted compensation each have their own event. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
 
 ### The run error can owe more than the journal
 
@@ -190,15 +190,15 @@ The core has no concurrency limit and no rate limit. A limit inside one saga ser
 
 ### Middleware cannot hide a failure
 
-The pipeline keeps the result of the last call. If middleware returns nil after the call failed, the attempt ends with the failure of the call. If the chain returns without a call, the attempt fails permanently with `ErrCallNotRun`. If a call is still running when middleware returns, the attempt fails with `ErrCallUnfinished` and its outcome is unknown. A second parallel call fails with `ErrCallConcurrent`. A late write lands in the state of its own attempt, which nothing reads after it ends.
+The pipeline keeps the result of the last call. If middleware returns nil after the call failed, the attempt ends with the error of the call. If the chain returns without a call, the attempt fails permanently with `ErrCallNotRun`. If a call is still running when middleware returns, the attempt fails with `ErrCallUnfinished` and its outcome is unknown. A second parallel call fails with `ErrCallConcurrent`. A late write lands in the state of its own attempt, which nothing reads after it ends.
 
 ### A panic is an ordinary error to middleware
 
 The innermost handler turns a panic into a `*PanicError` with the value and the stack. Your middleware sees it as a normal error, and `Slog` can log it. `Slog` is the middleware of the library that logs each call through `log/slog`. A panic-recovery layer outside your middleware catches a panic of the middleware itself.
 
-### One typed error for each step failure
+### One typed error for every step outcome that is not a success
 
-Every failure of a step is a `*sagas.Error` with a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. If the journal has not stored the saga-started event yet, the error returns as it is. That event is the first journal event of a run. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
+Every error of a step is a `*sagas.Error`. That covers a failure and an unknown outcome. It holds a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. If the journal has not stored the saga-started event yet, the error returns as it is. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
 
 ### The state names the execution
 
@@ -216,7 +216,7 @@ Every exported enum is a string type whose value is its own lowercase text, such
 
 ### The helpers learn the steps from the flow
 
-The helpers call `Inspect` on `Case.Flow`. A step that cannot start in its own case fails the test with its name and the reason. The rejected design finds the steps from a clean run. A disabled step then stays untested with no warning. If a clean run records no call, the helper fails once and names both causes.
+The helpers call `Inspect` on `Case.Flow`. A step that cannot start in its own case fails the test with its name and the reason. The rejected design finds the steps from a clean run. A disabled step then stays untested with no warning. If a clean run records no call, the helper fails once and names both causes: a setup that drops the middleware, or a flow whose steps are all disabled.
 
 ### A late action is a hook
 

@@ -4,7 +4,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 
 | Term | Meaning | Code name |
 |---|---|---|
-| Saga | A business operation split into steps. Either every step completes, or the completed part is undone. Past the pivot, the saga finishes instead. | `*sagas.Saga[S]` |
+| Saga | A business operation split into steps. Either every step completes, or the library undoes the completed part. Past the pivot, the saga finishes instead. | `*sagas.Saga[S]` |
 | Definition | The checked, fixed description of a saga: its steps, their order and its options. You build it once and run it many times. | `sagas.New[S]` |
 | Execution | One run of a definition over one state value. An execution ID names it. | `(*Saga[S]).Run` |
 | Execution ID | The name of one execution. The state sets it, so a repeated request is recognizable. Without it, the library draws a random one. | `ExecutionID() string` on the state, else random |
