@@ -168,7 +168,9 @@ func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) b
 	ctx := tb.Context()
 	c, err := runCase(ctx, setup, mw...)
 
-	i := slices.IndexFunc(rec.Calls(), func(call Call) bool { return call.Step == step })
+	i := slices.IndexFunc(rec.Calls(), func(call Call) bool {
+		return call.Step == step && call.Phase == sagas.PhaseExecute
+	})
 	if i < 0 {
 		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, "+
 			"so its compensation is untested", step, kind, err)

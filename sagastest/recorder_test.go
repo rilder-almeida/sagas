@@ -2,6 +2,8 @@ package sagastest
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/rilder-almeida/sagas"
@@ -11,17 +13,39 @@ import (
 
 type groupBuilder func(items ...sagas.Flow) *sagas.Group
 
-func runRecorded(t *testing.T, group groupBuilder, steps ...sagas.Flow) ([]Call, error) {
+func runRecorded(t *testing.T, group groupBuilder, inner []sagas.Middleware, steps ...sagas.Flow) ([]Call, error) {
 	t.Helper()
 
 	rec := NewRecorder()
+	mw := append([]sagas.Middleware{rec.Middleware()}, inner...)
 
-	saga, err := sagas.New[probeState]("recorded", group(steps...), sagas.WithMiddleware(rec.Middleware()))
+	saga, err := sagas.New[probeState]("recorded", group(steps...), sagas.WithMiddleware(mw...))
 	require.NoError(t, err)
 
 	runErr := saga.Run(context.Background(), &probeState{})
 
 	return rec.Calls(), runErr
+}
+
+func withoutErr(calls []Call) []Call {
+	out := slices.Clone(calls)
+	for i := range out {
+		out[i].Err = nil
+	}
+
+	return out
+}
+
+func assertSameErr(t *testing.T, want, got error) {
+	t.Helper()
+
+	if want == nil {
+		assert.NoError(t, got)
+
+		return
+	}
+
+	assert.ErrorIs(t, got, want)
 }
 
 const (
@@ -62,7 +86,7 @@ func Test_NewRecorder(t *testing.T) {
 					steps[i] = plain(name)
 				}
 
-				calls, err := runRecorded(t, sagas.Sequence, steps...)
+				calls, err := runRecorded(t, sagas.Sequence, nil, steps...)
 				require.NoError(t, err)
 				assert.Len(t, calls, tt.wantSeen)
 			}
@@ -83,8 +107,10 @@ func Test_Recorder_Middleware(t *testing.T) {
 		name      string
 		flow      groupBuilder
 		build     func() []sagas.Flow
+		inner     []sagas.Middleware
 		wantCalls []Call
 		wantErr   bool
+		wantPanic bool
 		unordered bool
 	}{
 		{
@@ -147,13 +173,25 @@ func Test_Recorder_Middleware(t *testing.T) {
 			},
 			wantCalls: []Call{{Step: "a", Phase: sagas.PhasePivot, Attempt: 1, Key: keyA}},
 		},
+		{
+			name: "[Fail] When: the call panics below the recorder ; " +
+				"Should: record it with a panic error and let the run see the panic",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{plain("a")}
+			},
+			inner:     []sagas.Middleware{Panic("a")},
+			wantCalls: []Call{exec("a", keyA, 1, sagas.ErrPanic)},
+			wantErr:   true,
+			wantPanic: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			calls, err := runRecorded(t, tt.flow, tt.build()...)
+			calls, err := runRecorded(t, tt.flow, tt.inner, tt.build()...)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -161,10 +199,21 @@ func Test_Recorder_Middleware(t *testing.T) {
 				require.NoError(t, err)
 			}
 
+			var panicked *sagas.PanicError
+			assert.Equal(t, tt.wantPanic, errors.As(err, &panicked))
+
 			if tt.unordered {
-				assert.ElementsMatch(t, tt.wantCalls, calls)
+				assert.ElementsMatch(t, withoutErr(tt.wantCalls), withoutErr(calls))
 			} else {
-				assert.Equal(t, tt.wantCalls, calls)
+				assert.Equal(t, withoutErr(tt.wantCalls), withoutErr(calls))
+			}
+
+			for _, want := range tt.wantCalls {
+				i := slices.IndexFunc(calls, func(c Call) bool {
+					return c.Step == want.Step && c.Phase == want.Phase && c.Attempt == want.Attempt
+				})
+				require.GreaterOrEqual(t, i, 0)
+				assertSameErr(t, want.Err, calls[i].Err)
 			}
 		})
 	}
