@@ -25,6 +25,8 @@ const (
 	price      = 100
 	stepCharge = "charge"
 	stepShip   = "ship"
+	stepPivot  = "pivot"
+	stepNotify = "notify"
 )
 
 var (
@@ -163,7 +165,7 @@ type pivotStep struct {
 
 func newPivotStep() *pivotStep {
 	s := &pivotStep{}
-	s.Name, s.Retry = "pivot", sagas.NoRetry()
+	s.Name, s.Retry = stepPivot, sagas.NoRetry()
 
 	return s
 }
@@ -176,7 +178,7 @@ type notifyStep struct {
 
 func newNotify() *notifyStep {
 	s := &notifyStep{}
-	s.Name, s.Retry = "notify", sagas.NoRetry()
+	s.Name, s.Retry = stepNotify, sagas.NoRetry()
 
 	return s
 }
@@ -200,9 +202,19 @@ func Test_planOf(t *testing.T) {
 			flow: sagas.Sequence(
 				newCharge(newLedger(sound)), newPivotStep(), sagas.Parallel(newShip(nil), newNotify()),
 			),
-			wantSteps:   []string{stepCharge, "pivot", stepShip, "notify"},
-			wantPivot:   "pivot",
-			wantForward: []string{stepShip, "notify"},
+			wantSteps:   []string{stepCharge, stepPivot, stepShip, stepNotify},
+			wantPivot:   stepPivot,
+			wantForward: []string{stepShip, stepNotify},
+		},
+		{
+			name: "[Success] When: a step runs two hops after the pivot ; " +
+				"Should: list it in the forward-only zone too",
+			flow: sagas.Sequence(
+				newCharge(newLedger(sound)), newPivotStep(), newShip(nil), newNotify(),
+			),
+			wantSteps:   []string{stepCharge, stepPivot, stepShip, stepNotify},
+			wantPivot:   stepPivot,
+			wantForward: []string{stepShip, stepNotify},
 		},
 		{
 			name:      "[Success] When: the flow has no pivot ; Should: give no pivot name and an empty zone",
@@ -345,9 +357,9 @@ func Test_Compensations(t *testing.T) {
 				return shopSetup(t, refundFailsUnapplied, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
-				`step "charge", case "never applied"`,
-				`step "charge", case "compensation runs twice"`,
-				`step "charge", case "step lands after its compensation"`,
+				`step "charge", case "never applied": Run returned sagas: compensation failed`,
+				`step "charge", case "compensation runs twice": Run returned sagas: compensation failed`,
+				`step "charge", case "step lands after its compensation": Run returned sagas: compensation failed`,
 			},
 			wantSetups: 4,
 		},
@@ -406,6 +418,43 @@ func Test_Compensations(t *testing.T) {
 			},
 			wantErrors: []string{`step "ship" ran in the clean run`},
 			wantSetups: 1,
+		},
+		{
+			name: "[Fail] When: Case.Flow is not a valid flow ; Should: report it and run no case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				invalid := sagas.Sequence(newPivotStep(), newCharge(newLedger(sound)))
+
+				return declaring(shopSetup(t, sound, chargeThenShip, lateCharge), invalid)
+			},
+			wantErrors: []string{"Case.Flow is not a valid flow"},
+			wantSetups: 1,
+		},
+		{
+			name: "[Fail] When: a step before the compensable step fails only in the cases ; " +
+				"Should: report that the step did not start with the error of Run",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				builds := 0
+
+				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+					builds++
+
+					var err error
+					if builds > 1 {
+						err = errBoom
+					}
+
+					return sagas.Sequence(newShip(err), newCharge(book))
+				}, lateCharge)
+			},
+			wantErrors: []string{
+				`step "charge", case "never applied": the step did not start, ` +
+					`Run returned sagas: compensated: sagas: step "ship" failed after 1 attempts: boom`,
+			},
+			wantSetups: 2,
 		},
 		{
 			name: "[Fail] When: the compensable step is disabled ; Should: report that the step did not start",

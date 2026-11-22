@@ -174,7 +174,8 @@ func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) b
 		return call.Step == step && call.Phase == sagas.PhaseExecute
 	})
 	if i < 0 {
-		tb.Errorf("sagastest: step %q, case %q: the step did not start, so its compensation is untested", step, kind)
+		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, "+
+			"so its compensation is untested", step, kind, err)
 
 		return false
 	}
