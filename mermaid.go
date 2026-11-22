@@ -1,7 +1,6 @@
 package sagas
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -11,11 +10,13 @@ import (
 func (s *Saga[S]) Mermaid() string {
 	lines := []string{"flowchart TD"}
 
+	nodeID := func(i int) string { return "s" + strconv.Itoa(i) }
+
 	var forwardOnly []string
 
 	for i := range s.reports {
 		r := &s.reports[i]
-		id := "s" + strconv.Itoa(i)
+		id := nodeID(i)
 
 		switch {
 		case r.Pivot:
@@ -33,7 +34,7 @@ func (s *Saga[S]) Mermaid() string {
 
 	for i := range s.steps {
 		for _, p := range s.steps[i].parents {
-			lines = append(lines, fmt.Sprintf("    s%d --> s%d", p, i))
+			lines = append(lines, "    "+nodeID(p)+" --> "+nodeID(i))
 		}
 	}
 
