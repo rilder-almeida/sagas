@@ -3,6 +3,7 @@ package sagastest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -78,7 +79,7 @@ func runCase[S any](ctx context.Context, setup Setup[S], mw ...sagas.Middleware)
 	return c, c.Saga.Run(ctx, c.State)
 }
 
-func probe[S any](tb testing.TB, setup Setup[S]) (plan, bool) {
+func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 	tb.Helper()
 
 	rec := NewRecorder()
@@ -87,14 +88,14 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, bool) {
 	if err != nil {
 		tb.Errorf("sagastest: the clean run failed: %v", err)
 
-		return plan{}, false
+		return plan{}, nil, false
 	}
 
 	p, err := planOf[S](c.Flow)
 	if err != nil {
 		tb.Errorf("sagastest: Case.Flow is not a valid flow: %v", err)
 
-		return plan{}, false
+		return plan{}, nil, false
 	}
 
 	named := func(step string) bool {
@@ -111,13 +112,15 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, bool) {
 		}
 	}
 
-	return p, ok
+	return p, c.State, ok
 }
 
 const (
 	caseNeverApplied = "never applied"
 	caseTwice        = "compensation runs twice"
 	caseLate         = "step lands after its compensation"
+	caseUnknown      = "unknown outcome"
+	caseRepeated     = "step repeated"
 )
 
 var errTrigger = errors.New("sagastest: injected failure of the step action")
@@ -127,7 +130,7 @@ var errTrigger = errors.New("sagastest: injected failure of the step action")
 func Compensations[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 
-	p, ok := probe(tb, setup)
+	p, _, ok := probe(tb, setup)
 	if !ok {
 		return
 	}
@@ -162,7 +165,9 @@ func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) b
 	mw := []sagas.Middleware{rec.Middleware(), Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute))}
 
 	if kind == caseTwice {
-		mw = []sagas.Middleware{rec.Middleware(), Panic(step, OnPhase(sagas.PhaseExecute)), compensateTwice(step)}
+		mw = []sagas.Middleware{
+			rec.Middleware(), Panic(step, OnPhase(sagas.PhaseExecute)), repeated(step, sagas.PhaseCompensate),
+		}
 	}
 
 	ctx := tb.Context()
@@ -211,9 +216,9 @@ func late[S any](ctx context.Context, tb testing.TB, c *Case[S], step, key strin
 	return true
 }
 
-func compensateTwice(step string) sagas.MiddlewareFunc {
+func repeated(step string, phase sagas.Phase) sagas.MiddlewareFunc {
 	return func(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
-		if info.Step != step || info.Phase != sagas.PhaseCompensate {
+		if info.Step != step || info.Phase != phase {
 			return call(ctx)
 		}
 
@@ -222,5 +227,127 @@ func compensateTwice(step string) sagas.MiddlewareFunc {
 		}
 
 		return call(ctx)
+	}
+}
+
+// Pivot proves that the pivot is atomic and that every forward-only step is idempotent. It injects an unknown
+// outcome on the first attempt of the pivot, then repeats each forward-only step. Each case is a fresh Case.
+func Pivot[S any](tb testing.TB, setup Setup[S]) {
+	tb.Helper()
+
+	p, clean, ok := probe(tb, setup)
+	if !ok {
+		return
+	}
+
+	if p.pivot == "" {
+		tb.Error("sagastest: Pivot found no pivot in Case.Flow")
+
+		return
+	}
+
+	if !pivotCase(tb, setup, p, clean) {
+		return
+	}
+
+	for _, step := range p.forwardOnly {
+		repeatCase(tb, setup, step)
+	}
+}
+
+func pivotAttempts(p plan) int {
+	for i := range p.steps {
+		if p.steps[i].Name == p.pivot && p.steps[i].Retry.Attempts > 0 {
+			return p.steps[i].Retry.Attempts
+		}
+	}
+
+	return sagas.DefaultAttempts
+}
+
+func started(rec *Recorder, step string, phase sagas.Phase) bool {
+	return slices.ContainsFunc(rec.Calls(), func(call Call) bool {
+		return call.Step == step && call.Phase == phase
+	})
+}
+
+func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) bool {
+	tb.Helper()
+
+	rec := NewRecorder()
+	c, err := runCase(tb.Context(), setup, rec.Middleware(), Unknown(p.pivot, OnPhase(sagas.PhasePivot), OnAttempts(1)))
+
+	if !started(rec, p.pivot, sagas.PhasePivot) {
+		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so the pivot is untested",
+			p.pivot, caseUnknown, err)
+
+		return false
+	}
+
+	if pivotAttempts(p) > 1 {
+		completedPivot(tb, p.pivot, err, c.State, clean)
+	} else {
+		incompletePivot(tb, p.pivot, err, rec)
+	}
+
+	if checkErr := c.Check(c.State); checkErr != nil {
+		tb.Errorf("sagastest: step %q, case %q: Check: %v", p.pivot, caseUnknown, checkErr)
+	}
+
+	return true
+}
+
+func completedPivot[S any](tb testing.TB, pivot string, err error, got, clean *S) {
+	tb.Helper()
+
+	if err != nil {
+		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want nil", pivot, caseUnknown, err)
+
+		return
+	}
+
+	if !reflect.DeepEqual(got, clean) {
+		tb.Errorf("sagastest: step %q, case %q: the final state %+v differs from the clean run %+v",
+			pivot, caseUnknown, *got, *clean)
+	}
+}
+
+func incompletePivot(tb testing.TB, pivot string, err error, rec *Recorder) {
+	tb.Helper()
+
+	if !errors.Is(err, sagas.ErrIncomplete) {
+		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want sagas.ErrIncomplete", pivot, caseUnknown, err)
+
+		return
+	}
+
+	if runErr, ok := errors.AsType[*sagas.RunError](err); !ok || !slices.Equal(runErr.Pending, []string{pivot}) {
+		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want only the pivot pending", pivot, caseUnknown, err)
+	}
+
+	if slices.ContainsFunc(rec.Calls(), func(call Call) bool { return call.Phase == sagas.PhaseCompensate }) {
+		tb.Errorf("sagastest: step %q, case %q: a compensation ran after the unknown outcome", pivot, caseUnknown)
+	}
+}
+
+func repeatCase[S any](tb testing.TB, setup Setup[S], step string) {
+	tb.Helper()
+
+	rec := NewRecorder()
+	c, err := runCase(tb.Context(), setup, rec.Middleware(), repeated(step, sagas.PhaseExecute))
+
+	if !started(rec, step, sagas.PhaseExecute) {
+		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so its repeat is untested",
+			step, caseRepeated, err)
+
+		return
+	}
+
+	if err != nil {
+		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want nil", step, caseRepeated, err)
+	}
+
+	if checkErr := c.Check(c.State); checkErr != nil {
+		tb.Errorf("sagastest: step %q, case %q: Check: %v", step, caseRepeated, checkErr)
 	}
 }

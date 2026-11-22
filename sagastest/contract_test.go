@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rilder-almeida/sagas"
 	"github.com/stretchr/testify/assert"
@@ -20,6 +22,8 @@ const (
 	refundTwice          defect = "refund twice"
 	noTombstone          defect = "no tombstone"
 	refundLandedTwice    defect = "refund landed twice"
+	shipsTwice           defect = "ships twice"
+	pivotsTwice          defect = "pivots twice"
 )
 
 const (
@@ -35,6 +39,8 @@ var (
 	errRefused      = errors.New("late refused")
 	errRefundedMore = errors.New("refunded more than once")
 	errUnbalanced   = errors.New("balance off")
+	errShippedMore  = errors.New("shipped more than once")
+	errPivotedMore  = errors.New("pivot applied more than once")
 	errNoLateAction = errors.New("no late action")
 )
 
@@ -44,10 +50,37 @@ type ledger struct {
 	balance int
 	charged map[string]bool
 	refunds map[string]int
+	shipped map[string]int
+	pivoted map[string]int
 }
 
 func newLedger(d defect) *ledger {
-	return &ledger{defect: d, charged: map[string]bool{}, refunds: map[string]int{}}
+	return &ledger{
+		defect: d, charged: map[string]bool{}, refunds: map[string]int{},
+		shipped: map[string]int{}, pivoted: map[string]int{},
+	}
+}
+
+func (l *ledger) ship(key string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.shipped[key] == 0 || l.defect == shipsTwice {
+		l.shipped[key]++
+	}
+
+	return nil
+}
+
+func (l *ledger) pivot(key string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.pivoted[key] == 0 || l.defect == pivotsTwice {
+		l.pivoted[key]++
+	}
+
+	return nil
 }
 
 func (l *ledger) charge(key string) error {
@@ -95,6 +128,18 @@ func (l *ledger) check() error {
 	for key, n := range l.refunds {
 		if n > 1 {
 			errs = append(errs, fmt.Errorf("%w: key %q refunded %d times", errRefundedMore, key, n))
+		}
+	}
+
+	for key, n := range l.shipped {
+		if n > 1 {
+			errs = append(errs, fmt.Errorf("%w: key %q shipped %d times", errShippedMore, key, n))
+		}
+	}
+
+	for key, n := range l.pivoted {
+		if n > 1 {
+			errs = append(errs, fmt.Errorf("%w: key %q applied %d times", errPivotedMore, key, n))
 		}
 	}
 
@@ -172,6 +217,62 @@ func newPivotStep() *pivotStep {
 }
 
 func (*pivotStep) Pivot(context.Context, *probeState) error { return nil }
+
+type ledgerPivot struct {
+	sagas.Step
+
+	book  *ledger
+	bump  bool
+	calls atomic.Int32
+}
+
+func newLedgerPivot(book *ledger, attempts int, bump bool) *ledgerPivot {
+	s := &ledgerPivot{book: book, bump: bump}
+	s.Name = stepPivot
+	s.Retry = sagas.RetryPolicy{Attempts: attempts, Initial: time.Millisecond, NoJitter: true}
+
+	return s
+}
+
+func (s *ledgerPivot) Pivot(ctx context.Context, st *probeState) error {
+	n := int(s.calls.Add(1))
+	if s.bump {
+		st.N = n
+	}
+
+	return s.book.pivot(sagas.IdempotencyKey(ctx))
+}
+
+type ledgerShip struct {
+	sagas.Step
+
+	book *ledger
+}
+
+func newLedgerShip(book *ledger) *ledgerShip {
+	s := &ledgerShip{book: book}
+	s.Name, s.Retry = stepShip, sagas.NoRetry()
+
+	return s
+}
+
+func (s *ledgerShip) Execute(ctx context.Context, _ *probeState) error {
+	return s.book.ship(sagas.IdempotencyKey(ctx))
+}
+
+type disabledShip struct {
+	ledgerShip
+}
+
+func newDisabledShip(book *ledger) *disabledShip {
+	s := &disabledShip{}
+	s.book = book
+	s.Name, s.Retry = stepShip, sagas.NoRetry()
+
+	return s
+}
+
+func (*disabledShip) Enabled(*probeState) bool { return false }
 
 type notifyStep struct {
 	sagas.Step
@@ -534,6 +635,153 @@ func Test_Compensations(t *testing.T) {
 
 			for i, want := range tt.wantLogs {
 				assert.Contains(t, fake.logs[i], want)
+			}
+
+			assert.Equal(t, tt.wantSetups, setups)
+		})
+	}
+}
+
+func pivotFlow(attempts int, bump bool) func(*ledger) *sagas.Group {
+	return func(book *ledger) *sagas.Group {
+		return sagas.Sequence(newCharge(book), newLedgerPivot(book, attempts, bump), newLedgerShip(book))
+	}
+}
+
+func Test_Pivot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T) Setup[probeState]
+		wantErrors []string
+		wantSetups int
+	}{
+		{
+			name: "[Success] When: the pivot has three attempts and the forward-only step is idempotent ; " +
+				"Should: report no error",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, pivotFlow(3, false), noLate)
+			},
+			wantSetups: 3,
+		},
+		{
+			name: "[Success] When: the pivot has one attempt ; " +
+				"Should: expect an incomplete run with only the pivot pending and report no error",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, pivotFlow(1, false), noLate)
+			},
+			wantSetups: 3,
+		},
+		{
+			name: "[Success] When: the pivot has zero attempts ; " +
+				"Should: read the default attempts and expect the completed path",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, pivotFlow(0, false), noLate)
+			},
+			wantSetups: 3,
+		},
+		{
+			name: "[Fail] When: the forward-only step ships twice when repeated ; " +
+				"Should: report the Check error of the repeated case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, shipsTwice, pivotFlow(3, false), noLate)
+			},
+			wantErrors: []string{
+				`step "ship", case "step repeated": Check: shipped more than once: key "run-1/ship" shipped 2 times`,
+			},
+			wantSetups: 3,
+		},
+		{
+			name: "[Fail] When: the pivot applies its effect again after the unknown outcome ; " +
+				"Should: report the Check error of the pivot case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, pivotsTwice, pivotFlow(3, false), noLate)
+			},
+			wantErrors: []string{
+				`step "pivot", case "unknown outcome": Check: pivot applied more than once: ` +
+					`key "run-1/pivot" applied 2 times`,
+			},
+			wantSetups: 3,
+		},
+		{
+			name: "[Fail] When: the final state differs from the state of the clean run ; " +
+				"Should: report the step and both states",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, pivotFlow(3, true), noLate)
+			},
+			wantErrors: []string{
+				`step "pivot", case "unknown outcome": the final state {N:2} differs from the clean run {N:1}`,
+			},
+			wantSetups: 3,
+		},
+		{
+			name: "[Fail] When: a forward-only step is disabled ; Should: report that the step did not start",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newDisabledShip(book))
+				}, noLate)
+			},
+			wantErrors: []string{`step "ship", case "step repeated": the step did not start`},
+			wantSetups: 3,
+		},
+		{
+			name: "[Fail] When: the flow has no pivot ; Should: report it and run no case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, chargeThenShip, noLate)
+			},
+			wantErrors: []string{"found no pivot"},
+			wantSetups: 1,
+		},
+		{
+			name: "[Fail] When: the clean run fails ; Should: report it and run no case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newShip(errBoom))
+				}, noLate)
+			},
+			wantErrors: []string{"the clean run failed"},
+			wantSetups: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			setup := tt.setup(t)
+			setups := 0
+			counted := func(mw ...sagas.Middleware) Case[probeState] {
+				setups++
+
+				return setup(mw...)
+			}
+
+			fake := &fakeTB{TB: t}
+			Pivot(fake, counted)
+
+			require.Len(t, fake.errors, len(tt.wantErrors), fake.errors)
+
+			for i, want := range tt.wantErrors {
+				assert.Contains(t, fake.errors[i], want)
 			}
 
 			assert.Equal(t, tt.wantSetups, setups)
