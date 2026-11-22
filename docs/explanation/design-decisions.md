@@ -76,7 +76,7 @@ A compensation starts after the compensations of the started steps that depended
 
 ### Stop the siblings, then compensate
 
-On the first failure, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes forward work and compensation. A step that ignores its context blocks `Run`, and the contract says so.
+On the first failure or unknown outcome, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes forward work and compensation. A step that ignores its context blocks `Run`, and the contract says so.
 
 ### The step sets its failure policy
 
@@ -120,7 +120,7 @@ A retry loop stops at the first of four events. The attempts run out. An error c
 
 ### One grace period for recovery
 
-While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure or a cancel. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure or at the pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
+While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome or a cancel. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
 
 ### The grace end has a name
 
@@ -142,7 +142,7 @@ The state is a closed set of plain types, and `New` names the field path and the
 
 ### Attempts work on a private copy
 
-Each attempt works on a private copy of the committed state. A successful attempt commits its changes at once, and a failed attempt drops the copy. The commit is a three-way merge of top-level fields. The merge compares three states field by field. They are the state at the start of the attempt, the copy of the attempt and the current committed state. Two concurrent changes to one field fail the later commit with `ErrConflict`. The design rejects a contract of "disjoint fields" that only the race detector checks, because a mistake then corrupts the state silently. It also rejects a lock for each step, which serializes the saga.
+Each attempt works on a private copy of the committed state. A successful attempt commits its changes at once, and an attempt that does not succeed drops the copy. The commit is a three-way merge of top-level fields. The merge compares three states field by field. They are the state at the start of the attempt, the copy of the attempt and the current committed state. Two concurrent changes to one field fail the later commit with `ErrConflict`. The design rejects a contract of "disjoint fields" that only the race detector checks, because a mistake then corrupts the state silently. It also rejects a lock for each step, which serializes the saga.
 
 ### A rejected run writes its state back
 
@@ -178,7 +178,7 @@ Every append gets the grace context, which the journal honors. A stuck journal t
 
 ### The core is a fixed pipeline
 
-Each attempt of a step runs through a pipeline of private middleware in one order. The order is retry, timeout, panic recovery, a guard, your middleware, the `Wrap` method of the step, and the call. The guard fails an attempt whose chain never ran the call. The timeout layer applies to the action only. Panic recovery here means catching a panic, and it differs from the recovery after a failure. A step without `Wrap` skips that layer. One function builds it. The core does not export these pieces, because the guarantees must not depend on a user who installs them. Your middleware wraps every attempt and counts in the attempt timeout.
+Each attempt of a step runs through a pipeline of private middleware in one order. The order is retry, timeout, panic recovery, a guard, your middleware, the `Wrap` method of the step, and the call. The guard fails an attempt whose chain never ran the call. The timeout layer applies to the action only. Panic recovery here means catching a panic, and it differs from the recovery after a failure or an unknown outcome. A step without `Wrap` skips that layer. One function builds it. The core does not export these pieces, because the guarantees must not depend on a user who installs them. Your middleware wraps every attempt and counts in the attempt timeout.
 
 ### Middleware is a value with `Wrap`
 
@@ -188,9 +188,9 @@ Each attempt of a step runs through a pipeline of private middleware in one orde
 
 The core has no concurrency limit and no rate limit. A limit inside one saga serves that saga only, and it does not limit throughput. A semaphore or a rate limit is middleware that the application writes.
 
-### Middleware cannot hide a failure
+### Middleware cannot hide an error of the call
 
-The pipeline keeps the result of the last call. If middleware returns nil after the call failed, the attempt ends with the error of the call. If the chain returns without a call, the attempt fails permanently with `ErrCallNotRun`. If a call is still running when middleware returns, the attempt fails with `ErrCallUnfinished` and its outcome is unknown. A second parallel call fails with `ErrCallConcurrent`. A late write lands in the state of its own attempt, which nothing reads after it ends.
+The pipeline keeps the result of the last call. If middleware returns nil after the call returned an error, the attempt ends with the error of the call. If the chain returns without a call, the attempt fails permanently with `ErrCallNotRun`. If a call is still running when middleware returns, the attempt fails with `ErrCallUnfinished` and its outcome is unknown. A second parallel call fails with `ErrCallConcurrent`. A late write lands in the state of its own attempt, which nothing reads after it ends.
 
 ### A panic is an ordinary error to middleware
 

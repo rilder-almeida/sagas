@@ -11,12 +11,12 @@ The ideas come from four sources:
 
 ## What is all-or-nothing
 
-A saga is not a database transaction. No lock holds the steps together, and other readers see the effect of each step as soon as it ends. The promise is smaller. When the saga ends, either every step is done or the library has undone the part that ran.
+A saga is not a database transaction. No lock holds the steps together, and other readers see the effect of each step as soon as it ends. The promise is smaller. When the saga ends, either every step is done or the library undoes the part that ran.
 
 The library keeps this promise in three ways.
 
 1. It compensates every started step of the compensable zone that has a compensation. A step whose call failed, timed out or stopped on a cancel can still change something outside the saga. A charge that the bank confirms after your timeout is the usual example. A library that compensates only completed steps never refunds that charge.
-2. It stops the running steps before it compensates. On the first failure, it cancels the context of the running steps and starts nothing new. It waits for every step to return, and only then starts the compensations. A branch that compensates while a sibling (a step that runs in parallel) still writes the state mixes forward work and compensation in the journal. The journal is the append-only record of the run, which a later section describes. `Run` never returns while a goroutine that it started is alive.
+2. It stops the running steps before it compensates. On the first failure or unknown outcome, it cancels the context of the running steps and starts nothing new. It waits for every step to return, and only then starts the compensations. A branch that compensates while a sibling (a step that runs in parallel) still writes the state mixes forward work and compensation in the journal. The journal is the append-only record of the run, which a later section describes. `Run` never returns while a goroutine that it started is alive.
 3. It compensates along the reversed dependency graph. `sagas.Sequence(items...)` and `sagas.Parallel(items...)` take steps or groups and return a `Flow`, the value that `New` takes as its second argument. One step is also a `Flow`. Together they build a graph of dependencies: in a `Sequence`, a step depends on the steps before it. "Reversed" means that a compensation waits for the compensations of every started step that depended on its step. Steps that do not depend on each other compensate in parallel. Only the graph decides the order, forward and backward. A business order between two steps is a dependency in the `Flow`.
 
 A step can have an optional method `Enabled(*S) bool`. If it returns false, the library skips the step. A skipped step never started, so the library does not compensate it, and it counts as done for the steps that follow.
@@ -27,14 +27,14 @@ You cannot undo some steps. A payment that left the bank, an email that went out
 
 A pivot splits the saga into two zones. If a saga has no pivot, every step is in the compensable zone.
 
-- The compensable zone holds the steps before the pivot. A failure here undoes them.
-- The forward-only zone holds the steps after the pivot. A failure here never undoes anything.
+- The compensable zone holds the steps before the pivot. A failure or an unknown outcome here undoes them.
+- The forward-only zone holds the steps after the pivot. A failure or an unknown outcome here never undoes anything.
 
 `New` rejects a saga that breaks one of these rules. A saga has at most one pivot. Every other step comes before the pivot or after it in the `Flow`. The pivot has no `Compensate` and no `Enabled`. No step after the pivot has `Compensate`. `New` returns an error, so no surprise waits at run time.
 
 At run time, a failure of the pivot call means that it did not apply, so the library undoes the compensable zone. The run then ends `ErrCompensated`: `Run` returns a `*RunError` whose `Kind` is `ErrCompensated`, as the section on the error of `Run` describes.
 
-An unknown outcome from the pivot is different. An unknown outcome follows a timeout, a cancel or a panic of the call. Nobody knows then whether the effect happened. The library retries the pivot with the same idempotency key (defined below) and never undoes it. When the attempts run out, the run ends `ErrIncomplete` with only the pivot pending, and the library compensates nothing. "Pending" means that the step still needs action from a person. The section on the error of `Run` below says more. A failure after the pivot also ends `ErrIncomplete`, because the saga must finish and cannot go back.
+An unknown outcome from the pivot is different. An unknown outcome follows a timeout, a cancel or a panic of the call. Nobody knows then whether the effect happened. The library retries the pivot with the same idempotency key (defined below) and never undoes it. When the attempts run out, the run ends `ErrIncomplete` with only the pivot pending, and the library compensates nothing. "Pending" means that the step still needs action from a person. The section on the error of `Run` below says more. A failure or an unknown outcome after the pivot also ends `ErrIncomplete`, because the saga must finish and cannot go back.
 
 The pivot call runs in one retry loop on a context that the caller's cancel does not stop. The reason is that a cancel half way through a pivot leaves its outcome unknown. The grace period below bounds that loop.
 
@@ -63,7 +63,7 @@ Middleware is a value with a `Wrap(ctx, info, call)` method. Its `info` argument
 
 ### Retries
 
-A step retries its action and its compensation under one policy. The default is three attempts with an exponential delay and jitter. `Retry` on the step changes it. Jitter is a random change to each delay. A step with `sagas.NoRetry()` makes one attempt, and its compensation also gets one attempt. A caller that wants a more persistent compensation raises `Retry.Attempts`. `sagas.WithRecoveryTimeout(d)`, passed to `New`, sets `RecoveryTimeout`. The grace period below explains how it bounds the recovery. Recovery is the work after a failure or a caller cancel. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone.
+A step retries its action and its compensation under one policy. The default is three attempts with an exponential delay and jitter. `Retry` on the step changes it. Jitter is a random change to each delay. A step with `sagas.NoRetry()` makes one attempt, and its compensation also gets one attempt. A caller that wants a more persistent compensation raises `Retry.Attempts`. `sagas.WithRecoveryTimeout(d)`, passed to `New`, sets `RecoveryTimeout`. The grace period below explains how it bounds the recovery. Recovery is the work after a failure, an unknown outcome or a caller cancel. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone.
 
 The retries stop at the first of these events. The attempts run out. The call returns an error that carries the mark of `sagas.Permanent(err)`. The call panics. The deadline passes. In the compensable zone, the deadline is the caller's context. The pivot, the forward-only zone and the compensations run until the grace period ends. The grace period starts at the end of the caller's context, never earlier. The `Permanent` mark counts at any depth of the error chain, so wrapping it with `%w` keeps it. A panic is a code defect, and a retry only repeats it.
 
@@ -94,7 +94,7 @@ If the three cases stay untested, a charge that lands late is never refunded. Th
 
 ## The state is a closed set of plain types
 
-Every action and compensation reads and writes one state value of type `S`. The library copies it for each attempt, commits the changes of a successful attempt at once and drops the copy of a failed attempt. To do this without a method from you, the library copies and reads the state through its JSON encoding, the `encoding/json/v2` package of Go 1.27. The state must therefore be plain data that this encoding handles without help.
+Every action and compensation reads and writes one state value of type `S`. The library copies it for each attempt. It commits the changes of a successful attempt at once. It drops the copy of an attempt that does not succeed. To do this without a method from you, the library copies and reads the state through its JSON encoding, the `encoding/json/v2` package of Go 1.27. The state must therefore be plain data that this encoding handles without help.
 
 A state is a struct. Its fields can be:
 
@@ -148,7 +148,7 @@ A rule follows for the step author. Every step and every compensation honors its
 
 ### Reading the error of `Run`
 
-If every step finished and the journal recorded the end, `Run` returns nil. An error before the journal stores the saga-started event, the first journal event of a run, returns as it is. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` and an `ErrJournal` error. For any other end that began, `Run` returns a `*sagas.RunError`. Its `Kind` is `ErrCompensated`, `ErrCompensationFailed`, `ErrIncomplete`, `ErrConcurrentWriter`, `ErrJournal` or `ErrGraceEnded`. A writer is one `Run` call. A second `Run` with the same execution ID is another writer, for example in another process. `ErrConcurrentWriter` means that another writer appended to the execution first. `ErrJournal` and `ErrGraceEnded` mark a run whose steps all succeeded but whose journal write failed. `Steps` lists every failed step in order. `Pending` lists the steps that still need action. `errors.Is` finds the kind and every cause inside.
+If every step finished and the journal recorded the end, `Run` returns nil. An error before the journal stores the saga-started event, the first journal event of a run, returns as it is. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` and an `ErrJournal` error. For any other end that began, `Run` returns a `*sagas.RunError`. Its `Kind` is `ErrCompensated`, `ErrCompensationFailed`, `ErrIncomplete`, `ErrConcurrentWriter`, `ErrJournal` or `ErrGraceEnded`. A writer is one `Run` call. A second `Run` with the same execution ID is another writer, for example in another process. `ErrConcurrentWriter` means that another writer appended to the execution first. `ErrJournal` and `ErrGraceEnded` mark a run whose steps all succeeded but whose journal write failed. `Steps` lists every step that failed or had an unknown outcome, in order. `Pending` lists the steps that still need action. `errors.Is` finds the kind and every cause inside.
 
 ```go
 err := saga.Run(ctx, &b)
@@ -161,7 +161,7 @@ if errors.As(err, &runErr) {
 
 Five more rules apply to this error.
 
-1. A cancel can look like a step failure. A step that failed on its own can return an error that carries `context.Canceled`. A match on that error does not prove that a cancel stopped the run. To learn whether the caller canceled, a caller tests its own `ctx.Err()` or `errors.Is(err, sagas.ErrGraceEnded)`.
+1. A cancel can look like an ordinary error of a step. A step that failed on its own can return an error that carries `context.Canceled`. A match on that error does not prove that a cancel stopped the run. To learn whether the caller canceled, a caller tests its own `ctx.Err()` or `errors.Is(err, sagas.ErrGraceEnded)`.
 2. `context.Canceled` is one value. A journal that cancels its own work internally gives the same value as the grace end, so the library cannot tell them apart. If a journal error mixes the context error with other errors, the library keeps the whole journal error and joins `ErrGraceEnded` to it. If every part of the error is the context error, the error carries only `ErrGraceEnded`.
 3. A late cancel does not undo finished work. A cancel that arrives after the last step started does not compensate. If every step then succeeds, the run ends completed and returns nil. Before the pivot, a canceled context still stops every step that did not start yet, and then the run compensates. The forward-only zone does not stop for a cancel until the grace period ends.
 4. After `ErrConcurrentWriter`, `Pending` informs you and is not a to-do list. Another writer owns the execution. The library starts nothing new, waits for the running steps and compensates nothing, because the writer that owns the execution decides what to do. It writes the state that it committed so far back into your state value.
