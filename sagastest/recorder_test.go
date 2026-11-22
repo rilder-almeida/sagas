@@ -11,20 +11,10 @@ import (
 
 type groupBuilder func(items ...sagas.Flow) *sagas.Group
 
-func runRecorded(t *testing.T, group groupBuilder, failing string, names ...string) ([]Call, error) {
+func runRecorded(t *testing.T, group groupBuilder, steps ...sagas.Flow) ([]Call, error) {
 	t.Helper()
 
 	rec := NewRecorder()
-	steps := make([]sagas.Flow, len(names))
-
-	for i, name := range names {
-		var err error
-		if name == failing {
-			err = errBoom
-		}
-
-		steps[i] = newProbe(name, sagas.NoRetry(), err)
-	}
 
 	saga, err := sagas.New[probeState]("recorded", group(steps...), sagas.WithMiddleware(rec.Middleware()))
 	require.NoError(t, err)
@@ -67,7 +57,7 @@ func Test_NewRecorder(t *testing.T) {
 			fresh := NewRecorder()
 
 			if len(tt.names) > 0 {
-				calls, err := runRecorded(t, sagas.Sequence, "", tt.names...)
+				calls, err := runRecorded(t, sagas.Sequence, plain("a"), plain("b"))
 				require.NoError(t, err)
 				assert.Len(t, calls, tt.wantSeen)
 			}
@@ -80,48 +70,77 @@ func Test_NewRecorder(t *testing.T) {
 func Test_Recorder_Middleware(t *testing.T) {
 	t.Parallel()
 
+	exec := func(step, key string, attempt int, err error) Call {
+		return Call{Step: step, Phase: sagas.PhaseExecute, Attempt: attempt, Key: key, Err: err}
+	}
+
 	tests := []struct {
 		name      string
 		flow      groupBuilder
-		failing   string
-		names     []string
+		build     func() []sagas.Flow
 		wantCalls []Call
 		wantErr   bool
 		unordered bool
 	}{
 		{
-			name:    "[Success] When: three steps run in sequence ; Should: record them in order with the shared key",
-			flow:    sagas.Sequence,
-			failing: "",
-			names:   []string{"a", "b", "c"},
-			wantCalls: []Call{
-				{Step: "a", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyA},
-				{Step: "b", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyB},
-				{Step: "c", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyC},
+			name: "[Success] When: three steps run in sequence ; Should: record them in order with the shared key",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{
+					plain("a"), plain("b"), plain("c"),
+				}
 			},
+			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil), exec("c", keyC, 1, nil)},
 		},
 		{
-			name:    "[Fail] When: the last step fails ; Should: record the error it returned",
-			flow:    sagas.Sequence,
-			failing: "c",
-			names:   []string{"a", "b", "c"},
+			name: "[Fail] When: the last step fails ; Should: record the error it returned",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{
+					plain("a"), plain("b"), newProbe("c", sagas.NoRetry(), errBoom),
+				}
+			},
+			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil), exec("c", keyC, 1, errBoom)},
+			wantErr:   true,
+		},
+		{
+			name: "[Success] When: two steps run in parallel ; Should: record both without a data race",
+			flow: sagas.Parallel,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{plain("a"), plain("b")}
+			},
+			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil)},
+			unordered: true,
+		},
+		{
+			name: "[Fail] When: a step retries ; Should: record each attempt number with its error",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{newProbe("a", fastRetry(), errBoom)}
+			},
+			wantCalls: []Call{exec("a", keyA, 1, errBoom), exec("a", keyA, 2, errBoom)},
+			wantErr:   true,
+		},
+		{
+			name: "[Fail] When: a later step fails ; Should: record the compensation of the earlier step",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{newUndo("a", nil), newProbe("b", sagas.NoRetry(), errBoom)}
+			},
 			wantCalls: []Call{
-				{Step: "a", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyA},
-				{Step: "b", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyB},
-				{Step: "c", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyC, Err: errBoom},
+				exec("a", keyA, 1, nil),
+				exec("b", keyB, 1, errBoom),
+				{Step: "a", Phase: sagas.PhaseCompensate, Attempt: 1, Key: keyA},
 			},
 			wantErr: true,
 		},
 		{
-			name:    "[Success] When: two steps run in parallel ; Should: record both without a data race",
-			flow:    sagas.Parallel,
-			failing: "",
-			names:   []string{"a", "b"},
-			wantCalls: []Call{
-				{Step: "a", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyA},
-				{Step: "b", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyB},
+			name: "[Success] When: a step has a pivot ; Should: record the pivot phase",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{newPivot("a")}
 			},
-			unordered: true,
+			wantCalls: []Call{{Step: "a", Phase: sagas.PhasePivot, Attempt: 1, Key: keyA}},
 		},
 	}
 
@@ -129,7 +148,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			calls, err := runRecorded(t, tt.flow, tt.failing, tt.names...)
+			calls, err := runRecorded(t, tt.flow, tt.build()...)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -168,7 +187,7 @@ func Test_Recorder_Calls(t *testing.T) {
 			t.Parallel()
 
 			rec := NewRecorder()
-			probe := newProbe("a", sagas.NoRetry(), nil)
+			probe := plain("a")
 			saga, err := sagas.New[probeState]("copy", probe, sagas.WithMiddleware(rec.Middleware()))
 			require.NoError(t, err)
 			require.NoError(t, saga.Run(context.Background(), &probeState{}))
