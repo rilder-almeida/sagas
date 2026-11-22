@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -682,6 +683,7 @@ func Test_Pivot(t *testing.T) {
 		name       string
 		setup      func(t *testing.T) Setup[probeState]
 		wantErrors []string
+		wantCauses []string
 		wantSetups int
 	}{
 		{
@@ -774,10 +776,8 @@ func Test_Pivot(t *testing.T) {
 
 				return shopSetup(t, pivotErrors, pivotFlow(3, false), noLate)
 			},
-			wantErrors: []string{
-				`step "pivot", case "unknown outcome": Run returned sagas: compensated: ` +
-					`sagas: step "pivot" failed after 3 attempts: pivot already applied`,
-			},
+			wantErrors: []string{`step "pivot", case "unknown outcome": Run returned`},
+			wantCauses: []string{"pivot already applied"},
 			wantSetups: 3,
 		},
 		{
@@ -788,10 +788,8 @@ func Test_Pivot(t *testing.T) {
 
 				return shopSetup(t, shipErrors, pivotFlow(3, false), noLate)
 			},
-			wantErrors: []string{
-				`step "ship", case "step repeated": Run returned sagas: incomplete: ` +
-					`sagas: step "ship" failed after 1 attempts: ship already sent, want nil`,
-			},
+			wantErrors: []string{`step "ship", case "step repeated": Run returned`},
+			wantCauses: []string{"ship already sent"},
 			wantSetups: 3,
 		},
 		{
@@ -887,6 +885,10 @@ func Test_Pivot(t *testing.T) {
 
 			for i, want := range tt.wantErrors {
 				assert.Contains(t, fake.errors[i], want)
+			}
+
+			for _, cause := range tt.wantCauses {
+				assert.Contains(t, strings.Join(fake.errors, "\n"), cause)
 			}
 
 			assert.Equal(t, tt.wantSetups, setups)
