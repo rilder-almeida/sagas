@@ -70,9 +70,9 @@ func (j *keepsSlices) Append(ctx context.Context, e *sagas.Event) error {
 	return err
 }
 
-type acceptsGap struct{ *sagas.MemoryJournal }
+type journalAcceptsGaps struct{ *sagas.MemoryJournal }
 
-func (j acceptsGap) Append(ctx context.Context, e *sagas.Event) error {
+func (j journalAcceptsGaps) Append(ctx context.Context, e *sagas.Event) error {
 	if e == nil {
 		return j.MemoryJournal.Append(ctx, e)
 	}
@@ -262,7 +262,7 @@ func (j *rejectsSamePointer) Append(ctx context.Context, e *sagas.Event) error {
 
 func ExampleJournal() {
 	tb := &fakeTB{}
-	Journal(tb, func() sagas.Journal { return acceptsGap{sagas.NewMemoryJournal()} })
+	Journal(tb, func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} })
 
 	for _, msg := range tb.errors {
 		fmt.Println(msg)
@@ -318,7 +318,7 @@ func Test_Journal(t *testing.T) {
 		},
 		{
 			name:       "[Fail] When: the journal accepts a gap ; Should: report that seq 3 after seq 1 was accepted",
-			newJournal: func() sagas.Journal { return acceptsGap{sagas.NewMemoryJournal()} },
+			newJournal: func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} },
 			wantRules:  []string{ruleGap},
 			wantCauses: []string{"Append of seq 3 after seq 1 returned nil"},
 		},

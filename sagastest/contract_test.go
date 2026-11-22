@@ -20,7 +20,7 @@ const (
 	sound                defect = ""
 	refundFailsUnapplied defect = "refund fails unapplied"
 	refundTwice          defect = "refund twice"
-	noTombstone          defect = "no tombstone"
+	chargeIgnoresRefund  defect = "no tombstone"
 	refundLandedTwice    defect = "refund landed twice"
 	shipsTwice           defect = "ships twice"
 	pivotsTwice          defect = "pivots twice"
@@ -100,7 +100,7 @@ func (l *ledger) charge(key string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.charged[key] || (l.refunds[key] > 0 && l.defect != noTombstone) {
+	if l.charged[key] || (l.refunds[key] > 0 && l.defect != chargeIgnoresRefund) {
 		return nil
 	}
 
@@ -461,7 +461,7 @@ func (f *fakeTB) Logf(format string, args ...any) {
 }
 
 func ExampleCompensations() {
-	setup := newShop(func(err error) { panic(err) }, noTombstone, chargeThenShip, lateCharge)
+	setup := newShop(func(err error) { panic(err) }, chargeIgnoresRefund, chargeThenShip, lateCharge)
 
 	tb := &fakeTB{}
 	Compensations(tb, setup)
@@ -540,7 +540,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, noTombstone, chargeThenShip, lateCharge)
+				return shopSetup(t, chargeIgnoresRefund, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
 				`step "charge", case "step lands after its compensation": Check: balance off: balance 100, want 0`,
