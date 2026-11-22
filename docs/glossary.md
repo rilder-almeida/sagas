@@ -4,7 +4,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 
 | Term | Meaning | Code name |
 |---|---|---|
-| Saga | A business operation split into steps. Either every step completes, or the library undoes the completed part. Past the pivot, the saga finishes instead. | `*sagas.Saga[S]` |
+| Saga | A business operation split into steps. Either every step completes, or the library undoes the part that ran. Past the pivot, the saga finishes instead. | `*sagas.Saga[S]` |
 | Definition | The checked, fixed description of a saga: its steps, their order and its options. You build it once and run it many times. | `sagas.New[S]` |
 | Execution | One run of a definition over one state value. An execution ID names it. | `(*Saga[S]).Run` |
 | Execution ID | The name of one execution. The state sets it, so a repeated request is recognizable. Without it, the library draws a random one. | `ExecutionID() string` on the state, else random |
@@ -22,7 +22,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Pivot | The point of no return. It is atomic: it applies whole or not at all. A failure means that it did not apply. After it succeeds, the saga only moves forward. | `Pivot(ctx, *S) error`, `ZonePivot` |
 | Compensable zone | The steps before the pivot. In a saga with no pivot, every step. A failure or an unknown outcome here undoes them. | `ZoneCompensable` |
 | Forward-only zone | The steps after the pivot. A failure or an unknown outcome here never undoes anything. | `ZoneForwardOnly` |
-| Backward recovery | Running compensations in reverse order after a failure or an unknown outcome in the compensable zone. | `PhaseCompensate` |
+| Backward recovery | Running compensations in reverse order after a failure, an unknown outcome, a caller cancel or a journal fault in the compensable zone. | `PhaseCompensate` |
 | Forward recovery | Finishing the forward-only zone instead of undoing anything. | no code name |
 | Retry policy | How many attempts a call gets and how long to wait between them. One policy type serves every action and compensation. | `sagas.RetryPolicy`, in `Step.Retry` |
 | Idempotency key | A key that is unique for each execution and step. It is the same on every attempt and on the compensation. The step sends it to the outside service. | `sagas.IdempotencyKey(ctx)`, `CallInfo.IdempotencyKey()` |
@@ -35,8 +35,8 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Conflict | Two concurrent steps changed the same top-level field of the state. The later commit fails. | `ErrConflict` |
 | Handler | The function that runs one action or one compensation. | `sagas.Call` |
 | Middleware | A value that wraps a handler to add behavior, such as logging, a limit or fault injection. | `sagas.Middleware` |
-| Result | What `Run` reports: `nil` for a completed run, else a `*RunError`. It names the kind of end, the steps that failed or had an unknown outcome, and the pending steps. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
+| Result | What `Run` reports: `nil` for a completed run, else a `*RunError`. It names the kind of end and the pending steps. It holds one `*sagas.Error` for each action or compensation that did not succeed, in order. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
 | Completed | Every step succeeded, or the library skipped it. | `nil`, `StatusCompleted` |
-| Compensated | A step failed or had an unknown outcome before the pivot, or the pivot failed, and every compensation succeeded. | `ErrCompensated` |
+| Compensated | The run stopped before the pivot applied, and every compensation succeeded. | `ErrCompensated` |
 | Compensation failed | A compensation did not succeed. A person must finish the undo. | `ErrCompensationFailed` |
 | Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish it. The library never undoes it. | `ErrIncomplete` |

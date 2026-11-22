@@ -76,7 +76,7 @@ A compensation starts after the compensations of the started steps that depended
 
 ### Stop the siblings, then compensate
 
-On the first failure or unknown outcome, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes forward work and compensation. A step that ignores its context blocks `Run`, and the contract says so.
+On the first failure or unknown outcome, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings (steps that run in parallel) finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes forward work and compensation. A step that ignores its context blocks `Run`, and the contract says so.
 
 ### The step sets its failure policy
 
@@ -120,7 +120,7 @@ A retry loop stops at the first of four events. The attempts run out. An error c
 
 ### One grace period for recovery
 
-While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome or a cancel. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
+While the caller's context lives, the saga runs. After the caller gives up, recovery gets `RecoveryTimeout` from that moment, five minutes by default. Recovery is the work after a failure, an unknown outcome, a cancel or a journal fault. Backward recovery runs the compensations. Forward recovery finishes the pivot and the forward-only zone. The design rejects two clocks. One clock starts at each phase, so the total is the sum of the phases. The other starts at the first failure, unknown outcome or pivot. Its time depends on the phase, so the caller cannot state one bound. The design also rejects stopping the forward-only zone on a cancel, because that creates manual work.
 
 ### The grace end has a name
 
@@ -168,7 +168,7 @@ The saga-started event, the first journal event of a run, carries every step nam
 
 ### The run error can owe more than the journal
 
-After an unclear append, `Pending` can list more than the journal shows, and never less. The journal never holds two outcomes for one step. The rejected design changes each earlier decision to match the event that landed. For example, the library already compensated step A because step B looked unknown. If B's event lands later as a success, that design must undo the compensation of A. The library keeps the decision it made.
+After an append whose result is unknown, `Pending` can list more than the journal shows, and never less. The journal never holds two outcomes for one step. The rejected design changes each earlier decision to match the event that landed. For example, the library already compensated step A because step B looked unknown. If B's event lands later as a success, that design must undo the compensation of A. The library keeps the decision it made.
 
 ### Appends honor their context
 
@@ -198,7 +198,7 @@ The innermost handler turns a panic into a `*PanicError` with the value and the 
 
 ### One typed error for every step outcome that is not a success
 
-Every error of a step is a `*sagas.Error`. That covers a failure and an unknown outcome. It holds a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. If the journal has not stored the saga-started event yet, the error returns as it is. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
+Every error of a step is a `*sagas.Error`. That covers a failure and an unknown outcome. It holds a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. If the journal has not stored the saga-started event yet, the error returns as it is. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the pending steps, and one `*sagas.Error` for each action or compensation that did not succeed. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
 
 ### The state names the execution
 
