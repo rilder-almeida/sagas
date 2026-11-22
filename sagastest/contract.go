@@ -100,7 +100,8 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 	}
 
 	if len(p.steps) > 0 && len(rec.Calls()) == 0 {
-		tb.Error("sagastest: the clean run recorded no call; Setup must pass mw to sagas.WithMiddleware")
+		tb.Error("sagastest: the clean run recorded no call: Setup must pass mw to sagas.WithMiddleware, " +
+			"or every step is disabled in the setup state")
 
 		return plan{}, nil, false
 	}

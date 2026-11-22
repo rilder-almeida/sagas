@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,6 +49,9 @@ var (
 	errShipAgain    = errors.New("ship already sent")
 	errNoLateAction = errors.New("no late action")
 )
+
+const noCallReport = "the clean run recorded no call: Setup must pass mw to sagas.WithMiddleware, " +
+	"or every step is disabled in the setup state"
 
 type ledger struct {
 	mu      sync.Mutex
@@ -663,7 +667,20 @@ func Test_Compensations(t *testing.T) {
 
 				return droppingMiddleware(shopSetup(t, sound, chargeThenShip, lateCharge))
 			},
-			wantErrors: []string{`the clean run recorded no call; Setup must pass mw to sagas\.WithMiddleware`},
+			wantErrors: []string{regexp.QuoteMeta(noCallReport)},
+			wantSetups: 1,
+		},
+		{
+			name: "[Fail] When: Setup passes mw but every step is disabled in the setup state ; " +
+				"Should: report that the clean run recorded no call and run no case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+					return sagas.Sequence(newDisabledCharge(book), newDisabledShip(book))
+				}, lateCharge)
+			},
+			wantErrors: []string{regexp.QuoteMeta(noCallReport)},
 			wantSetups: 1,
 		},
 	}
@@ -910,7 +927,7 @@ func Test_Pivot(t *testing.T) {
 
 				return droppingMiddleware(shopSetup(t, sound, pivotFlow(3, false), noLate))
 			},
-			wantErrors: []string{"the clean run recorded no call; Setup must pass mw to sagas.WithMiddleware"},
+			wantErrors: []string{noCallReport},
 			wantSetups: 1,
 		},
 		{
