@@ -2,6 +2,7 @@ package sagastest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -27,8 +28,8 @@ type Recorder struct {
 // NewRecorder returns an empty Recorder.
 func NewRecorder() *Recorder { return &Recorder{} }
 
-// Middleware returns the middleware that records each call after it returns, and returns its error unchanged.
-// A call that panics is recorded with an error that wraps sagas.ErrPanic, then panics again with the same value.
+// Middleware returns the middleware that records each call and returns its error unchanged. A panicking call is
+// recorded with an error that wraps sagas.ErrPanic, and a panic raised below the recorder is raised again.
 func (r *Recorder) Middleware() sagas.MiddlewareFunc {
 	return func(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
 		defer func() {
@@ -39,7 +40,7 @@ func (r *Recorder) Middleware() sagas.MiddlewareFunc {
 		}()
 
 		err := call(ctx)
-		r.record(info, err)
+		r.record(info, markPanic(err))
 
 		return err
 	}
@@ -60,6 +61,14 @@ func (r *Recorder) record(info sagas.CallInfo, err error) {
 	r.calls = append(r.calls, Call{
 		Step: info.Step, Phase: info.Phase, Attempt: info.Attempt, Key: info.IdempotencyKey(), Err: err,
 	})
+}
+
+func markPanic(err error) error {
+	if _, ok := errors.AsType[*sagas.PanicError](err); ok {
+		return fmt.Errorf("%w: %w", sagas.ErrPanic, err)
+	}
+
+	return err
 }
 
 func panicError(v any) error {

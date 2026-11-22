@@ -48,6 +48,19 @@ func assertSameErr(t *testing.T, want, got error) {
 	assert.ErrorIs(t, got, want)
 }
 
+type panicProbe struct {
+	sagas.Step
+}
+
+func newPanicProbe(name string) *panicProbe {
+	p := &panicProbe{}
+	p.Name, p.Retry = name, sagas.NoRetry()
+
+	return p
+}
+
+func (*panicProbe) Execute(context.Context, *probeState) error { panic(errBoom) }
+
 const (
 	keyA = "run-1/a"
 	keyB = "run-1/b"
@@ -111,6 +124,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 		wantCalls []Call
 		wantErr   bool
 		wantPanic bool
+		wantCause bool
 		unordered bool
 	}{
 		{
@@ -185,6 +199,18 @@ func Test_Recorder_Middleware(t *testing.T) {
 			wantErr:   true,
 			wantPanic: true,
 		},
+		{
+			name: "[Fail] When: the step method panics ; " +
+				"Should: record it with an error that wraps sagas.ErrPanic and keeps the panic error",
+			flow: sagas.Sequence,
+			build: func() []sagas.Flow {
+				return []sagas.Flow{newPanicProbe("a")}
+			},
+			wantCalls: []Call{exec("a", keyA, 1, sagas.ErrPanic)},
+			wantErr:   true,
+			wantPanic: true,
+			wantCause: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -214,6 +240,9 @@ func Test_Recorder_Middleware(t *testing.T) {
 				})
 				require.GreaterOrEqual(t, i, 0)
 				assertSameErr(t, want.Err, calls[i].Err)
+
+				var cause *sagas.PanicError
+				assert.Equal(t, tt.wantCause, errors.As(calls[i].Err, &cause))
 			}
 		})
 	}
