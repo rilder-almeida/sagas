@@ -231,7 +231,8 @@ func repeated(step string, phase sagas.Phase) sagas.MiddlewareFunc {
 }
 
 // Pivot proves that the pivot is atomic and that every forward-only step is idempotent. It injects an unknown
-// outcome on the first attempt of the pivot, then repeats each forward-only step. Each case is a fresh Case.
+// outcome on the first attempt of the pivot, then repeats each forward-only step, each in a fresh Case. It compares
+// the final state with reflect.DeepEqual, and expects a pivot with one attempt to end sagas.ErrIncomplete.
 func Pivot[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 
@@ -246,9 +247,7 @@ func Pivot[S any](tb testing.TB, setup Setup[S]) {
 		return
 	}
 
-	if !pivotCase(tb, setup, p, clean) {
-		return
-	}
+	pivotCase(tb, setup, p, clean)
 
 	for _, step := range p.forwardOnly {
 		repeatCase(tb, setup, step)
@@ -271,7 +270,7 @@ func started(rec *Recorder, step string, phase sagas.Phase) bool {
 	})
 }
 
-func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) bool {
+func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) {
 	tb.Helper()
 
 	rec := NewRecorder()
@@ -281,7 +280,7 @@ func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) bool {
 		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so the pivot is untested",
 			p.pivot, caseUnknown, err)
 
-		return false
+		return
 	}
 
 	if pivotAttempts(p) > 1 {
@@ -293,8 +292,6 @@ func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) bool {
 	if checkErr := c.Check(c.State); checkErr != nil {
 		tb.Errorf("sagastest: step %q, case %q: Check: %v", p.pivot, caseUnknown, checkErr)
 	}
-
-	return true
 }
 
 func completedPivot[S any](tb testing.TB, pivot string, err error, got, clean *S) {
@@ -321,8 +318,14 @@ func incompletePivot(tb testing.TB, pivot string, err error, rec *Recorder) {
 		return
 	}
 
-	if runErr, ok := errors.AsType[*sagas.RunError](err); !ok || !slices.Equal(runErr.Pending, []string{pivot}) {
-		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want only the pivot pending", pivot, caseUnknown, err)
+	runErr, ok := errors.AsType[*sagas.RunError](err)
+	if !ok || !slices.Equal(runErr.Pending, []string{pivot}) {
+		var pending []string
+		if ok {
+			pending = runErr.Pending
+		}
+
+		tb.Errorf("sagastest: step %q, case %q: pending steps are %q, want only the pivot", pivot, caseUnknown, pending)
 	}
 
 	if slices.ContainsFunc(rec.Calls(), func(call Call) bool { return call.Phase == sagas.PhaseCompensate }) {
