@@ -22,7 +22,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Pivot | The point of no return. It is atomic: it applies whole or not at all. A failure means that it did not apply. After it succeeds, the saga only moves forward. | `Pivot(ctx, *S) error`, `ZonePivot` |
 | Compensable zone | The steps before the pivot. In a saga with no pivot, every step. A failure or an unknown outcome here undoes them. | `ZoneCompensable` |
 | Forward-only zone | The steps after the pivot. A failure or an unknown outcome here never undoes anything. | `ZoneForwardOnly` |
-| Backward recovery | Running compensations in reverse order after a failure, an unknown outcome, a caller cancel or a journal fault in the compensable zone. | `PhaseCompensate` |
+| Backward recovery | If the run stops before the pivot applies, the library runs the compensations in reverse order. The cause is a failure, an unknown outcome, a caller cancel or a journal fault in the compensable zone, or a failure of the pivot. | `PhaseCompensate` |
 | Forward recovery | Finishing the forward-only zone instead of undoing anything. | no code name |
 | Retry policy | How many attempts a call gets and how long to wait between them. One policy type serves every action and compensation. | `sagas.RetryPolicy`, in `Step.Retry` |
 | Idempotency key | A key that is unique for each execution and step. It is the same on every attempt and on the compensation. The step sends it to the outside service. | `sagas.IdempotencyKey(ctx)`, `CallInfo.IdempotencyKey()` |
@@ -35,8 +35,8 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Conflict | Two concurrent steps changed the same top-level field of the state. The later commit fails. | `ErrConflict` |
 | Handler | The function that runs one action or one compensation. | `sagas.Call` |
 | Middleware | A value that wraps a handler to add behavior, such as logging, a limit or fault injection. | `sagas.Middleware` |
-| Result | What `Run` reports: `nil` for a completed run, else a `*RunError`. It names the kind of end and the pending steps. It holds one `*sagas.Error` for each action or compensation that did not succeed, in order. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
+| Result | What `Run` reports: `nil` for a completed run, else a `*RunError`. It names the kind of end and the pending steps. It holds one `*sagas.Error` for each action or compensation that did not succeed, in the order they happened. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
 | Completed | Every step succeeded, or the library skipped it. | `nil`, `StatusCompleted` |
-| Compensated | The run stopped before the pivot applied, and every compensation succeeded. | `ErrCompensated` |
+| Compensated | Backward recovery ran, and every compensation succeeded. No other writer appended to the execution. | `ErrCompensated` |
 | Compensation failed | A compensation did not succeed. A person must finish the undo. | `ErrCompensationFailed` |
-| Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish it. The library never undoes it. | `ErrIncomplete` |
+| Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. No other writer appended to the execution. A person must finish it. The library never undoes it. | `ErrIncomplete` |
