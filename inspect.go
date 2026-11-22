@@ -113,18 +113,18 @@ func nameOf(typeName string) string {
 	base, _, _ := strings.Cut(typeName, "[")
 	runes := []rune(base)
 
-	var b strings.Builder
+	name := make([]rune, 0, len(runes))
 
 	for i, c := range runes {
 		lowerNext := i+1 < len(runes) && unicode.IsLower(runes[i+1])
 		if i > 0 && unicode.IsUpper(c) && (!unicode.IsUpper(runes[i-1]) || lowerNext) {
-			b.WriteByte('-')
+			name = append(name, '-')
 		}
 
-		b.WriteRune(unicode.ToLower(c))
+		name = append(name, unicode.ToLower(c))
 	}
 
-	return b.String()
+	return string(name)
 }
 
 func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []error) {

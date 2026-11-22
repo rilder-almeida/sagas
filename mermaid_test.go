@@ -27,7 +27,7 @@ func Test_Saga_Mermaid(t *testing.T) {
 			want: "flowchart TD\n" +
 				"    s0[\"hotel\"]\n" +
 				"    s1[\"flight\"]\n" +
-				"    s2[\"car (if)\"]\n" +
+				"    s2[\"car (if Enabled)\"]\n" +
 				"    s3{{\"pay\"}}\n" +
 				"    s4[\"receipt\"]\n" +
 				"    s0 --> s3\n" +
