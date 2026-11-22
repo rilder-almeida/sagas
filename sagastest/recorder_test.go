@@ -44,9 +44,9 @@ func Test_NewRecorder(t *testing.T) {
 			wantSeen: 0,
 		},
 		{
-			name:     "[Success] When: another recorder saw two steps ; Should: return no calls",
-			names:    []string{"a", "b"},
-			wantSeen: 2,
+			name:     "[Success] When: another recorder saw three steps ; Should: return no calls",
+			names:    []string{"a", "b", "c"},
+			wantSeen: 3,
 		},
 	}
 
@@ -57,7 +57,12 @@ func Test_NewRecorder(t *testing.T) {
 			fresh := NewRecorder()
 
 			if len(tt.names) > 0 {
-				calls, err := runRecorded(t, sagas.Sequence, plain("a"), plain("b"))
+				steps := make([]sagas.Flow, len(tt.names))
+				for i, name := range tt.names {
+					steps[i] = plain(name)
+				}
+
+				calls, err := runRecorded(t, sagas.Sequence, steps...)
 				require.NoError(t, err)
 				assert.Len(t, calls, tt.wantSeen)
 			}
