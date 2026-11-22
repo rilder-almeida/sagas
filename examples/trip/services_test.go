@@ -71,6 +71,7 @@ func Test_hotels_Book(t *testing.T) {
 		canceled     bool
 		wantDistinct int
 		wantLeft     int
+		wantTaken    int
 		wantErr      error
 	}{
 		{
@@ -79,12 +80,14 @@ func Test_hotels_Book(t *testing.T) {
 			keys:         []string{"k1", "k1"},
 			wantDistinct: 1,
 			wantLeft:     1,
+			wantTaken:    1,
 		},
 		{
 			name:         "[Success] When: two keys book ; Should: return two IDs and take two rooms",
 			free:         2,
 			keys:         []string{"k1", "k2"},
 			wantDistinct: 2,
+			wantTaken:    2,
 		},
 		{
 			name:    "[Fail] When: the city has no rooms ; Should: return errNoRooms",
@@ -116,6 +119,7 @@ func Test_hotels_Book(t *testing.T) {
 
 			assertCalls(t, ids, err, tt.wantDistinct, tt.wantErr)
 			assert.Equal(t, tt.wantLeft, svc.Free("Lisbon"))
+			assert.Equal(t, tt.wantTaken, svc.Taken())
 		})
 	}
 }
@@ -286,6 +290,7 @@ func Test_hotels_Cancel(t *testing.T) {
 		cancels     int
 		canceled    bool
 		wantLeft    int
+		wantTaken   int
 		wantErr     error
 		wantLateErr error
 	}{
@@ -304,12 +309,13 @@ func Test_hotels_Cancel(t *testing.T) {
 			wantLateErr: errCanceled,
 		},
 		{
-			name:     "[Fail] When: the context is done ; Should: return its error and keep the room",
-			book:     true,
-			cancels:  1,
-			canceled: true,
-			wantLeft: 1,
-			wantErr:  context.Canceled,
+			name:      "[Fail] When: the context is done ; Should: return its error and keep the room",
+			book:      true,
+			cancels:   1,
+			canceled:  true,
+			wantLeft:  1,
+			wantTaken: 1,
+			wantErr:   context.Canceled,
 		},
 	}
 
@@ -340,6 +346,7 @@ func Test_hotels_Cancel(t *testing.T) {
 
 			requireErr(t, lateErr, tt.wantLateErr)
 			assert.Equal(t, tt.wantLeft, svc.Free("Lisbon"))
+			assert.Equal(t, tt.wantTaken, svc.Taken())
 		})
 	}
 }

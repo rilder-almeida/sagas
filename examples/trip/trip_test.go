@@ -18,6 +18,7 @@ import (
 )
 
 var (
+	errHotelDown    = errors.New("hotel service down")
 	errLeftBehind   = errors.New("bookings left behind")
 	errNoLateAction = errors.New("no late action for step")
 )
@@ -153,7 +154,7 @@ func checkBookings(svc *services, got *trip) error {
 		want = 1
 	}
 
-	held, taken := svc.airline.Held(), lisbonRooms-svc.hotels.Free("Lisbon")
+	held, taken := svc.airline.Held(), svc.hotels.Taken()
 	if held != want || taken != want {
 		return fmt.Errorf("%w: flights held %d, rooms taken %d, want %d of each", errLeftBehind, held, taken, want)
 	}
@@ -221,4 +222,75 @@ func Test_newServices(t *testing.T) {
 			tt.prove(t, tripSetup(t))
 		})
 	}
+}
+
+func tryTrip(faults ...sagas.Middleware) {
+	rec := sagastest.NewRecorder()
+	mw := append([]sagas.Middleware{rec.Middleware()}, faults...)
+	svc := newServices()
+
+	saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(mw...))
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	state := newTrips()[0]
+	if reportErr := report(os.Stdout, state.ID, saga.Run(context.Background(), &state)); reportErr != nil {
+		fmt.Println(reportErr)
+	}
+
+	for _, call := range rec.Calls() {
+		fmt.Println(call.Step, call.Phase, call.Attempt, call.Err)
+	}
+
+	fmt.Println("flights held:", svc.airline.Held())
+}
+
+func Example_clean() {
+	tryTrip()
+	// Output:
+	// trip-42: completed
+	// flight execute 1 <nil>
+	// hotel execute 1 <nil>
+	// charge pivot 1 <nil>
+	// email execute 1 <nil>
+	// flights held: 1
+}
+
+func Example_hotelDown() {
+	tryTrip(sagastest.Fail("hotel", errHotelDown, sagastest.OnPhase(sagas.PhaseExecute)))
+	// Output:
+	// trip-42: compensated, pending: []
+	// flight execute 1 <nil>
+	// hotel execute 1 hotel service down
+	// hotel execute 2 hotel service down
+	// hotel execute 3 hotel service down
+	// hotel compensate 1 <nil>
+	// flight compensate 1 <nil>
+	// flights held: 0
+}
+
+func Example_lostReply() {
+	tryTrip(sagastest.Unknown("flight", sagastest.OnAttempts(1)))
+	// Output:
+	// trip-42: completed
+	// flight execute 1 context deadline exceeded
+	// flight execute 2 <nil>
+	// hotel execute 1 <nil>
+	// charge pivot 1 <nil>
+	// email execute 1 <nil>
+	// flights held: 1
+}
+
+func Example_crash() {
+	tryTrip(sagastest.Panic("email"))
+	// Output:
+	// trip-42: incomplete, pending: [email]
+	// flight execute 1 <nil>
+	// hotel execute 1 <nil>
+	// charge pivot 1 <nil>
+	// email execute 1 sagas: panic: sagastest: injected panic in step "email"
+	// flights held: 1
 }

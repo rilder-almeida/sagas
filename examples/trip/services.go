@@ -126,6 +126,13 @@ func (h *hotels) Free(city string) int {
 	return h.free[city]
 }
 
+func (h *hotels) Taken() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return len(h.cities)
+}
+
 func (h *hotels) Cancel(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
