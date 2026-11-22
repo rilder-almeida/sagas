@@ -50,7 +50,7 @@ A `Setup` is a function that builds one `sagastest.Case`. A helper calls it once
 
    - The run is compensated: the library undid the steps, and every compensation succeeded.
    - The run completed: every step succeeded.
-   - The run ended `sagas.ErrIncomplete`: it passed the pivot and stopped before the end. The pivot is the step after which the saga only moves forward. A person must finish the run.
+   - The run ended `sagas.ErrIncomplete`. The pivot is the step after which the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish the run.
 
    The trip `Check` accepts one flight and one room after a charge, and no booking without a charge:
 
