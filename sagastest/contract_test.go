@@ -431,6 +431,10 @@ func declaring(setup Setup[probeState], flow sagas.Flow) Setup[probeState] {
 
 func chargeThenShip(book *ledger) *sagas.Group { return sagas.Sequence(newCharge(book), newShip(nil)) }
 
+func droppingMiddleware(setup Setup[probeState]) Setup[probeState] {
+	return func(...sagas.Middleware) Case[probeState] { return setup() }
+}
+
 type fakeTB struct {
 	testing.TB
 
@@ -481,6 +485,7 @@ func Test_Compensations(t *testing.T) {
 		name       string
 		setup      func(t *testing.T) Setup[probeState]
 		wantErrors []string
+		wantCauses []string
 		wantLogs   []string
 		wantSetups int
 	}{
@@ -502,9 +507,10 @@ func Test_Compensations(t *testing.T) {
 				return shopSetup(t, refundFailsUnapplied, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
-				`step "charge", case "never applied": Run returned sagas: compensation failed`,
-				`step "charge", case "step lands after its compensation": Run returned sagas: compensation failed`,
+				`step "charge", case "never applied": Run returned .+, want sagas\.ErrCompensated`,
+				`step "charge", case "step lands after its compensation": Run returned .+, want sagas\.ErrCompensated`,
 			},
+			wantCauses: []string{errNoCharge.Error(), errNoCharge.Error()},
 			wantSetups: 4,
 		},
 		{
@@ -609,9 +615,9 @@ func Test_Compensations(t *testing.T) {
 				}, lateCharge)
 			},
 			wantErrors: []string{
-				`step "charge", case "never applied": the step did not start, ` +
-					`Run returned sagas: compensated: sagas: step "ship" failed after 1 attempts: boom`,
+				`step "charge", case "never applied": the step did not start, Run returned`,
 			},
+			wantCauses: []string{errBoom.Error()},
 			wantSetups: 2,
 		},
 		{
@@ -650,6 +656,16 @@ func Test_Compensations(t *testing.T) {
 			wantErrors: []string{"no step with Compensate"},
 			wantSetups: 1,
 		},
+		{
+			name: "[Fail] When: Setup drops mw ; Should: report that the clean run recorded no call and run no case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return droppingMiddleware(shopSetup(t, sound, chargeThenShip, lateCharge))
+			},
+			wantErrors: []string{`the clean run recorded no call; Setup must pass mw to sagas\.WithMiddleware`},
+			wantSetups: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -670,7 +686,14 @@ func Test_Compensations(t *testing.T) {
 			require.Len(t, fake.errors, len(tt.wantErrors), fake.errors)
 
 			for i, want := range tt.wantErrors {
-				assert.Contains(t, fake.errors[i], want)
+				assert.Regexp(t, want, fake.errors[i])
+			}
+
+			require.LessOrEqual(t, len(tt.wantCauses), len(fake.errors))
+
+			for i, cause := range tt.wantCauses {
+				require.NotEmpty(t, cause)
+				assert.Contains(t, fake.errors[i], cause)
 			}
 
 			require.Len(t, fake.logs, len(tt.wantLogs), fake.logs)
@@ -878,6 +901,16 @@ func Test_Pivot(t *testing.T) {
 				return shopSetup(t, sound, chargeThenShip, noLate)
 			},
 			wantErrors: []string{"found no pivot"},
+			wantSetups: 1,
+		},
+		{
+			name: "[Fail] When: Setup drops mw ; Should: report that the clean run recorded no call and run no case",
+			setup: func(t *testing.T) Setup[probeState] {
+				t.Helper()
+
+				return droppingMiddleware(shopSetup(t, sound, pivotFlow(3, false), noLate))
+			},
+			wantErrors: []string{"the clean run recorded no call; Setup must pass mw to sagas.WithMiddleware"},
 			wantSetups: 1,
 		},
 		{

@@ -35,7 +35,8 @@ const (
 	ruleExactResend    = "exact resend"
 )
 
-// Journal proves the journal contract against any sagas.Journal. Each call of newJournal returns a fresh empty journal.
+// Journal proves the journal contract against any sagas.Journal. Each call of newJournal must return a fresh empty
+// journal.
 func Journal(tb testing.TB, newJournal func() sagas.Journal) {
 	tb.Helper()
 

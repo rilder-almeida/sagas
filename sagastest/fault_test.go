@@ -426,10 +426,12 @@ func ExampleFail() {
 
 	err = saga.Run(context.Background(), &probeState{})
 
-	fmt.Println("run:", err)
+	fmt.Println("compensated:", errors.Is(err, sagas.ErrCompensated))
+	fmt.Println("boom:", errors.Is(err, errBoom))
 	fmt.Println("charge calls:", charge.calls.Load())
 
 	// Output:
-	// run: sagas: compensated: sagas: step "charge" failed after 1 attempts: boom
+	// compensated: true
+	// boom: true
 	// charge calls: 0
 }

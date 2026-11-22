@@ -10,7 +10,8 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-// Setup builds a fresh Case over fresh fakes. It passes mw to sagas.WithMiddleware.
+// Setup builds a Case. A Setup must pass mw to sagas.WithMiddleware and return a fresh Case over fresh fakes on
+// each call.
 type Setup[S any] func(mw ...sagas.Middleware) Case[S]
 
 // Case is one saga under test: the saga, its state, a check of the fakes, the flow given to sagas.New, and Late,
@@ -98,6 +99,12 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 		return plan{}, nil, false
 	}
 
+	if len(p.steps) > 0 && len(rec.Calls()) == 0 {
+		tb.Error("sagastest: the clean run recorded no call; Setup must pass mw to sagas.WithMiddleware")
+
+		return plan{}, nil, false
+	}
+
 	named := func(step string) bool {
 		return slices.ContainsFunc(p.steps, func(s sagas.StepReport) bool { return s.Name == step })
 	}
@@ -126,7 +133,8 @@ const (
 var errTrigger = errors.New("sagastest: injected failure of the step action")
 
 // Compensations proves, for every step with Compensate, that its compensation is a no-op when the step never
-// applied, is idempotent over a landed step, and tolerates the step landing after it. Each case is a fresh Case.
+// applied, is idempotent over a landed step, and tolerates a late step. Each case is a fresh Case that must end
+// in sagas.ErrCompensated; Check decides. Late gets the step and the key the recorder saw; its error is only logged.
 func Compensations[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 
