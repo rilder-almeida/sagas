@@ -10,7 +10,8 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-// Call is one recorded call of a step method. Err is the error the call returned, nil on success.
+// Call is one recorded call of a step method. Err is the error the call returned, nil on success; for a call
+// that panicked, it wraps both sagas.ErrPanic and the *sagas.PanicError, with the message of the latter.
 type Call struct {
 	Step    string
 	Phase   sagas.Phase
