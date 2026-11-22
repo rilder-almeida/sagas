@@ -2,14 +2,24 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"syscall"
 	"testing"
 
+	"github.com/rilder-almeida/sagas"
+	"github.com/rilder-almeida/sagas/sagastest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+var (
+	errLeftBehind   = errors.New("bookings left behind")
+	errNoLateAction = errors.New("no late action for step")
 )
 
 type sink struct {
@@ -133,6 +143,82 @@ func Test_execute(t *testing.T) {
 
 			assert.Equal(t, tt.wantCode, execute(stdout.writer, stderr.writer))
 			assert.Equal(t, tt.wantStderr, stderr.written() != "")
+		})
+	}
+}
+
+func checkBookings(svc *services, got *trip) error {
+	want := 0
+	if got.ChargeID != "" {
+		want = 1
+	}
+
+	held, taken := svc.airline.Held(), lisbonRooms-svc.hotels.Free("Lisbon")
+	if held != want || taken != want {
+		return fmt.Errorf("%w: flights held %d, rooms taken %d, want %d of each", errLeftBehind, held, taken, want)
+	}
+
+	return nil
+}
+
+func bookLate(ctx context.Context, svc *services, t *trip, step, key string) error {
+	switch step {
+	case "flight":
+		_, err := svc.airline.Book(ctx, key, t.Route)
+
+		return err
+	case "hotel":
+		_, err := svc.hotels.Book(ctx, key, t.City, t.Nights)
+
+		return err
+	default:
+		return fmt.Errorf("%w: %q", errNoLateAction, step)
+	}
+}
+
+func tripSetup(t *testing.T) sagastest.Setup[trip] {
+	t.Helper()
+
+	return func(mw ...sagas.Middleware) sagastest.Case[trip] {
+		svc := newServices()
+
+		saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(mw...))
+		require.NoError(t, err)
+
+		state := &newTrips()[0]
+
+		return sagastest.Case[trip]{
+			Saga:  saga,
+			State: state,
+			Flow:  svc.flow,
+			Check: func(got *trip) error { return checkBookings(svc, got) },
+			Late:  func(ctx context.Context, step, key string) error { return bookLate(ctx, svc, state, step, key) },
+		}
+	}
+}
+
+func Test_newServices(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		prove func(testing.TB, sagastest.Setup[trip])
+	}{
+		{
+			name:  "[Success] When: Compensations runs on the trip ; Should: pass three cases per compensation",
+			prove: sagastest.Compensations[trip],
+		},
+		{
+			name:  "[Success] When: Pivot runs on the trip ; Should: charge once and repeat the email safely",
+			prove: sagastest.Pivot[trip],
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.prove(t, tripSetup(t))
 		})
 	}
 }

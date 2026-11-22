@@ -13,16 +13,19 @@ var (
 	errNoRooms   = errors.New("no rooms")
 	errOverLimit = errors.New("charge over the card limit")
 	errNoAddress = errors.New("empty address")
+	errNotFound  = errors.New("no booking for this key")
+	errCanceled  = errors.New("booking key already canceled")
 )
 
 type airline struct {
-	mu     sync.Mutex
-	byKey  map[string]string
-	active map[string]bool
+	mu       sync.Mutex
+	byKey    map[string]string
+	active   map[string]bool
+	canceled map[string]bool
 }
 
 func newAirline() *airline {
-	return &airline{byKey: map[string]string{}, active: map[string]bool{}}
+	return &airline{byKey: map[string]string{}, active: map[string]bool{}, canceled: map[string]bool{}}
 }
 
 func (a *airline) Book(ctx context.Context, key, route string) (string, error) {
@@ -32,6 +35,10 @@ func (a *airline) Book(ctx context.Context, key, route string) (string, error) {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if a.canceled[key] {
+		return "", fmt.Errorf("%w: %s", errCanceled, key)
+	}
 
 	if id, ok := a.byKey[key]; ok {
 		return id, nil
@@ -44,14 +51,14 @@ func (a *airline) Book(ctx context.Context, key, route string) (string, error) {
 	return id, nil
 }
 
-func (a *airline) Booked(id string) bool {
+func (a *airline) Held() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	return a.active[id]
+	return len(a.active)
 }
 
-func (a *airline) Cancel(ctx context.Context, id string) error {
+func (a *airline) Cancel(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -59,20 +66,28 @@ func (a *airline) Cancel(ctx context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.canceled[key] = true
+
+	id, booked := a.byKey[key]
+	if !booked {
+		return fmt.Errorf("%w: %s", errNotFound, key)
+	}
+
 	delete(a.active, id)
 
 	return nil
 }
 
 type hotels struct {
-	mu     sync.Mutex
-	free   map[string]int
-	byKey  map[string]string
-	cities map[string]string
+	mu       sync.Mutex
+	free     map[string]int
+	byKey    map[string]string
+	cities   map[string]string
+	canceled map[string]bool
 }
 
 func newHotels(free map[string]int) *hotels {
-	return &hotels{free: free, byKey: map[string]string{}, cities: map[string]string{}}
+	return &hotels{free: free, byKey: map[string]string{}, cities: map[string]string{}, canceled: map[string]bool{}}
 }
 
 func (h *hotels) Book(ctx context.Context, key, city string, nights int) (string, error) {
@@ -82,6 +97,10 @@ func (h *hotels) Book(ctx context.Context, key, city string, nights int) (string
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	if h.canceled[key] {
+		return "", fmt.Errorf("%w: %s", errCanceled, key)
+	}
 
 	if id, ok := h.byKey[key]; ok {
 		return id, nil
@@ -100,13 +119,27 @@ func (h *hotels) Book(ctx context.Context, key, city string, nights int) (string
 	return id, nil
 }
 
-func (h *hotels) Cancel(ctx context.Context, id string) error {
+func (h *hotels) Free(city string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.free[city]
+}
+
+func (h *hotels) Cancel(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	h.canceled[key] = true
+
+	id, booked := h.byKey[key]
+	if !booked {
+		return fmt.Errorf("%w: %s", errNotFound, key)
+	}
 
 	if city, ok := h.cities[id]; ok {
 		h.free[city]++

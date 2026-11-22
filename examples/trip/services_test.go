@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,12 +35,7 @@ func callEach(keys []string, call func(key string) (string, error)) ([]string, e
 func assertCalls(t *testing.T, ids []string, err error, wantDistinct int, wantErr error) {
 	t.Helper()
 
-	if wantErr != nil {
-		require.ErrorIs(t, err, wantErr)
-	} else {
-		require.NoError(t, err)
-	}
-
+	requireErr(t, err, wantErr)
 	assert.Equal(t, wantDistinct, distinct(ids))
 }
 
@@ -57,20 +51,14 @@ func distinct(ids []string) int {
 	return len(seen)
 }
 
-func roomsLeft(t *testing.T, svc *hotels, limit int) int {
+func requireErr(t *testing.T, err, want error) {
 	t.Helper()
 
-	for left := range limit + 1 {
-		if _, err := svc.Book(t.Context(), fmt.Sprintf("probe-%d", left), "Lisbon", 1); err != nil {
-			require.ErrorIs(t, err, errNoRooms)
-
-			return left
-		}
+	if want != nil {
+		require.ErrorIs(t, err, want)
+	} else {
+		require.NoError(t, err)
 	}
-
-	require.FailNow(t, "the hotel service still had rooms after the limit", "limit %d", limit)
-
-	return limit
 }
 
 func Test_hotels_Book(t *testing.T) {
@@ -127,7 +115,7 @@ func Test_hotels_Book(t *testing.T) {
 			ids, err := callEach(tt.keys, func(key string) (string, error) { return svc.Book(ctx, key, "Lisbon", 1) })
 
 			assertCalls(t, ids, err, tt.wantDistinct, tt.wantErr)
-			assert.Equal(t, tt.wantLeft, roomsLeft(t, svc, tt.free))
+			assert.Equal(t, tt.wantLeft, svc.Free("Lisbon"))
 		})
 	}
 }
@@ -293,29 +281,32 @@ func Test_hotels_Cancel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		free     int
-		cancel   func(booked string) []string
-		canceled bool
-		wantLeft int
-		wantErr  error
+		name        string
+		book        bool
+		cancels     int
+		canceled    bool
+		wantLeft    int
+		wantErr     error
+		wantLateErr error
 	}{
 		{
-			name:     "[Success] When: the booking is canceled twice ; Should: give back one room only",
-			free:     2,
-			cancel:   func(booked string) []string { return []string{booked, booked} },
-			wantLeft: 2,
+			name:        "[Success] When: a booked key is canceled twice ; Should: free one room and refuse the key",
+			book:        true,
+			cancels:     2,
+			wantLeft:    2,
+			wantLateErr: errCanceled,
 		},
 		{
-			name:     "[Success] When: an unknown ID is canceled ; Should: give back no room",
-			free:     2,
-			cancel:   func(string) []string { return []string{"HT-none"} },
-			wantLeft: 1,
+			name:        "[Fail] When: an unknown key is canceled ; Should: return errNotFound and refuse the key",
+			cancels:     1,
+			wantLeft:    2,
+			wantErr:     errNotFound,
+			wantLateErr: errCanceled,
 		},
 		{
-			name:     "[Fail] When: the context is done ; Should: return its error and keep the room taken",
-			free:     2,
-			cancel:   func(booked string) []string { return []string{booked} },
+			name:     "[Fail] When: the context is done ; Should: return its error and keep the room",
+			book:     true,
+			cancels:  1,
 			canceled: true,
 			wantLeft: 1,
 			wantErr:  context.Canceled,
@@ -326,27 +317,29 @@ func Test_hotels_Cancel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := newHotels(map[string]int{"Lisbon": tt.free})
+			svc := newHotels(map[string]int{"Lisbon": 2})
 
-			booked, err := svc.Book(t.Context(), "k1", "Lisbon", 1)
-			require.NoError(t, err)
+			if tt.book {
+				_, err := svc.Book(t.Context(), "k1", "Lisbon", 1)
+				require.NoError(t, err)
+			}
 
 			ctx := t.Context()
 			if tt.canceled {
 				ctx = canceledContext(t)
 			}
 
-			for _, id := range tt.cancel(booked) {
-				err = svc.Cancel(ctx, id)
+			var err error
+			for range tt.cancels {
+				err = svc.Cancel(ctx, "k1")
 			}
 
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-			} else {
-				require.NoError(t, err)
-			}
+			requireErr(t, err, tt.wantErr)
 
-			assert.Equal(t, tt.wantLeft, roomsLeft(t, svc, tt.free))
+			_, lateErr := svc.Book(t.Context(), "k1", "Lisbon", 1)
+
+			requireErr(t, lateErr, tt.wantLateErr)
+			assert.Equal(t, tt.wantLeft, svc.Free("Lisbon"))
 		})
 	}
 }
@@ -355,20 +348,33 @@ func Test_airline_Cancel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		cancels    int
-		canceled   bool
-		wantBooked bool
-		wantErr    error
+		name        string
+		book        bool
+		cancels     int
+		canceled    bool
+		wantHeld    int
+		wantErr     error
+		wantLateErr error
 	}{
-		{name: "[Success] When: the flight is not canceled ; Should: stay booked", wantBooked: true},
-		{name: "[Success] When: the flight is canceled twice ; Should: end not booked", cancels: 2},
 		{
-			name:       "[Fail] When: the context is done ; Should: return its error and keep the flight",
-			cancels:    1,
-			canceled:   true,
-			wantBooked: true,
-			wantErr:    context.Canceled,
+			name:        "[Success] When: a booked key is canceled twice ; Should: hold no flight and refuse the key",
+			book:        true,
+			cancels:     2,
+			wantLateErr: errCanceled,
+		},
+		{
+			name:        "[Fail] When: an unknown key is canceled ; Should: return errNotFound and refuse the key",
+			cancels:     1,
+			wantErr:     errNotFound,
+			wantLateErr: errCanceled,
+		},
+		{
+			name:     "[Fail] When: the context is done ; Should: return its error and keep the flight",
+			book:     true,
+			cancels:  1,
+			canceled: true,
+			wantHeld: 1,
+			wantErr:  context.Canceled,
 		},
 	}
 
@@ -378,25 +384,27 @@ func Test_airline_Cancel(t *testing.T) {
 
 			svc := newAirline()
 
-			id, err := svc.Book(t.Context(), "k1", "GRU-LIS")
-			require.NoError(t, err)
+			if tt.book {
+				_, err := svc.Book(t.Context(), "k1", "GRU-LIS")
+				require.NoError(t, err)
+			}
 
 			ctx := t.Context()
 			if tt.canceled {
 				ctx = canceledContext(t)
 			}
 
+			var err error
 			for range tt.cancels {
-				err = svc.Cancel(ctx, id)
+				err = svc.Cancel(ctx, "k1")
 			}
 
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-			} else {
-				require.NoError(t, err)
-			}
+			requireErr(t, err, tt.wantErr)
 
-			assert.Equal(t, tt.wantBooked, svc.Booked(id))
+			_, lateErr := svc.Book(t.Context(), "k1", "GRU-LIS")
+
+			requireErr(t, lateErr, tt.wantLateErr)
+			assert.Equal(t, tt.wantHeld, svc.Held())
 		})
 	}
 }

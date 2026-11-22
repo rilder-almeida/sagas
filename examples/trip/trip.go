@@ -51,8 +51,13 @@ func (f *flight) Execute(ctx context.Context, t *trip) error {
 	return nil
 }
 
-func (f *flight) Compensate(ctx context.Context, t *trip) error {
-	return f.airline.Cancel(ctx, t.FlightID)
+func (f *flight) Compensate(ctx context.Context, _ *trip) error {
+	err := f.airline.Cancel(ctx, sagas.IdempotencyKey(ctx))
+	if errors.Is(err, errNotFound) {
+		return nil
+	}
+
+	return err
 }
 
 type hotel struct {
@@ -76,8 +81,13 @@ func (h *hotel) Execute(ctx context.Context, t *trip) error {
 	return nil
 }
 
-func (h *hotel) Compensate(ctx context.Context, t *trip) error {
-	return h.hotels.Cancel(ctx, t.HotelID)
+func (h *hotel) Compensate(ctx context.Context, _ *trip) error {
+	err := h.hotels.Cancel(ctx, sagas.IdempotencyKey(ctx))
+	if errors.Is(err, errNotFound) {
+		return nil
+	}
+
+	return err
 }
 
 type charge struct {
@@ -114,20 +124,34 @@ func (e *email) Execute(ctx context.Context, t *trip) error {
 	return nil
 }
 
-func run(w io.Writer) error {
-	flow := sagas.Sequence(
-		&flight{airline: newAirline()},
-		&hotel{hotels: newHotels(map[string]int{"Lisbon": lisbonRooms, "Porto": 0})},
-		&charge{payments: newPayments()},
-		&email{mailer: newMailer()},
-	)
+type services struct {
+	airline  *airline
+	hotels   *hotels
+	payments *payments
+	mailer   *mailer
+	flow     sagas.Flow
+}
 
-	saga, err := sagas.New[trip]("trip", flow)
-	if err != nil {
-		return err
+func newServices() *services {
+	s := &services{
+		airline:  newAirline(),
+		hotels:   newHotels(map[string]int{"Lisbon": lisbonRooms, "Porto": 0}),
+		payments: newPayments(),
+		mailer:   newMailer(),
 	}
 
-	trips := []trip{
+	s.flow = sagas.Sequence(
+		&flight{airline: s.airline},
+		&hotel{hotels: s.hotels},
+		&charge{payments: s.payments},
+		&email{mailer: s.mailer},
+	)
+
+	return s
+}
+
+func newTrips() []trip {
+	return []trip{
 		{
 			ID:     "trip-42",
 			Route:  "GRU-LIS",
@@ -145,6 +169,15 @@ func run(w io.Writer) error {
 			Email:  "bia@example.com",
 		},
 	}
+}
+
+func run(w io.Writer) error {
+	saga, err := sagas.New[trip]("trip", newServices().flow)
+	if err != nil {
+		return err
+	}
+
+	trips := newTrips()
 
 	for i := range trips {
 		if reportErr := report(w, trips[i].ID, saga.Run(context.Background(), &trips[i])); reportErr != nil {
