@@ -398,7 +398,7 @@ func shopSetup(t *testing.T, d defect, flow func(*ledger) *sagas.Group, late fun
 }
 
 func newShop(
-	fail func(error), d defect, flow func(*ledger) *sagas.Group, late func(*ledger) lateFunc,
+	abort func(error), d defect, flow func(*ledger) *sagas.Group, late func(*ledger) lateFunc,
 ) Setup[probeState] {
 	return func(mw ...sagas.Middleware) Case[probeState] {
 		book := newLedger(d)
@@ -406,9 +406,8 @@ func newShop(
 
 		saga, err := sagas.New[probeState]("shop", f, sagas.WithMiddleware(mw...))
 		if err != nil {
-			fail(err)
-
-			return Case[probeState]{}
+			abort(err)
+			panic(err)
 		}
 
 		return Case[probeState]{
