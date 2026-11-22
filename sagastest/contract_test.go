@@ -889,6 +889,7 @@ func Test_Pivot(t *testing.T) {
 			require.LessOrEqual(t, len(tt.wantCauses), len(fake.errors))
 
 			for i, cause := range tt.wantCauses {
+				require.NotEmpty(t, cause)
 				assert.Contains(t, fake.errors[i], cause)
 			}
 
