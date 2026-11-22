@@ -1,16 +1,16 @@
 # Middleware recipes and run settings
 
-This page answers seven questions about a running saga. Each answer is code that you copy and adapt. The code uses only the Go standard library and the `sagas` package. The [glossary](../glossary.md) defines the terms of the library. The [guarantees](../explanation/guarantees.md) page explains why the library works this way.
+This page answers seven questions about a running saga. A saga is a business operation split into steps. Each answer is code that you copy and adapt. The code uses only the Go standard library and the `sagas` package. The [glossary](../glossary.md) defines the terms of the library. The [guarantees](../explanation/guarantees.md) page explains why the library works this way.
 
 The examples use these names from your own code:
 
-- `order` is the type of your saga state.
-- `reserve` and `ship` are two of your step types. Each type embeds `sagas.Step`, and `reserve` has a `Compensate` method.
-- `flow` is the `Flow` that you build with `sagas.Sequence` or `sagas.Parallel`.
+- `order` is the type of your saga state. The state is the value that a run reads and writes.
+- `reserve` and `ship` are two of your step types. A step is a named unit of work. Each type embeds `sagas.Step`. `reserve` also has a compensation: a `Compensate` method that undoes the effect of the step.
+- `flow` is the `Flow` that you build with `sagas.Sequence` or `sagas.Parallel`. A flow is the set of steps in their order.
 
 ## Before you start: how middleware runs
 
-Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. The action is the method that a step runs forward. The compensation is the method that undoes the effect of the step. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. An execution is one run of the saga over one state value, and the execution ID names it. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
+Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. The action is the method that a step runs forward. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. An execution is one run of the saga over one state value, and the execution ID names it. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
 
 Your `Wrap` must obey three rules:
 
@@ -322,7 +322,7 @@ When your context ends, the library keeps working for a grace period, five minut
    }
    ```
 
-   A nil error means that the run completed. A deadline that passed after the last step started does not change that.
+   A nil error means that the run completed: every step that ran succeeded. A deadline that passed after the last step started does not change that.
 
 The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. The journal is the record of what an execution did. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
 

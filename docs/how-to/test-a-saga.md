@@ -1,16 +1,16 @@
 # How to test a saga
 
-This page answers six questions about tests for your own saga. The answers use the `sagastest` package, which turns the rules of the library into test helpers. The [glossary](../glossary.md) defines the terms of the library. The section ["The `sagastest` contract"](../explanation/guarantees.md#the-sagastest-contract) of the guarantees page explains why each helper exists.
+This page answers six questions about tests for your own saga. A saga is a business operation split into steps. The answers use the `sagastest` package, which turns the rules of the library into test helpers. The [glossary](../glossary.md) defines the terms of the library. The section ["The `sagastest` contract"](../explanation/guarantees.md#the-sagastest-contract) of the guarantees page explains why each helper exists.
 
 The examples test the trip saga of the [tutorial](../tutorial/book-a-trip.md). Its code is in [`examples/trip`](../../examples/trip). In your tests, replace these names with your own:
 
-- `trip` is the type of the state.
+- `trip` is the type of the state. The state is the value that a run reads and writes.
 - `services` holds the fakes and the flow, and `newServices` makes a fresh one. The flow is the set of steps in their order, which you build with `sagas.Sequence` or `sagas.Parallel`. A fake is a test double of an outside service that keeps its data in memory.
-- `newTrips()[0]` is a state value for a run that completes.
+- `newTrips()[0]` is a state value for a run in which every step succeeds.
 
 ## How do I write a Setup?
 
-A `Setup` is a function that builds one `sagastest.Case`. A helper calls it once for each case that it runs, so each case gets a fresh saga and fresh fakes. The helper passes its own middleware in the argument `mw`. Middleware is a value that wraps each call of a step. The helpers use it to record the calls and to inject faults. A fault is an error, a lost reply or a panic that a helper forces on one step.
+A `Setup` is a function that builds one `sagastest.Case`. A case is one test that a helper runs on the saga. A helper calls the `Setup` once for each case that it runs, so each case gets a fresh saga and fresh fakes. The helper passes its own middleware in the argument `mw`. Middleware is a value that wraps each call of a step. The helpers use it to record the calls and to inject faults. A fault is an error, a lost reply or a panic that a helper forces on one step.
 
 1. Write a function that returns a `sagastest.Setup[S]`, with your state type as `S`.
 2. In the `Setup`, make fresh fakes and a fresh flow on each call.
@@ -44,13 +44,13 @@ A `Setup` is a function that builds one `sagastest.Case`. A helper calls it once
    - `State` is a pointer to the state of the run.
    - `Flow` is the same flow that you gave to `sagas.New`. The helpers read the steps from it.
    - `Check` looks at the fakes after the run and returns an error for an effect that stays behind.
-   - `Late` sends the action of a step to the fakes again, with the idempotency key that the helper passes. The action is the method that a step runs forward. An execution is one run of the saga over one state value. The idempotency key is unique for each execution and step, and it is the same on every attempt.
+   - `Late` sends the action of a step to the fakes again, with the idempotency key that the helper passes. The action is the method that a step runs forward. An execution is one run of the saga over one state value. The idempotency key is unique for each execution and step. If the library calls the step again, the key stays the same.
 
 5. Write `Check` so that it accepts every end that a helper makes. A helper ends a case in one of three ways:
 
-   - The run is compensated: the library undid the steps, and every compensation succeeded.
+   - The run is compensated: the library undid the steps, and every compensation succeeded. A compensation is the method `Compensate` that undoes a step.
    - The run completed: every step succeeded.
-   - The run ended `sagas.ErrIncomplete`. The pivot is the step after which the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish the run.
+   - The run ended `sagas.ErrIncomplete`. The pivot is the step after which the saga only moves forward. The run passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. Unknown means that nobody knows whether the pivot applied. A person must finish the run.
 
    The trip `Check` accepts one flight and one room after a charge, and no booking without a charge:
 
@@ -100,7 +100,7 @@ A `Setup` is a function that builds one `sagastest.Case`. A helper calls it once
 
 ## How do I prove the compensations?
 
-A compensation is the method `Compensate` that undoes a step. It must be correct in three cases. `sagastest.Compensations` runs each case for each step that has a compensation, and each case must end compensated.
+Each compensation must be correct in three cases. `sagastest.Compensations` runs each case for each step that has a compensation, and each case must end compensated.
 
 1. Call `sagastest.Compensations` in a test:
 
@@ -134,10 +134,10 @@ The pivot is the step after which the saga only moves forward. The forward-only 
 
 2. Run the test with `go test`.
 
-`Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
+An attempt is one call of `Execute`, `Pivot` or `Compensate`. `Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
 
 - If the pivot has two or more attempts, the run must complete. The final state of the run must equal the state of a clean run, by `reflect.DeepEqual`. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field.
-- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. Only the pivot is pending, and no compensation runs. A pending step is a step that a person still must finish.
+- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. A pending step is a step that a person still must finish. Only the pivot is pending, and no compensation runs.
 
 `Pivot` then runs each forward-only step twice in one run, each step in a fresh case. Each such run must complete. So each step must be idempotent: a second call has the same effect as the first.
 
