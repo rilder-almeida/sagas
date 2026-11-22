@@ -12,11 +12,13 @@ The examples use these names from your own code:
 
 Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
 
-`Wrap` follows three rules:
+Your `Wrap` must obey three rules:
 
-1. It runs `call` with `ctx` or with a context made from `ctx`.
-2. It returns only after every `call` that it started returned.
-3. It never runs `call` twice at the same time.
+1. Run `call` with `ctx` or with a context made from `ctx`.
+2. Return only after every `call` that you started returned.
+3. Never run `call` twice at the same time.
+
+If `Wrap` returns while `call` still runs, the attempt ends with `sagas.ErrCallUnfinished`. If `Wrap` starts `call` while `call` runs, the attempt ends with `sagas.ErrCallConcurrent`.
 
 There are two places for middleware:
 
@@ -60,7 +62,7 @@ A semaphore is a counter of free slots. A buffered channel is a semaphore. Each 
 
 If you pass the same `limit` to several sagas, they share its 10 slots.
 
-The time that a call waits for a slot counts in the `AttemptTimeout` of an action. If the context ends during the wait, the attempt returns the context error. The library then counts the outcome as unknown. Before the pivot, it compensates the step, although the step never ran. The compensation must accept a step that never applied.
+The time that a call waits for a slot counts in the `AttemptTimeout` of an action. `AttemptTimeout` is a field of `sagas.Step` that bounds each attempt of an action. If the context ends during the wait, the attempt returns the context error, and the outcome is unknown. The pivot is the step after which the saga only moves forward. If the run then undoes the steps before the pivot, it also compensates this step, although the step never ran. The compensation must accept a step that never applied.
 
 ## How do I limit how fast calls start?
 
@@ -104,9 +106,9 @@ A rate limit keeps a fixed interval between the starts of two calls.
 
 The wait follows the same rules as the wait of the semaphore above.
 
-## How do I stop calling a service that keeps failing?
+## How do I stop calling a service that keeps failing or timing out?
 
-A circuit breaker counts the failures of a service. After a limit, it opens: for a cooldown period, it rejects each call and does not run it. A breaker belongs to one service, so you put it on the steps that call that service. The `Wrap` method of a step is middleware for that one step.
+A circuit breaker counts the attempts of a service that end in a failure or an unknown outcome. A timeout and a cancel by the caller are unknown outcomes, so they count too. Each attempt counts, so one run can add several. After a limit, the breaker opens: for a cooldown period, it rejects each call and does not run it. A breaker belongs to one service, so you put it on the steps that call that service. The `Wrap` method of a step is middleware for that one step.
 
 1. Add this type to your code:
 
@@ -169,14 +171,14 @@ A circuit breaker counts the failures of a service. After a limit, it opens: for
    }
    ```
 
-3. Make one breaker for each service, and give it to each step that calls that service. This breaker opens after 5 failures and stays open for 30 seconds:
+3. Make one breaker for each service, and give it to each step that calls that service. This breaker opens after 5 such attempts in a row and stays open for 30 seconds:
 
    ```go
    carrier := &breaker{limit: 5, cooldown: 30 * time.Second}
    step := &ship{breaker: carrier}
    ```
 
-The breaker lets every compensation through, because a rejected compensation leaves the undo for a person. A rejected call is a failure, so the retry policy of the step decides whether to try again.
+The breaker lets every compensation through, because a rejected compensation leaves the undo for a person. A rejected call is a failure, so the retry policy of the step decides whether to try again. The retry policy is the `Retry` field of the step. The [retry section](#how-do-i-use-one-retry-setting-on-several-steps) below shows it.
 
 ## How do I stop the retries on an error that cannot heal?
 
@@ -254,19 +256,19 @@ A retry policy sets how many attempts a call gets and how long to wait between t
    send.Retry = retry5
    ```
 
-3. If many steps share more than one setting, write a function that builds the `sagas.Step` value:
+If many steps share more than one setting, you can write a function that builds the `sagas.Step` value instead of step 2:
 
-   ```go
-   func reliable(name string) sagas.Step {
-   	return sagas.Step{Name: name, Retry: sagas.RetryPolicy{Attempts: 5}}
-   }
-   ```
+```go
+func reliable(name string) sagas.Step {
+	return sagas.Step{Name: name, Retry: sagas.RetryPolicy{Attempts: 5}}
+}
+```
 
-   Then use the function for each step:
+Then use the function for each step:
 
-   ```go
-   hold := &reserve{Step: reliable("reserve")}
-   ```
+```go
+hold := &reserve{Step: reliable("reserve")}
+```
 
 A compensation can still fail after its last attempt. The `CompensationFailure` field of the step then decides what happens to the other compensations. Each policy ends the run with `sagas.ErrCompensationFailed`.
 
@@ -295,6 +297,8 @@ if errors.As(err, &runErr) && errors.Is(err, sagas.ErrCompensationFailed) {
 
 `Run` has no clock of its own while the context of the caller is alive. To bound a run, set a deadline on that context.
 
+When your context ends, the library keeps working for a grace period, five minutes by default. It goes on with the compensations, a pivot that started and the steps after the pivot. It starts no new step before the pivot and no new pivot.
+
 1. Make a context with a deadline, and pass it to `Run`:
 
    ```go
@@ -320,6 +324,6 @@ if errors.As(err, &runErr) && errors.Is(err, sagas.ErrCompensationFailed) {
 
    A nil error means that the run completed. A deadline that passed after the last step started does not change that.
 
-The grace period starts at the end of your context, never earlier. During the grace period, the library starts no new step before the pivot and no new pivot. It finishes the work that cannot stop half way: the compensations, a pivot that started, and the steps after the pivot. At the end of the grace period, the library stops that work and marks the error with `sagas.ErrGraceEnded`. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period.
+The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
 
 Do not test the error of a step for `context.Canceled` to learn whether you canceled. A step can return that error for its own reasons.

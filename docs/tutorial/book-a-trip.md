@@ -15,7 +15,7 @@ The trip saga has four steps, in this order:
 3. `charge` charges the card. You cannot take a charge back, so this step is the pivot. The pivot is the point of no return. After the pivot succeeds, the saga only moves forward.
 4. `email` sends a confirmation. It comes after the pivot, so it has no compensation.
 
-The finished program is in the folder [`examples/trip`](../../examples/trip) of the repository. Each code block on this page comes from it.
+The finished program is in the folder [`examples/trip`](../../examples/trip) of the repository. The code of Steps 2 to 7 comes from it. Two parts are your own: the tests `TestCompensations` and `TestPivot` of Step 7, and the change of Step 8. The test `Test_newServices` of the repository runs the same two helpers.
 
 ## Step 1: make the module
 
@@ -37,7 +37,7 @@ The file holds four simulated services: `airline`, `hotels`, `payments` and `mai
 - `airline.Cancel` and `hotels.Cancel` cancel the booking of a key. For a key that never booked, they return `errNotFound`.
 - After a cancel, a booking call with the same key returns `errCanceled`.
 
-`airline.Held` returns the number of booked flights. `hotels.Free` returns the number of free rooms in a city. The tests at the end of this tutorial use both.
+`airline.Held` returns the number of booked flights. `hotels.Taken` returns the number of booked rooms. The tests at the end of this tutorial use both.
 
 ## Step 2: write the state
 
@@ -254,7 +254,7 @@ Lisbon has two free rooms. Porto has none, so the second trip cannot get a hotel
 
 ## Step 5: run the saga
 
-`sagas.New` takes the flow, rejects a flow with an error in it, and returns the saga. `Run` runs one execution. Add the code that runs both trips and prints how each run ended:
+`sagas.New` takes the flow and returns the saga. A flow must obey some rules, for example at most one pivot. If the flow breaks a rule, `sagas.New` returns an error. `Run` runs one execution. Add the code that runs both trips and prints how each run ended:
 
 ```go
 func run(w io.Writer) error {
@@ -337,7 +337,7 @@ The first trip completed. The second trip went to Porto, where the hotel step fa
 
 The `sagastest` package holds test helpers. Some of them inject a fault: they make one step fail, lose its reply or crash. Each fault is middleware. Middleware is a value that wraps each call of a step, and you give it to `sagas.New` with `sagas.WithMiddleware`.
 
-Make a file `faults_test.go`. The function `tryTrip` runs the first trip with the faults that you pass. A `Recorder` from `sagastest` records each call. The function prints how the run ended, each call, and the number of booked flights:
+Make a file `trip_test.go`. The function `tryTrip` runs the first trip with the faults that you pass. A `Recorder` from `sagastest` records each call. The function prints how the run ended, each call, and the number of booked flights:
 
 ```go
 package main
@@ -352,6 +352,8 @@ import (
 	"github.com/rilder-almeida/sagas/sagastest"
 )
 
+var errHotelDown = errors.New("hotel service down")
+
 func tryTrip(faults ...sagas.Middleware) {
 	rec := sagastest.NewRecorder()
 	mw := append([]sagas.Middleware{rec.Middleware()}, faults...)
@@ -365,8 +367,8 @@ func tryTrip(faults ...sagas.Middleware) {
 	}
 
 	state := newTrips()[0]
-	if err := report(os.Stdout, state.ID, saga.Run(context.Background(), &state)); err != nil {
-		fmt.Println(err)
+	if reportErr := report(os.Stdout, state.ID, saga.Run(context.Background(), &state)); reportErr != nil {
+		fmt.Println(reportErr)
 	}
 
 	for _, call := range rec.Calls() {
@@ -400,11 +402,11 @@ The output starts with `ok`. This clean run injects no fault, so it is the passi
 
 ### Make the hotel fail
 
-`sagastest.Fail` returns an error from a step without calling the step. `sagastest.OnPhase(sagas.PhaseExecute)` limits the fault to the action, so the compensation of the hotel still runs. Add this example to `faults_test.go`:
+`sagastest.Fail` returns an error from a step without calling the step. `sagastest.OnPhase(sagas.PhaseExecute)` limits the fault to the action, so the compensation of the hotel still runs. Add this example to `trip_test.go`:
 
 ```go
 func Example_hotelDown() {
-	tryTrip(sagastest.Fail("hotel", errors.New("hotel service down"), sagastest.OnPhase(sagas.PhaseExecute)))
+	tryTrip(sagastest.Fail("hotel", errHotelDown, sagastest.OnPhase(sagas.PhaseExecute)))
 	// Output:
 	// trip-42: compensated, pending: []
 	// flight execute 1 <nil>
@@ -468,7 +470,7 @@ Both helpers take a `Setup`. A `Setup` is a function that builds a fresh saga an
 
 - `Saga` is the saga. It must get the middleware `mw` of the helper through `sagas.WithMiddleware`.
 - `State` is the state of the run.
-- `Flow` is the flow that the `Setup` gave to `sagas.New`.
+- `Flow` is the flow that the `Setup` gave to `sagas.New`. The helper reads the steps from it.
 - `Check` looks at the services after the run. If a booking stays behind, it returns an error.
 - `Late` books a step again with the key that the helper passes. The helper uses it for the case where the action lands after its compensation.
 
@@ -478,22 +480,11 @@ Both helpers take a `Setup`. A `Setup` is a function that builds a fresh saga an
    go get github.com/stretchr/testify
    ```
 
-2. Make a file `trip_test.go` with this code:
+2. Add `"testing"` and `"github.com/stretchr/testify/require"` to the imports of `trip_test.go`.
+
+3. Add this code to `trip_test.go`:
 
    ```go
-   package main
-
-   import (
-   	"context"
-   	"errors"
-   	"fmt"
-   	"testing"
-
-   	"github.com/rilder-almeida/sagas"
-   	"github.com/rilder-almeida/sagas/sagastest"
-   	"github.com/stretchr/testify/require"
-   )
-
    var (
    	errLeftBehind   = errors.New("bookings left behind")
    	errNoLateAction = errors.New("no late action for step")
@@ -505,7 +496,7 @@ Both helpers take a `Setup`. A `Setup` is a function that builds a fresh saga an
    		want = 1
    	}
 
-   	held, taken := svc.airline.Held(), lisbonRooms-svc.hotels.Free("Lisbon")
+   	held, taken := svc.airline.Held(), svc.hotels.Taken()
    	if held != want || taken != want {
    		return fmt.Errorf("%w: flights held %d, rooms taken %d, want %d of each", errLeftBehind, held, taken, want)
    	}
@@ -558,7 +549,7 @@ Both helpers take a `Setup`. A `Setup` is a function that builds a fresh saga an
    }
    ```
 
-3. Run the tests:
+4. Run the tests:
 
    ```sh
    go test .

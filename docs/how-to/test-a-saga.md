@@ -55,7 +55,7 @@ A `Setup` is a function that builds one `sagastest.Case`. A helper calls it once
    		want = 1
    	}
 
-   	held, taken := svc.airline.Held(), lisbonRooms-svc.hotels.Free("Lisbon")
+   	held, taken := svc.airline.Held(), svc.hotels.Taken()
    	if held != want || taken != want {
    		return fmt.Errorf("%w: flights held %d, rooms taken %d, want %d of each", errLeftBehind, held, taken, want)
    	}
@@ -130,7 +130,7 @@ The pivot is the step after which the saga only moves forward. The forward-only 
 
 `Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
 
-- If the pivot has two or more attempts, the run must complete. Its final state must equal the state of a clean run, by `reflect.DeepEqual`.
+- If the pivot has two or more attempts, the run must complete. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field. Its final state must equal the state of a clean run, by `reflect.DeepEqual`.
 - If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. Only the pivot is pending, and no compensation runs.
 
 `Pivot` then runs each forward-only step twice in one run, each step in a fresh case. Each such run must complete. So each step must be idempotent: a second call has the same effect as the first.
@@ -157,7 +157,7 @@ Each message of a helper starts with `sagastest:`. Most messages name the step a
 |---|---|
 | `the clean run failed` | The run with no fault did not complete. Fix the saga or the `Setup` before anything else. |
 | `Case.Flow is not a valid flow` | `Flow` does not hold a flow that `sagas.New` accepts. Set it to the flow that you gave to `sagas.New`. |
-| `the clean run recorded no call` | The `Setup` did not pass `mw` to `sagas.WithMiddleware`, or the `Enabled` method of every step returned false for the state. |
+| `the clean run recorded no call` | The `Setup` did not pass `mw` to `sagas.WithMiddleware`, or the optional `Enabled` method of every step returned false for the state. A step whose `Enabled` method returns false does not run. |
 | `ran in the clean run, but Case.Flow does not name it` | `Flow` is not the flow of the saga. |
 | `found no step with Compensate` or `found no pivot` | The flow has nothing for this helper to test. |
 | `the step did not start` | An earlier step failed, or `Enabled` returned false, so the helper cannot test this step. |
@@ -168,7 +168,7 @@ Each message of a helper starts with `sagastest:`. Most messages name the step a
 | `the final state ... differs from the clean run` | A repeat of the pivot changed the state. Make the pivot idempotent with the idempotency key. |
 | `want sagas.ErrIncomplete` | The pivot has one attempt, and the run did not end incomplete. |
 | `pending steps are ..., want only the pivot` | After an unknown pivot, other steps stayed pending. |
-| `a compensation ran after the unknown outcome` | A compensation ran around a pivot whose outcome was unknown. |
+| `a compensation ran after the unknown outcome` | A compensation ran after the outcome of the pivot was unknown. The library must compensate nothing then. |
 | `case "step repeated": Run returned ..., want nil` | A forward-only step fails on its second run. Make it idempotent. |
 | `journal rule` | Your journal breaks the named rule. The [journal section](../explanation/guarantees.md#the-journal) of the guarantees page describes the rules. |
 
