@@ -20,7 +20,7 @@ const (
 	sound                defect = ""
 	refundFailsUnapplied defect = "refund fails unapplied"
 	refundTwice          defect = "refund twice"
-	chargeIgnoresRefund  defect = "no tombstone"
+	chargeIgnoresRefund  defect = "charge ignores refund"
 	refundLandedTwice    defect = "refund landed twice"
 	shipsTwice           defect = "ships twice"
 	pivotsTwice          defect = "pivots twice"
