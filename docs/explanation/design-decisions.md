@@ -58,9 +58,9 @@ A saga name, a step name and an execution ID hold only ASCII letters, digits, `-
 
 ### `Inspect` reports a flow the way `New` does
 
-`Inspect` runs the same checks as `New` and returns one report for each step. The report holds the name, the settings, one flag for each step method and the resolved dependencies. `New` calls `Inspect`, so both return the same errors. `New` rejects a step type that gets one method from two embedded fields, at every depth, as the Go selector rules treat it. Without that rule, a method silently disappears from the step. The design rejects an exported `Compensator` interface, because it covers one method, and a function that checks the whole flow was the request.
+`Inspect` runs the same checks as `New` and returns one report for each step. The report holds the name, the settings, one flag for each step method and the resolved dependencies. `New` calls `Inspect`, so both return the same errors. `New` rejects a step type that gets one method from two embedded fields, at every depth, as the Go selector rules treat it. Without that rule, a method silently disappears from the step. The design rejects an exported `Compensator` interface, because it covers one method, and users need one function that checks the whole flow.
 
-### A conditional step is skipped, not started
+### A conditional step does not start
 
 `Enabled(*S) bool` runs once, after the dependencies of the step finish. The library records the result and never asks again. A skipped step never started, so the library never compensates it, and the steps after it still run. The rejected options were a special `ErrSkip` error and a plain `return nil` inside the action. The first starts the step. The second compensates a step for nothing and reports a false success. The goroutine of the step runs `Enabled`, so a slow `Enabled` cannot stall the other steps.
 
@@ -68,7 +68,7 @@ A saga name, a step name and an execution ID hold only ASCII letters, digits, `-
 
 ### Every started step gets its compensation
 
-A step that succeeded, failed, timed out or was canceled gets a compensation. A skipped step does not. A call that timed out can still land outside later. The rejected design compensates only completed steps. It never refunds a charge that the bank accepts late.
+A step that succeeded, failed, timed out or stopped on a cancel gets a compensation. A skipped step does not. A call that timed out can still land outside later. The rejected design compensates only completed steps. It never refunds a charge that the bank accepts late.
 
 ### Compensation follows the reversed graph
 
@@ -78,7 +78,7 @@ A compensation starts after the compensations of the started steps that depended
 
 On the first failure, the library cancels the running steps, starts nothing new and waits for every step goroutine. Only then do compensations start. The design rejects two alternatives. Letting siblings finish creates real effects that the library then undoes. Compensating each branch as it resolves runs compensations while forward steps still write the state, and the journal mixes the two phases. A step that ignores its context blocks `Run`, and the contract says so.
 
-### The failure policy is set on the step
+### The step sets its failure policy
 
 `CompensationFailure` on a step picks the policy for a failed compensation. `CompensationBlock` is the default. It stops every later compensation along the reversed graph, across steps that have no compensation, and lets independent branches go on. `CompensationHalt` stops all remaining compensations. `CompensationContinue` stops nothing. There is no saga-wide default, because one fixed behavior cannot fit every architecture, and the author of each step knows its risk. A policy on a step without `Compensate` is an error. `CompensationContinue` is an explicit departure from the classic model, kept for systems where undoing the rest is worth more than stopping.
 
@@ -94,15 +94,15 @@ The library decides a compensation after every compensation that it waits on end
 
 ### One kind of step
 
-The library has no separate "retriable" step kind. The pivot is a step with `Pivot`, and the forward-only zone carries its rules. A retriable kind adds a term for a position that the graph already shows.
+The library has no separate "retriable" step kind. The 1992 paper uses that name for a step that must succeed through retries. The pivot is a step with `Pivot`, and the forward-only zone carries its rules. A retriable kind adds a term for a position that the graph already shows.
 
 ### The pivot retries on a context that a cancel does not stop
 
 The whole pivot call runs in one retry loop that the caller's cancel does not stop. The rejected design used two loops, one on the caller's context and one detached. It breaks the single retry loop and needs a rule to count attempts across them. A pivot that panics is not retried. A panic is a code defect, and a retry repeats it.
 
-### A pivot error that the journal cannot record
+### A pivot failure that the journal cannot record
 
-A pivot that returned an error counts as failed. The library knows that the pivot did not apply, although the journal can fail to record the error. It then compensates the compensable zone. Keeping the pivot unknown stops the run half way for no reason. A pivot that succeeded but whose commit failed counts as unknown, because it did apply and the saga cannot undo it.
+A pivot that failed counts as failed. The library knows that the pivot did not apply, although the journal can fail to record the failure. It then compensates the compensable zone. Keeping the pivot unknown stops the run half way for no reason. A pivot that succeeded but whose commit failed counts as unknown, because it did apply and the saga cannot undo it.
 
 ## Retries and time
 
@@ -116,7 +116,7 @@ A retry loop stops at the first of four events. The attempts run out. An error c
 
 ### The attempt timeout covers the action only
 
-`AttemptTimeout` bounds each attempt of the action. A compensation attempt has no timeout of its own. Recovery has one bound, `RecoveryTimeout`. The design rejects a second option for the same idea. Middleware can still cut each compensation attempt, because it reads the phase.
+`AttemptTimeout` bounds each attempt of the action. A compensation attempt has no timeout of its own. The grace period, which `RecoveryTimeout` sets, bounds every compensation once the caller's context ends. The design rejects a second option for the same idea. Middleware can still cut each compensation attempt, because it reads the phase.
 
 ### One grace period for recovery
 
@@ -124,7 +124,7 @@ While the caller's context lives, the saga runs. After the caller gives up, reco
 
 ### The grace end has a name
 
-A grace timer ends the recovery context with `ErrGraceEnded`, so a caller can test for it with `errors.Is`. A plain cancel hides why recovery stopped. The library joins `ErrGraceEnded` to the error of each compensation and each journal append that the grace end stopped. The grace end can fail a compensation alone. The error then has the kind `ErrGraceEnded`. The kind `ErrFailed` says that the caller's code failed, and it did not. A late success still counts. A late compensation counts as compensated, and the library commits a late forward success. The library starts nothing new after the grace end.
+The grace context is a context that the caller's cancel does not end. At the end of the grace period, it ends. The library then sets `ErrGraceEnded` as its cause. A caller tests for it with `errors.Is`. A plain cancel hides why recovery stopped. The library joins `ErrGraceEnded` to the error of each compensation and each journal append that the grace end stopped. The grace end can fail a compensation alone. The error then has the kind `ErrGraceEnded`. The kind `ErrFailed` says that the caller's code failed, and it did not. A late success still counts. A late compensation counts as compensated, and the library commits a late forward success. The library starts nothing new after the grace end.
 
 ### What matches the caller's cause
 
@@ -138,7 +138,7 @@ If every step succeeded and the cancel came late, the run completes. The rejecte
 
 ### The state follows plain rules
 
-The state is a closed set of plain types, and `New` names the field path and the rule of any state that breaks them. The rule list follows the JSON encoding of Go 1.27. The design rejects two other ways. One rejects every standard library type, which needs a list that the library must keep current and refuses types that round-trip, such as `time.Month`. The other encodes a sample value in `New` and decodes it again. That needs a generator for every hard case, and its error names a difference, not a rule.
+The state is a closed set of plain types, and `New` names the field path and the rule of any state that breaks them. The rule list follows the JSON encoding of Go 1.27. The design rejects two other ways. One rejects every standard library type. That needs a list that the library must keep current. It also refuses types that come back unchanged after encoding and decoding, such as `time.Month`. The other encodes a sample value in `New` and decodes it again. That needs a generator for every hard case, and its error names a difference, not a rule.
 
 ### Attempts work on a private copy
 
@@ -156,7 +156,7 @@ After another writer stops the run mid-way, `Run` writes the state committed so 
 
 ### The journal fails closed
 
-If the intent cannot be written, the action does not run. If the outcome cannot be written, the step is unknown, and the library compensates it before the pivot. A journal that stays down ends a run `ErrCompensationFailed` with `ErrJournal`. Going on in memory leaves silent gaps in the record. The library does not run its own retry loop for appends, because a journal implementation owns its own retries. It sends the exact failed event again once, before its next append, as a later entry describes.
+If the journal cannot write the intent, the action does not run. If the journal cannot write the outcome, the step is unknown, and the library compensates it before the pivot. A journal that stays down ends a run `ErrCompensationFailed` with `ErrJournal`. Going on in memory leaves silent gaps in the record. The library does not run its own retry loop for appends, because a journal implementation owns its own retries. It sends the exact failed event again once, before its next append, as a later entry describes.
 
 ### A single writer
 
@@ -164,7 +164,7 @@ Each event has a sequence number and a writer token. The writer token is a rando
 
 ### Events build the result
 
-The saga-started event carries every step name and its zone. Compensations that were blocked or halted have their own events. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
+The saga-started event carries every step name and its zone. A blocked compensation and a halted compensation each have their own event. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
 
 ### The run error can owe more than the journal
 
@@ -172,7 +172,7 @@ After an unclear append, `Pending` can list more than the journal shows, and nev
 
 ### Appends honor their context
 
-Every append gets the grace context. The caller's cancel does not end this context. It ends with the grace period. The journal honors it. A stuck journal then cannot hold `Run` past the grace period. The last events can be missing in that case, and the error matches `ErrJournal`.
+Every append gets the grace context, which the journal honors. A stuck journal then cannot hold `Run` past the grace period. The last events can be missing in that case, and the error matches `ErrJournal`.
 
 ## Middleware and errors
 
@@ -190,15 +190,15 @@ The core has no concurrency limit and no rate limit. A limit inside one saga ser
 
 ### Middleware cannot hide a failure
 
-The pipeline keeps the result of the last call. If middleware returns nil after the call failed, the attempt ends with the call error. If the chain returns without a call, the attempt fails permanently with `ErrCallNotRun`. If a call is still running when middleware returns, the attempt fails with `ErrCallUnfinished` and its outcome is unknown. A second parallel call fails with `ErrCallConcurrent`. A late write lands in the state of its own attempt, which nothing reads after it ends.
+The pipeline keeps the result of the last call. If middleware returns nil after the call failed, the attempt ends with the failure of the call. If the chain returns without a call, the attempt fails permanently with `ErrCallNotRun`. If a call is still running when middleware returns, the attempt fails with `ErrCallUnfinished` and its outcome is unknown. A second parallel call fails with `ErrCallConcurrent`. A late write lands in the state of its own attempt, which nothing reads after it ends.
 
 ### A panic is an ordinary error to middleware
 
 The innermost handler turns a panic into a `*PanicError` with the value and the stack. Your middleware sees it as a normal error, and `Slog` can log it. `Slog` is the middleware of the library that logs each call through `log/slog`. A panic-recovery layer outside your middleware catches a panic of the middleware itself.
 
-### One typed error for steps
+### One typed error for each step failure
 
-Every error of a step is a `*sagas.Error` with a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. An error before the saga-started event is stored returns as it is, such as `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
+Every failure of a step is a `*sagas.Error` with a `Kind`, a `Step`, the attempts, the cause and the earlier errors. The kinds are values that only the package creates, and `errors.Is` matches them. `New` wraps `ErrInvalidStep`, `ErrDuplicateStep`, `ErrCycle` or `ErrInvalidState` for definition problems. `Run` returns only an error. Completion gives nil. If the journal has not stored the saga-started event yet, the error returns as it is. That event is the first journal event of a run. Examples are `ErrInvalidRun`, `ErrInvalidState`, `ErrExecutionExists` or an `ErrJournal` error. Every other end gives a `*RunError` with the kind, the failed steps and the pending steps. A second return value gives two ways to read one outcome. The library never lets a second error replace the first. A caused error wraps the first, and an independent one joins it.
 
 ### The state names the execution
 

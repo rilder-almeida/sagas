@@ -14,8 +14,8 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Dependency | A step that must finish before another step starts. | the order of `sagas.Sequence`, read back in `StepReport.After` |
 | Outcome | How one attempt of a step ended: success, failure or unknown. | `EventStepSucceeded`, `EventStepFailed`, `EventStepUnknown` |
 | Success | The call returned `nil`. | `nil` |
-| Failure | The call returned an error that is not a timeout, a cancel or a panic. | `*sagas.Error` of kind `ErrFailed`, or `ErrConflict` or `ErrInvalidState` for a failed commit |
-| Unknown | The call timed out, was canceled or panicked. The effect outside is not known. | `*sagas.Error` of kind `ErrUnknown`, or `ErrPanic` for a panic |
+| Failure | The call returned an error that is not a timeout, a cancel or a panic. | `*sagas.Error`, usually of kind `ErrFailed`. A failed commit carries `ErrConflict` or `ErrInvalidState`. |
+| Unknown | The call timed out, stopped on a cancel or panicked. Nobody knows whether the effect outside happened. | `*sagas.Error` of kind `ErrUnknown`, or `ErrPanic` for a panic |
 | Compensation | The method that undoes the effect of a step in business terms. It adds a new fact and does not erase the old one. It runs for every started step of the compensable zone that has one. | `Compensate(ctx, *S) error` |
 | Compensable step | A step in the compensable zone that has a compensation. | a step with `Compensate`, in `ZoneCompensable` |
 | Step without compensation | A step in the compensable zone that has nothing to undo, such as a validation or a query. | a step with no `Compensate` |
@@ -37,6 +37,6 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Middleware | A value that wraps a handler to add behavior, such as logging, a limit or fault injection. | `sagas.Middleware` |
 | Result | What `Run` reports: `nil` for a completed run, else a `*RunError` that names the kind of end, the failed steps and the pending steps. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
 | Completed | Every step succeeded, or the library skipped it. | `nil`, `StatusCompleted` |
-| Compensated | A step failed before the pivot, or the pivot returned an error, and every compensation succeeded. | `ErrCompensated` |
+| Compensated | A step failed before the pivot, or the pivot failed, and every compensation succeeded. | `ErrCompensated` |
 | Compensation failed | A compensation did not succeed. A person must finish the undo. | `ErrCompensationFailed` |
-| Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person or a new run must finish it. The library never undoes it. | `ErrIncomplete` |
+| Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish it. The library never undoes it. | `ErrIncomplete` |
