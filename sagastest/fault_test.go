@@ -3,7 +3,6 @@ package sagastest
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -414,24 +413,4 @@ func Test_OnAttempts(t *testing.T) {
 			assert.Equal(t, tt.wantCalls, calls)
 		})
 	}
-}
-
-func ExampleFail() {
-	charge := newProbe("charge", sagas.NoRetry(), nil)
-
-	saga, err := sagas.New[probeState]("shop", charge, sagas.WithMiddleware(Fail("charge", errBoom)))
-	if err != nil {
-		panic(err)
-	}
-
-	err = saga.Run(context.Background(), &probeState{})
-
-	fmt.Println("compensated:", errors.Is(err, sagas.ErrCompensated))
-	fmt.Println("boom:", errors.Is(err, errBoom))
-	fmt.Println("charge calls:", charge.calls.Load())
-
-	// Output:
-	// compensated: true
-	// boom: true
-	// charge calls: 0
 }

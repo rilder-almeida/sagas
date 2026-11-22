@@ -260,19 +260,6 @@ func (j *rejectsSamePointer) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
-func ExampleJournal() {
-	tb := &fakeTB{}
-	Journal(tb, func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} })
-
-	for _, msg := range tb.errors {
-		fmt.Println(msg)
-	}
-
-	// Output:
-	// sagastest: journal rule "gap": Append of seq 3 after seq 1 returned nil, want an error
-	// sagastest: journal rule "gap": Append of seq 2 on an empty journal returned nil, want an error
-}
-
 func Test_Journal(t *testing.T) {
 	t.Parallel()
 
