@@ -16,6 +16,7 @@ const (
 	concurrentWriters = 8
 	seqSecond         = 2
 	seqThird          = 3
+	racedSeqs         = 3
 	mutated           = "mutated"
 
 	ruleFresh          = "fresh journal"
@@ -201,7 +202,7 @@ func concurrencyRules(tb testing.TB, newJournal func() sagas.Journal) {
 
 	j := newJournal()
 
-	for seq := 1; seq <= seqThird; seq++ {
+	for seq := 1; seq <= racedSeqs; seq++ {
 		raceForSeq(tb, j, seq)
 	}
 }
