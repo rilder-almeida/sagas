@@ -155,7 +155,7 @@ err := saga.Run(ctx, &b)
 
 var runErr *sagas.RunError
 if errors.As(err, &runErr) {
-	fmt.Println(runErr.Kind, runErr.Pending)
+	slog.Warn("saga run ended", "kind", runErr.Kind.Name(), "pending", runErr.Pending)
 }
 ```
 

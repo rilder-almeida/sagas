@@ -5,7 +5,7 @@ This page answers six questions about tests for your own saga. The answers use t
 The examples test the trip saga of the [tutorial](../tutorial/book-a-trip.md). Its code is in [`examples/trip`](../../examples/trip). In your tests, replace these names with your own:
 
 - `trip` is the type of the state.
-- `services` holds the fakes and the flow, and `newServices` makes a fresh one. A fake is a test double of an outside service that keeps its data in memory.
+- `services` holds the fakes and the flow, and `newServices` makes a fresh one. The flow is the set of steps in their order, which you build with `sagas.Sequence` or `sagas.Parallel`. A fake is a test double of an outside service that keeps its data in memory.
 - `newTrips()[0]` is a state value for a run that completes.
 
 ## How do I write a Setup?
@@ -44,9 +44,15 @@ A `Setup` is a function that builds one `sagastest.Case`. A helper calls it once
    - `State` is a pointer to the state of the run.
    - `Flow` is the same flow that you gave to `sagas.New`. The helpers read the steps from it.
    - `Check` looks at the fakes after the run and returns an error for an effect that stays behind.
-   - `Late` sends the action of a step to the fakes again, with the idempotency key that the helper passes.
+   - `Late` sends the action of a step to the fakes again, with the idempotency key that the helper passes. The action is the method that a step runs forward. An execution is one run of the saga over one state value. The idempotency key is unique for each execution and step, and it is the same on every attempt.
 
-5. Write `Check` so that it accepts every end that a helper makes. A helper ends a case in one of three ways. The run is compensated, it completed, or it ended `sagas.ErrIncomplete` after the pivot. The trip `Check` accepts one flight and one room after a charge, and no booking without a charge:
+5. Write `Check` so that it accepts every end that a helper makes. A helper ends a case in one of three ways:
+
+   - The run is compensated: the library undid the steps, and every compensation succeeded.
+   - The run completed: every step succeeded.
+   - The run ended `sagas.ErrIncomplete`: it passed the pivot and stopped before the end. The pivot is the step after which the saga only moves forward. A person must finish the run.
+
+   The trip `Check` accepts one flight and one room after a charge, and no booking without a charge:
 
    ```go
    func checkBookings(svc *services, got *trip) error {
@@ -112,7 +118,7 @@ The three cases are these:
 - In the case "compensation runs twice", the action reaches the service and then panics. The compensation then runs twice, and the second run must change nothing.
 - In the case "step lands after its compensation", the helper runs the saga to its end and then calls `Late`. The service must refuse the late action, or `Check` must accept it.
 
-An error from `Late` goes to the test log only. `Check` decides the case. With `go test -v`, the trip log shows `Late: booking key already canceled`, because the service refused the late booking.
+An error from `Late` goes to the test log only. `Check` decides the case. With `go test -v`, the trip log shows a line with `case "step lands after its compensation": Late:` for the flight and for the hotel. Each line ends with the error of the service, which refused the late booking.
 
 ## How do I prove the pivot and the forward-only steps?
 
@@ -130,8 +136,8 @@ The pivot is the step after which the saga only moves forward. The forward-only 
 
 `Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and its reply gets lost. Then the result depends on the attempts of the pivot:
 
-- If the pivot has two or more attempts, the run must complete. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field. Its final state must equal the state of a clean run, by `reflect.DeepEqual`.
-- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. Only the pivot is pending, and no compensation runs.
+- If the pivot has two or more attempts, the run must complete. The final state of the run must equal the state of a clean run, by `reflect.DeepEqual`. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field.
+- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. Only the pivot is pending, and no compensation runs. A pending step is a step that a person still must finish.
 
 `Pivot` then runs each forward-only step twice in one run, each step in a fresh case. Each such run must complete. So each step must be idempotent: a second call has the same effect as the first.
 
@@ -213,8 +219,4 @@ The message `the clean run recorded no call` has two causes, and it names both. 
 
 2. Run the test with `go test`.
 
-If the `hotel` type has a method `Compenstate` in place of `Compensate`, the test fails with this message:
-
-```
-step "hotel" has methods {Execute:true Pivot:false Compensate:false Enabled:false Wrap:false}, want {Execute:true Pivot:false Compensate:true Enabled:false Wrap:false}
-```
+If the `hotel` type has a method `Compenstate` in place of `Compensate`, the test fails. The message starts with `step "hotel" has methods`. It shows the flags that `sagas.Inspect` found, with `Compensate:false`, and then the flags that you want, with `Compensate:true`.

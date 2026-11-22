@@ -10,7 +10,7 @@ The examples use these names from your own code:
 
 ## Before you start: how middleware runs
 
-Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
+Middleware is a value with the method `Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error`. A plain function with that signature becomes middleware through `sagas.MiddlewareFunc`. The library calls `Wrap` once for each attempt. An attempt is one call of an action or of a compensation. The action is the method that a step runs forward. The compensation is the method that undoes the effect of the step. `info` describes the call: the saga name, the execution ID, the step name, the phase and the attempt number. An execution is one run of the saga over one state value, and the execution ID names it. The phase tells which step method runs: `sagas.PhaseExecute`, `sagas.PhasePivot` or `sagas.PhaseCompensate`.
 
 Your `Wrap` must obey three rules:
 
@@ -18,14 +18,14 @@ Your `Wrap` must obey three rules:
 2. Return only after every `call` that you started returned.
 3. Never run `call` twice at the same time.
 
-If `Wrap` returns while `call` still runs, the attempt ends with `sagas.ErrCallUnfinished`. If `Wrap` starts `call` while `call` runs, the attempt ends with `sagas.ErrCallConcurrent`.
+If `Wrap` returns while `call` still runs, the attempt ends with `sagas.ErrCallUnfinished`. If `Wrap` starts `call` while an earlier `call` still runs, the second `call` does not run and returns `sagas.ErrCallConcurrent`.
 
 There are two places for middleware:
 
 - To wrap every step of a saga, pass the middleware to `sagas.WithMiddleware` in `sagas.New`.
 - To wrap one step, give the step type a method `Wrap` with the same signature.
 
-`Wrap` can return without running `call`. The attempt then ends with the error that `Wrap` returns. The library counts a context error, such as `context.Canceled` or `context.DeadlineExceeded`, as an unknown outcome. It counts any other error as a failure. If `Wrap` returns nil without running `call`, the attempt fails with `sagas.ErrCallNotRun`, and the step makes no more attempts.
+`Wrap` can return without running `call`. The attempt then ends with the error that `Wrap` returns. The library counts a context error, such as `context.Canceled` or `context.DeadlineExceeded`, as an unknown outcome: nobody knows whether the effect outside happened. It counts any other error as a failure. If `Wrap` returns nil without running `call`, the attempt fails with `sagas.ErrCallNotRun`, and the step makes no more attempts.
 
 ## How do I limit how many calls run at the same time?
 
@@ -256,7 +256,7 @@ A retry policy sets how many attempts a call gets and how long to wait between t
    send.Retry = retry5
    ```
 
-If many steps share more than one setting, you can write a function that builds the `sagas.Step` value instead of step 2:
+If many steps share more than one setting, you can write a function that builds the `sagas.Step` value instead of steps 1 and 2:
 
 ```go
 func reliable(name string) sagas.Step {
@@ -272,7 +272,7 @@ hold := &reserve{Step: reliable("reserve")}
 
 A compensation can still fail after its last attempt. The `CompensationFailure` field of the step then decides what happens to the other compensations. Each policy ends the run with `sagas.ErrCompensationFailed`.
 
-- `sagas.CompensationBlock`, the default, stops each compensation that waits on this one. Independent branches go on.
+- `sagas.CompensationBlock`, the default, stops each compensation that waits on this one. A branch is one path of a `sagas.Parallel` flow. The branches that do not wait on this compensation go on.
 - `sagas.CompensationHalt` stops every compensation that remains.
 - `sagas.CompensationContinue` stops nothing.
 
@@ -289,7 +289,7 @@ err := saga.Run(ctx, &o)
 
 var runErr *sagas.RunError
 if errors.As(err, &runErr) && errors.Is(err, sagas.ErrCompensationFailed) {
-	fmt.Println("undo by hand:", runErr.Pending)
+	slog.Error("undo by hand", "pending", runErr.Pending)
 }
 ```
 
@@ -318,12 +318,12 @@ When your context ends, the library keeps working for a grace period, five minut
 
    ```go
    if err != nil && (ctx.Err() != nil || errors.Is(err, sagas.ErrGraceEnded)) {
-   	fmt.Println("the run ended after the deadline:", err)
+   	slog.Warn("the run ended after the deadline", "err", err)
    }
    ```
 
    A nil error means that the run completed. A deadline that passed after the last step started does not change that.
 
-The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
+The grace period starts at the end of your context, never earlier. At the end of the grace period, the library stops the work that goes on and marks the error with `sagas.ErrGraceEnded`. The journal is the record of what an execution did. If every step, every compensation and the journal honor their context, a run takes at most the deadline plus the grace period. The [grace period section](../explanation/guarantees.md#the-grace-period) of the guarantees page explains why.
 
 Do not test the error of a step for `context.Canceled` to learn whether you canceled. A step can return that error for its own reasons.

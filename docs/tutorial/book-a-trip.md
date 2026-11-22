@@ -15,7 +15,7 @@ The trip saga has four steps, in this order:
 3. `charge` charges the card. You cannot take a charge back, so this step is the pivot. The pivot is the point of no return. After the pivot succeeds, the saga only moves forward.
 4. `email` sends a confirmation. It comes after the pivot, so it has no compensation.
 
-The finished program is in the folder [`examples/trip`](../../examples/trip) of the repository. The code of Steps 2 to 7 comes from it. Two parts are your own: the tests `TestCompensations` and `TestPivot` of Step 7, and the change of Step 8. The test `Test_newServices` of the repository runs the same two helpers.
+The finished program is in the folder [`examples/trip`](../../examples/trip) of the repository. The code of Steps 2 to 7 comes from it. Two parts are your own: the tests `TestCompensations` and `TestPivot` of Step 7, and the change of Step 8.
 
 ## Step 1: make the module
 
@@ -337,7 +337,7 @@ The first trip completed. The second trip went to Porto, where the hotel step fa
 
 The `sagastest` package holds test helpers. Some of them inject a fault: they make one step fail, lose its reply or crash. Each fault is middleware. Middleware is a value that wraps each call of a step, and you give it to `sagas.New` with `sagas.WithMiddleware`.
 
-Make a file `trip_test.go`. The function `tryTrip` runs the first trip with the faults that you pass. A `Recorder` from `sagastest` records each call. The function prints how the run ended, each call, and the number of booked flights:
+Make a file `trip_test.go`. The function `tryTrip` runs the first trip with the faults that you pass. A `Recorder` from `sagastest` records each call. The function writes to `w` how the run ended, each call, and the number of booked flights. It returns the first error, for example a write that failed:
 
 ```go
 package main
@@ -346,6 +346,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/rilder-almeida/sagas"
@@ -354,32 +355,37 @@ import (
 
 var errHotelDown = errors.New("hotel service down")
 
-func tryTrip(faults ...sagas.Middleware) {
+func tryTrip(w io.Writer, faults ...sagas.Middleware) error {
 	rec := sagastest.NewRecorder()
 	mw := append([]sagas.Middleware{rec.Middleware()}, faults...)
 	svc := newServices()
 
 	saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(mw...))
 	if err != nil {
-		fmt.Println(err)
-
-		return
+		return err
 	}
 
 	state := newTrips()[0]
-	if reportErr := report(os.Stdout, state.ID, saga.Run(context.Background(), &state)); reportErr != nil {
-		fmt.Println(reportErr)
+	if reportErr := report(w, state.ID, saga.Run(context.Background(), &state)); reportErr != nil {
+		return reportErr
 	}
 
 	for _, call := range rec.Calls() {
-		fmt.Println(call.Step, call.Phase, call.Attempt, call.Err)
+		if _, err = fmt.Fprintln(w, call.Step, call.Phase, call.Attempt, call.Err); err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("flights held:", svc.airline.Held())
+	_, err = fmt.Fprintln(w, "flights held:", svc.airline.Held())
+
+	return err
 }
 
 func Example_clean() {
-	tryTrip()
+	if err := tryTrip(os.Stdout); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: completed
 	// flight execute 1 <nil>
@@ -392,7 +398,7 @@ func Example_clean() {
 
 Each line of a call shows the step, the phase, the attempt number and the error. The phase names the method that ran: `execute`, `pivot` or `compensate`. `<nil>` means that the call succeeded.
 
-`Example_clean` is a Go example. `go test` runs it and compares what it prints with the `// Output:` comment. If the two differ, the test fails and shows both. Run the tests:
+`Example_clean` is a Go example. `go test` runs it and compares what it prints with the `// Output:` comment. If the two differ, the test fails and shows both. If `tryTrip` returns an error, the example panics, and the test fails with that error. Run the tests:
 
 ```sh
 go test .
@@ -406,7 +412,11 @@ The output starts with `ok`. This clean run injects no fault, so it is the passi
 
 ```go
 func Example_hotelDown() {
-	tryTrip(sagastest.Fail("hotel", errHotelDown, sagastest.OnPhase(sagas.PhaseExecute)))
+	hotelDown := sagastest.Fail("hotel", errHotelDown, sagastest.OnPhase(sagas.PhaseExecute))
+	if err := tryTrip(os.Stdout, hotelDown); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: compensated, pending: []
 	// flight execute 1 <nil>
@@ -427,7 +437,10 @@ The hotel step failed three times, because a step makes three attempts by defaul
 
 ```go
 func Example_lostReply() {
-	tryTrip(sagastest.Unknown("flight", sagastest.OnAttempts(1)))
+	if err := tryTrip(os.Stdout, sagastest.Unknown("flight", sagastest.OnAttempts(1))); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: completed
 	// flight execute 1 context deadline exceeded
@@ -447,7 +460,10 @@ The second attempt sent the same idempotency key. The airline returned the first
 
 ```go
 func Example_crash() {
-	tryTrip(sagastest.Panic("email"))
+	if err := tryTrip(os.Stdout, sagastest.Panic("email")); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: incomplete, pending: [email]
 	// flight execute 1 <nil>
@@ -557,7 +573,7 @@ Both helpers take a `Setup`. A `Setup` is a function that builds a fresh saga an
 
 The output starts with `ok`. If the card was charged, `Check` accepts one flight and one room. Otherwise, it accepts none, so a compensated run must leave no booking behind.
 
-If you run `go test -v .`, the log shows two lines that contain `Late: booking key already canceled`. These lines are no fault. The late booking came after the compensation, and the service refused the canceled key. That is the correct answer.
+If you run `go test -v .`, the log shows two lines that contain `case "step lands after its compensation": Late:`. One line names the flight, and the other names the hotel. Each line ends with the error of the late booking. These lines are no fault. The late booking came after the compensation, and the service refused the canceled key. That is the correct answer.
 
 ## Step 8: watch a test catch a bad compensation
 
@@ -577,11 +593,7 @@ Now you break the compensation of the flight and watch `Compensations` find it.
    go test -run TestCompensations .
    ```
 
-The test fails. After the file name and the line number, the first message starts with this text:
-
-```
-sagastest: step "flight", case "never applied": Run returned sagas: compensation failed:
-```
+The test fails. The first message names the step and the case: `step "flight", case "never applied"`. The message says that `Run` returned `sagas: compensation failed`, and that the helper wanted `sagas.ErrCompensated`.
 
 In the case "never applied", the flight never booked. The airline answered `errNotFound`, and the compensation returned that error three times. The run ended `compensation failed` instead of compensated. In production, a person then has to finish an undo that had nothing to undo.
 
