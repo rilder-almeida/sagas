@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -16,19 +17,19 @@ func Test_run(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		readOnly  bool
-		want      string
-		wantWrite bool
+		name          string
+		failingWriter bool
+		wantOutput    string
+		wantWriteOp   string
 	}{
 		{
-			name: "[Success] When: the writer accepts all writes ; Should: print both runs",
-			want: "trip-42: completed\ntrip-43: compensated, pending: []\n",
+			name:       "[Success] When: the writer accepts all writes ; Should: print both runs",
+			wantOutput: "trip-42: completed\ntrip-43: compensated, pending: []\n",
 		},
 		{
-			name:      "[Fail] When: the writer fails ; Should: return the write error",
-			readOnly:  true,
-			wantWrite: true,
+			name:          "[Fail] When: the writer fails ; Should: return the write error",
+			failingWriter: true,
+			wantWriteOp:   "write",
 		},
 	}
 
@@ -41,23 +42,22 @@ func Test_run(t *testing.T) {
 				w   io.Writer = &buf
 			)
 
-			if tt.readOnly {
+			if tt.failingWriter {
 				w = readOnlyFile(t)
 			}
 
 			err := run(w)
 
-			if tt.wantWrite {
+			if tt.wantWriteOp == "" {
+				require.NoError(t, err)
+			} else {
 				var pathErr *fs.PathError
 
 				require.ErrorAs(t, err, &pathErr)
-				assert.Equal(t, "write", pathErr.Op)
-
-				return
+				assert.Equal(t, tt.wantWriteOp, pathErr.Op)
 			}
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, buf.String())
+			assert.Equal(t, tt.wantOutput, buf.String())
 		})
 	}
 }
@@ -141,30 +141,57 @@ func canceledContext(t *testing.T) context.Context {
 	return ctx
 }
 
+func distinct(ids []string) int {
+	seen := map[string]bool{}
+
+	for _, id := range ids {
+		if id != "" {
+			seen[id] = true
+		}
+	}
+
+	return len(seen)
+}
+
+func roomsLeft(t *testing.T, svc *hotels) int {
+	t.Helper()
+
+	left := 0
+
+	for ; ; left++ {
+		_, err := svc.Book(t.Context(), fmt.Sprintf("probe-%d", left), "Lisbon", 1)
+		if err != nil {
+			require.ErrorIs(t, err, errNoRooms)
+
+			return left
+		}
+	}
+}
+
 func Test_hotels_Book(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		free     int
-		keys     []string
-		canceled bool
-		wantSame bool
-		wantFree int
-		wantErr  error
+		name         string
+		free         int
+		keys         []string
+		canceled     bool
+		wantDistinct int
+		wantLeft     int
+		wantErr      error
 	}{
 		{
-			name:     "[Success] When: the same key books twice ; Should: return one ID and take one room",
-			free:     2,
-			keys:     []string{"k1", "k1"},
-			wantSame: true,
-			wantFree: 1,
+			name:         "[Success] When: the same key books twice ; Should: return one ID and take one room",
+			free:         2,
+			keys:         []string{"k1", "k1"},
+			wantDistinct: 1,
+			wantLeft:     1,
 		},
 		{
-			name:     "[Success] When: two keys book ; Should: return two IDs and take two rooms",
-			free:     2,
-			keys:     []string{"k1", "k2"},
-			wantFree: 0,
+			name:         "[Success] When: two keys book ; Should: return two IDs and take two rooms",
+			free:         2,
+			keys:         []string{"k1", "k2"},
+			wantDistinct: 2,
 		},
 		{
 			name:    "[Fail] When: the city has no rooms ; Should: return errNoRooms",
@@ -176,7 +203,7 @@ func Test_hotels_Book(t *testing.T) {
 			free:     1,
 			keys:     []string{"k1"},
 			canceled: true,
-			wantFree: 1,
+			wantLeft: 1,
 			wantErr:  context.Canceled,
 		},
 	}
@@ -205,13 +232,12 @@ func Test_hotels_Book(t *testing.T) {
 
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
-
-				return
+			} else {
+				require.NoError(t, err)
 			}
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantSame, ids[0] == ids[1])
-			assert.Equal(t, tt.wantFree, svc.free["Lisbon"])
+			assert.Equal(t, tt.wantDistinct, distinct(ids))
+			assert.Equal(t, tt.wantLeft, roomsLeft(t, svc))
 		})
 	}
 }
@@ -220,20 +246,35 @@ func Test_payments_Charge(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		amount   int
-		canceled bool
-		wantErr  error
+		name         string
+		amount       int
+		keys         []string
+		canceled     bool
+		wantDistinct int
+		wantErr      error
 	}{
-		{name: "[Success] When: the amount is within the limit ; Should: charge it", amount: cardLimit},
+		{
+			name:         "[Success] When: the same key charges twice ; Should: return one ID",
+			amount:       cardLimit,
+			keys:         []string{"k1", "k1"},
+			wantDistinct: 1,
+		},
+		{
+			name:         "[Success] When: two keys charge ; Should: return two IDs",
+			amount:       cardLimit,
+			keys:         []string{"k1", "k2"},
+			wantDistinct: 2,
+		},
 		{
 			name:    "[Fail] When: the amount is above the limit ; Should: return errOverLimit",
 			amount:  cardLimit + 1,
+			keys:    []string{"k1"},
 			wantErr: errOverLimit,
 		},
 		{
 			name:     "[Fail] When: the context is done ; Should: return its error",
 			amount:   1,
+			keys:     []string{"k1"},
 			canceled: true,
 			wantErr:  context.Canceled,
 		},
@@ -250,19 +291,24 @@ func Test_payments_Charge(t *testing.T) {
 				ctx = canceledContext(t)
 			}
 
-			first, err := svc.Charge(ctx, "k1", tt.amount)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
+			ids := make([]string, 0, len(tt.keys))
 
-				return
+			var err error
+
+			for _, key := range tt.keys {
+				var id string
+
+				id, err = svc.Charge(ctx, key, tt.amount)
+				ids = append(ids, id)
 			}
 
-			require.NoError(t, err)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
 
-			again, err := svc.Charge(ctx, "k1", tt.amount)
-			require.NoError(t, err)
-			assert.Equal(t, first, again)
-			assert.Len(t, svc.byKey, 1)
+			assert.Equal(t, tt.wantDistinct, distinct(ids))
 		})
 	}
 }
@@ -271,18 +317,18 @@ func Test_mailer_Send(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		address  string
-		sends    int
-		canceled bool
-		wantMail int
-		wantErr  error
+		name         string
+		address      string
+		sends        int
+		canceled     bool
+		wantDistinct int
+		wantErr      error
 	}{
 		{
-			name:     "[Success] When: one key sends three times ; Should: record one mail",
-			address:  "ana@example.com",
-			sends:    3,
-			wantMail: 1,
+			name:         "[Success] When: one key sends three times ; Should: return one ID",
+			address:      "ana@example.com",
+			sends:        3,
+			wantDistinct: 1,
 		},
 		{
 			name:    "[Fail] When: the address is empty ; Should: return errNoAddress",
@@ -309,20 +355,74 @@ func Test_mailer_Send(t *testing.T) {
 				ctx = canceledContext(t)
 			}
 
+			ids := make([]string, 0, tt.sends)
+
 			var err error
 
 			for range tt.sends {
-				_, err = svc.Send(ctx, "k1", tt.address)
+				var id string
+
+				id, err = svc.Send(ctx, "k1", tt.address)
+				ids = append(ids, id)
 			}
 
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
-
-				return
+			} else {
+				require.NoError(t, err)
 			}
 
+			assert.Equal(t, tt.wantDistinct, distinct(ids))
+		})
+	}
+}
+
+func Test_airline_Cancel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cancels    int
+		canceled   bool
+		wantBooked bool
+		wantErr    error
+	}{
+		{name: "[Success] When: the flight is not cancelled ; Should: stay booked", wantBooked: true},
+		{name: "[Success] When: the flight is cancelled twice ; Should: end not booked", cancels: 2},
+		{
+			name:       "[Fail] When: the context is done ; Should: return its error and keep the flight",
+			cancels:    1,
+			canceled:   true,
+			wantBooked: true,
+			wantErr:    context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := newAirline()
+
+			id, err := svc.Book(t.Context(), "k1", "GRU-LIS")
 			require.NoError(t, err)
-			assert.Len(t, svc.byKey, tt.wantMail)
+
+			ctx := t.Context()
+			if tt.canceled {
+				ctx = canceledContext(t)
+			}
+
+			for range tt.cancels {
+				err = svc.Cancel(ctx, id)
+			}
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.wantBooked, svc.Booked(id))
 		})
 	}
 }

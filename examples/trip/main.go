@@ -73,6 +73,13 @@ func (a *airline) Book(ctx context.Context, key, route string) (string, error) {
 	return id, nil
 }
 
+func (a *airline) Booked(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.active[id]
+}
+
 func (a *airline) Cancel(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
