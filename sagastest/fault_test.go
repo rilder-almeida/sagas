@@ -417,9 +417,9 @@ func Test_OnAttempts(t *testing.T) {
 }
 
 func ExampleFail() {
-	charge := newProbe(probeName, sagas.NoRetry(), nil)
+	charge := newProbe("charge", sagas.NoRetry(), nil)
 
-	saga, err := sagas.New[probeState]("shop", charge, sagas.WithMiddleware(Fail(probeName, errBoom)))
+	saga, err := sagas.New[probeState]("shop", charge, sagas.WithMiddleware(Fail("charge", errBoom)))
 	if err != nil {
 		panic(err)
 	}
@@ -430,6 +430,6 @@ func ExampleFail() {
 	fmt.Println("charge calls:", charge.calls.Load())
 
 	// Output:
-	// run: sagas: compensated: sagas: step "probe" failed after 1 attempts: boom
+	// run: sagas: compensated: sagas: step "charge" failed after 1 attempts: boom
 	// charge calls: 0
 }

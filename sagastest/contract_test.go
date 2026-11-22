@@ -391,17 +391,15 @@ func lateRefused(*ledger) lateFunc {
 
 func noLate(*ledger) lateFunc { return nil }
 
-func shopSetup(
-	t *testing.T, d defect, flow func(*ledger) *sagas.Group, late func(*ledger) lateFunc,
-) Setup[probeState] {
-	t.Helper()
-
+func newShop(d defect, flow func(*ledger) *sagas.Group, late func(*ledger) lateFunc) Setup[probeState] {
 	return func(mw ...sagas.Middleware) Case[probeState] {
 		book := newLedger(d)
 		f := flow(book)
 
 		saga, err := sagas.New[probeState]("shop", f, sagas.WithMiddleware(mw...))
-		require.NoError(t, err)
+		if err != nil {
+			panic(err)
+		}
 
 		return Case[probeState]{
 			Saga:  saga,
@@ -433,7 +431,13 @@ type fakeTB struct {
 
 func (*fakeTB) Helper() {}
 
-func (*fakeTB) Context() context.Context { return context.Background() }
+func (f *fakeTB) Context() context.Context {
+	if f.TB == nil {
+		return context.Background()
+	}
+
+	return f.TB.Context()
+}
 
 func (f *fakeTB) Errorf(format string, args ...any) {
 	f.errors = append(f.errors, fmt.Sprintf(format, args...))
@@ -448,23 +452,7 @@ func (f *fakeTB) Logf(format string, args ...any) {
 }
 
 func ExampleCompensations() {
-	setup := func(mw ...sagas.Middleware) Case[probeState] {
-		book := newLedger(noTombstone)
-		flow := chargeThenShip(book)
-
-		saga, err := sagas.New[probeState]("shop", flow, sagas.WithMiddleware(mw...))
-		if err != nil {
-			panic(err)
-		}
-
-		return Case[probeState]{
-			Saga:  saga,
-			State: &probeState{},
-			Check: func(*probeState) error { return book.check() },
-			Flow:  flow,
-			Late:  lateCharge(book),
-		}
-	}
+	setup := newShop(noTombstone, chargeThenShip, lateCharge)
 
 	tb := &fakeTB{}
 	Compensations(tb, setup)
@@ -492,7 +480,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, chargeThenShip, lateCharge)
+				return newShop(sound, chargeThenShip, lateCharge)
 			},
 			wantSetups: 4,
 		},
@@ -502,7 +490,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, refundFailsUnapplied, chargeThenShip, lateCharge)
+				return newShop(refundFailsUnapplied, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
 				`step "charge", case "never applied": Run returned sagas: compensation failed`,
@@ -516,7 +504,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, refundTwice, chargeThenShip, lateCharge)
+				return newShop(refundTwice, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
 				`step "charge", case "compensation runs twice": ` +
@@ -530,7 +518,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, refundLandedTwice, chargeThenShip, lateCharge)
+				return newShop(refundLandedTwice, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
 				`step "charge", case "compensation runs twice": ` +
@@ -543,7 +531,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, noTombstone, chargeThenShip, lateCharge)
+				return newShop(noTombstone, chargeThenShip, lateCharge)
 			},
 			wantErrors: []string{
 				`step "charge", case "step lands after its compensation": Check: balance off: balance 100, want 0`,
@@ -555,7 +543,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, chargeThenShip, noLate)
+				return newShop(sound, chargeThenShip, noLate)
 			},
 			wantErrors: []string{`step "charge", case "step lands after its compensation": Case.Late is nil`},
 			wantSetups: 4,
@@ -565,7 +553,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, chargeThenShip, lateRefused)
+				return newShop(sound, chargeThenShip, lateRefused)
 			},
 			wantLogs:   []string{`step "charge", case "step lands after its compensation": Late: late refused`},
 			wantSetups: 4,
@@ -575,7 +563,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return declaring(shopSetup(t, sound, chargeThenShip, lateCharge), newCharge(newLedger(sound)))
+				return declaring(newShop(sound, chargeThenShip, lateCharge), newCharge(newLedger(sound)))
 			},
 			wantErrors: []string{`step "ship" ran in the clean run`},
 			wantSetups: 1,
@@ -587,7 +575,7 @@ func Test_Compensations(t *testing.T) {
 
 				invalid := sagas.Sequence(newPivotStep(), newCharge(newLedger(sound)))
 
-				return declaring(shopSetup(t, sound, chargeThenShip, lateCharge), invalid)
+				return declaring(newShop(sound, chargeThenShip, lateCharge), invalid)
 			},
 			wantErrors: []string{"Case.Flow is not a valid flow"},
 			wantSetups: 1,
@@ -600,7 +588,7 @@ func Test_Compensations(t *testing.T) {
 
 				builds := 0
 
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+				return newShop(sound, func(book *ledger) *sagas.Group {
 					builds++
 
 					var err error
@@ -622,7 +610,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+				return newShop(sound, func(book *ledger) *sagas.Group {
 					return sagas.Sequence(newDisabledCharge(book), newShip(nil))
 				}, lateCharge)
 			},
@@ -634,7 +622,7 @@ func Test_Compensations(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+				return newShop(sound, func(book *ledger) *sagas.Group {
 					return sagas.Sequence(newCharge(book), newShip(errBoom))
 				}, lateCharge)
 			},
@@ -648,7 +636,7 @@ func Test_Compensations(t *testing.T) {
 
 				shipOnly := func(*ledger) *sagas.Group { return sagas.Sequence(newShip(nil)) }
 
-				return shopSetup(t, sound, shipOnly, lateCharge)
+				return newShop(sound, shipOnly, lateCharge)
 			},
 			wantErrors: []string{"no step with Compensate"},
 			wantSetups: 1,
@@ -723,7 +711,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, pivotFlow(3, false), noLate)
+				return newShop(sound, pivotFlow(3, false), noLate)
 			},
 			wantSetups: 3,
 		},
@@ -733,7 +721,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, pivotFlow(1, false), noLate)
+				return newShop(sound, pivotFlow(1, false), noLate)
 			},
 			wantSetups: 3,
 		},
@@ -743,7 +731,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, pivotFlow(0, false), noLate)
+				return newShop(sound, pivotFlow(0, false), noLate)
 			},
 			wantSetups: 3,
 		},
@@ -753,7 +741,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, shipsTwice, pivotFlow(3, false), noLate)
+				return newShop(shipsTwice, pivotFlow(3, false), noLate)
 			},
 			wantErrors: []string{
 				`step "ship", case "step repeated": Check: shipped more than once: key "run-1/ship" shipped 2 times`,
@@ -766,7 +754,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, pivotsTwice, pivotFlow(3, false), noLate)
+				return newShop(pivotsTwice, pivotFlow(3, false), noLate)
 			},
 			wantErrors: []string{
 				`step "pivot", case "unknown outcome": Check: pivot applied more than once: ` +
@@ -780,7 +768,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, pivotFlow(3, true), noLate)
+				return newShop(sound, pivotFlow(3, true), noLate)
 			},
 			wantErrors: []string{
 				`step "pivot", case "unknown outcome": the final state {N:2} differs from the clean run {N:1}`,
@@ -792,7 +780,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+				return newShop(sound, func(book *ledger) *sagas.Group {
 					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newDisabledShip(book))
 				}, noLate)
 			},
@@ -805,7 +793,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, pivotErrors, pivotFlow(3, false), noLate)
+				return newShop(pivotErrors, pivotFlow(3, false), noLate)
 			},
 			wantErrors: []string{`step "pivot", case "unknown outcome": Run returned`},
 			wantCauses: []string{"pivot already applied"},
@@ -817,7 +805,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, shipErrors, pivotFlow(3, false), noLate)
+				return newShop(shipErrors, pivotFlow(3, false), noLate)
 			},
 			wantErrors: []string{`step "ship", case "step repeated": Run returned`},
 			wantCauses: []string{"ship already sent"},
@@ -829,7 +817,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return swallowing(shopSetup(t, sound, pivotFlow(1, false), noLate))
+				return swallowing(newShop(sound, pivotFlow(1, false), noLate))
 			},
 			wantErrors: []string{`step "pivot", case "unknown outcome": Run returned <nil>, want sagas.ErrIncomplete`},
 			wantSetups: 3,
@@ -842,7 +830,7 @@ func Test_Pivot(t *testing.T) {
 
 				builds := 0
 
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+				return newShop(sound, func(book *ledger) *sagas.Group {
 					builds++
 
 					var err error
@@ -865,7 +853,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, bothTwice, pivotFlow(3, false), noLate)
+				return newShop(bothTwice, pivotFlow(3, false), noLate)
 			},
 			wantErrors: []string{
 				`step "pivot", case "unknown outcome": Check: pivot applied more than once`,
@@ -878,7 +866,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, chargeThenShip, noLate)
+				return newShop(sound, chargeThenShip, noLate)
 			},
 			wantErrors: []string{"found no pivot"},
 			wantSetups: 1,
@@ -888,7 +876,7 @@ func Test_Pivot(t *testing.T) {
 			setup: func(t *testing.T) Setup[probeState] {
 				t.Helper()
 
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
+				return newShop(sound, func(book *ledger) *sagas.Group {
 					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newShip(errBoom))
 				}, noLate)
 			},
