@@ -8,7 +8,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/rilder-almeida/sagas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,222 +58,6 @@ func Test_run(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, buf.String())
-		})
-	}
-}
-
-type stepTest struct {
-	name     string
-	canceled bool
-	start    trip
-	want     trip
-	wantErr  error
-}
-
-func canceledContext(t *testing.T) context.Context {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	return ctx
-}
-
-func (tt *stepTest) check(t *testing.T, call func(context.Context, *trip) error) {
-	t.Helper()
-
-	ctx := t.Context()
-	if tt.canceled {
-		ctx = canceledContext(t)
-	}
-
-	st := tt.start
-	err := call(ctx, &st)
-
-	if tt.wantErr != nil {
-		require.ErrorIs(t, err, tt.wantErr)
-	} else {
-		require.NoError(t, err)
-	}
-
-	assert.Equal(t, tt.want, st)
-}
-
-func Test_flight_Execute(t *testing.T) {
-	t.Parallel()
-
-	tests := []stepTest{
-		{
-			name: "[Success] When: the context is live ; Should: write the key, empty outside a run",
-			want: trip{Flight: sagas.IdempotencyKey(t.Context())},
-		},
-		{
-			name:     "[Fail] When: the context is canceled ; Should: return context.Canceled and leave Flight",
-			canceled: true,
-			wantErr:  context.Canceled,
-		},
-	}
-
-	call := (&flight{}).Execute
-
-	for i := range tests {
-		tt := &tests[i]
-
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tt.check(t, call)
-		})
-	}
-}
-
-func Test_flight_Compensate(t *testing.T) {
-	t.Parallel()
-
-	tests := []stepTest{
-		{
-			name:  "[Success] When: the context is live ; Should: clear Flight",
-			start: trip{Flight: "key"},
-		},
-		{
-			name:     "[Fail] When: the context is canceled ; Should: return context.Canceled and leave Flight",
-			canceled: true,
-			start:    trip{Flight: "key"},
-			want:     trip{Flight: "key"},
-			wantErr:  context.Canceled,
-		},
-	}
-
-	call := (&flight{}).Compensate
-
-	for i := range tests {
-		tt := &tests[i]
-
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tt.check(t, call)
-		})
-	}
-}
-
-func Test_hotel_Execute(t *testing.T) {
-	t.Parallel()
-
-	tests := []stepTest{
-		{
-			name:  "[Success] When: a room is left ; Should: book it",
-			start: trip{RoomsLeft: 1},
-			want:  trip{RoomsLeft: 1, Hotel: booked},
-		},
-		{
-			name:    "[Fail] When: no room is left ; Should: return a permanent errNoRooms and leave Hotel",
-			wantErr: errNoRooms,
-		},
-		{
-			name:     "[Fail] When: the context is canceled ; Should: return context.Canceled and leave Hotel",
-			canceled: true,
-			start:    trip{RoomsLeft: 1},
-			want:     trip{RoomsLeft: 1},
-			wantErr:  context.Canceled,
-		},
-	}
-
-	call := (&hotel{}).Execute
-
-	for i := range tests {
-		tt := &tests[i]
-
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tt.check(t, call)
-		})
-	}
-}
-
-func Test_hotel_Compensate(t *testing.T) {
-	t.Parallel()
-
-	tests := []stepTest{
-		{
-			name:  "[Success] When: the context is live ; Should: clear Hotel",
-			start: trip{Hotel: booked},
-		},
-		{
-			name:     "[Fail] When: the context is canceled ; Should: return context.Canceled and leave Hotel",
-			canceled: true,
-			start:    trip{Hotel: booked},
-			want:     trip{Hotel: booked},
-			wantErr:  context.Canceled,
-		},
-	}
-
-	call := (&hotel{}).Compensate
-
-	for i := range tests {
-		tt := &tests[i]
-
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tt.check(t, call)
-		})
-	}
-}
-
-func Test_charge_Pivot(t *testing.T) {
-	t.Parallel()
-
-	tests := []stepTest{
-		{
-			name: "[Success] When: the context is live ; Should: write Charge",
-			want: trip{Charge: "charged"},
-		},
-		{
-			name:     "[Fail] When: the context is canceled ; Should: return context.Canceled and leave Charge",
-			canceled: true,
-			wantErr:  context.Canceled,
-		},
-	}
-
-	call := (&charge{}).Pivot
-
-	for i := range tests {
-		tt := &tests[i]
-
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tt.check(t, call)
-		})
-	}
-}
-
-func Test_email_Execute(t *testing.T) {
-	t.Parallel()
-
-	tests := []stepTest{
-		{
-			name: "[Success] When: the context is live ; Should: write Email",
-			want: trip{Email: "sent"},
-		},
-		{
-			name:     "[Fail] When: the context is canceled ; Should: return context.Canceled and leave Email",
-			canceled: true,
-			wantErr:  context.Canceled,
-		},
-	}
-
-	call := (&email{}).Execute
-
-	for i := range tests {
-		tt := &tests[i]
-
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tt.check(t, call)
 		})
 	}
 }
@@ -349,22 +132,197 @@ func Test_execute(t *testing.T) {
 	}
 }
 
-func Test_trip_ExecutionID(t *testing.T) {
+func canceledContext(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	return ctx
+}
+
+func Test_hotels_Book(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		id   string
+		name     string
+		free     int
+		keys     []string
+		canceled bool
+		wantSame bool
+		wantFree int
+		wantErr  error
 	}{
-		{name: "[Success] When: the trip has an ID ; Should: return it", id: "trip-42"},
-		{name: "[Success] When: the trip has no ID ; Should: return an empty string", id: ""},
+		{
+			name:     "[Success] When: the same key books twice ; Should: return one ID and take one room",
+			free:     2,
+			keys:     []string{"k1", "k1"},
+			wantSame: true,
+			wantFree: 1,
+		},
+		{
+			name:     "[Success] When: two keys book ; Should: return two IDs and take two rooms",
+			free:     2,
+			keys:     []string{"k1", "k2"},
+			wantFree: 0,
+		},
+		{
+			name:    "[Fail] When: the city has no rooms ; Should: return errNoRooms",
+			keys:    []string{"k1"},
+			wantErr: errNoRooms,
+		},
+		{
+			name:     "[Fail] When: the context is done ; Should: return its error and take no room",
+			free:     1,
+			keys:     []string{"k1"},
+			canceled: true,
+			wantFree: 1,
+			wantErr:  context.Canceled,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.id, (&trip{ID: tt.id}).ExecutionID())
+			svc := newHotels(map[string]int{"Lisbon": tt.free})
+
+			ctx := t.Context()
+			if tt.canceled {
+				ctx = canceledContext(t)
+			}
+
+			ids := make([]string, 0, len(tt.keys))
+
+			var err error
+
+			for _, key := range tt.keys {
+				var id string
+
+				id, err = svc.Book(ctx, key, "Lisbon", 1)
+				ids = append(ids, id)
+			}
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSame, ids[0] == ids[1])
+			assert.Equal(t, tt.wantFree, svc.free["Lisbon"])
+		})
+	}
+}
+
+func Test_payments_Charge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		amount   int
+		canceled bool
+		wantErr  error
+	}{
+		{name: "[Success] When: the amount is within the limit ; Should: charge it", amount: cardLimit},
+		{
+			name:    "[Fail] When: the amount is above the limit ; Should: return errOverLimit",
+			amount:  cardLimit + 1,
+			wantErr: errOverLimit,
+		},
+		{
+			name:     "[Fail] When: the context is done ; Should: return its error",
+			amount:   1,
+			canceled: true,
+			wantErr:  context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := newPayments()
+
+			ctx := t.Context()
+			if tt.canceled {
+				ctx = canceledContext(t)
+			}
+
+			first, err := svc.Charge(ctx, "k1", tt.amount)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			again, err := svc.Charge(ctx, "k1", tt.amount)
+			require.NoError(t, err)
+			assert.Equal(t, first, again)
+			assert.Len(t, svc.byKey, 1)
+		})
+	}
+}
+
+func Test_mailer_Send(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		address  string
+		sends    int
+		canceled bool
+		wantMail int
+		wantErr  error
+	}{
+		{
+			name:     "[Success] When: one key sends three times ; Should: record one mail",
+			address:  "ana@example.com",
+			sends:    3,
+			wantMail: 1,
+		},
+		{
+			name:    "[Fail] When: the address is empty ; Should: return errNoAddress",
+			sends:   1,
+			wantErr: errNoAddress,
+		},
+		{
+			name:     "[Fail] When: the context is done ; Should: return its error",
+			address:  "ana@example.com",
+			sends:    1,
+			canceled: true,
+			wantErr:  context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := newMailer()
+
+			ctx := t.Context()
+			if tt.canceled {
+				ctx = canceledContext(t)
+			}
+
+			var err error
+
+			for range tt.sends {
+				_, err = svc.Send(ctx, "k1", tt.address)
+			}
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Len(t, svc.byKey, tt.wantMail)
 		})
 	}
 }

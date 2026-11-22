@@ -121,7 +121,6 @@ linters:
       - vendor$
       - third_party$
       - testutils$
-      - examples$
 
   settings:
     cyclop:
