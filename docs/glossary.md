@@ -22,7 +22,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Pivot | The point of no return. It is atomic: it applies whole or not at all. A failure means that it did not apply. After it succeeds, the saga only moves forward. | `Pivot(ctx, *S) error`, `ZonePivot` |
 | Compensable zone | The steps before the pivot. In a saga with no pivot, every step. A failure or an unknown outcome here undoes them. | `ZoneCompensable` |
 | Forward-only zone | The steps after the pivot. A failure or an unknown outcome here never undoes anything. | `ZoneForwardOnly` |
-| Backward recovery | If the run stops before the pivot applies, the library runs the compensations in reverse order. The cause is a failure, an unknown outcome, a caller cancel or a journal fault in the compensable zone, or a failure of the pivot. | `PhaseCompensate` |
+| Backward recovery | If the run stops before the pivot applies, the library runs the compensations in reverse order. If another `Run` call appended to the execution first, it does not run them. Example causes are a failure or an unknown outcome of a step, a caller cancel, a journal fault, and a failure of the pivot. | `PhaseCompensate` |
 | Forward recovery | Finishing the forward-only zone instead of undoing anything. | no code name |
 | Retry policy | How many attempts a call gets and how long to wait between them. One policy type serves every action and compensation. | `sagas.RetryPolicy`, in `Step.Retry` |
 | Idempotency key | A key that is unique for each execution and step. It is the same on every attempt and on the compensation. The step sends it to the outside service. | `sagas.IdempotencyKey(ctx)`, `CallInfo.IdempotencyKey()` |
@@ -30,13 +30,13 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Permanent error | An error that stops the retries at once. | `sagas.Permanent(err)` |
 | Journal | The append-only record of what an execution intends and did. The library writes each intent before the call. | `sagas.Journal` |
 | Event | One record in the journal. The library never consumes, removes or acknowledges it. | `sagas.Event` |
-| Expected sequence | The condition on a journal write. The journal refuses an event whose sequence number does not follow the last one of its execution. An exact resend by the same `Run` call is the one exception. The condition keeps one writer per execution. It is not an acknowledgment. | `Event.Seq` |
+| Expected sequence | The condition on a journal write. The journal refuses an event whose sequence number does not follow the last one of its execution. An exact resend by the same `Run` call is the one exception. The condition keeps one writer, one `Run` call, per execution. It is not an acknowledgment. | `Event.Seq` |
 | Commit | Applying the state changes of a successful attempt to the committed state at once. The committed state is the state that the successful attempts so far changed. Each commit is a journal event. | no code name |
 | Conflict | Two concurrent steps changed the same top-level field of the state. The later commit fails. | `ErrConflict` |
 | Handler | The function that runs one action or one compensation. | `sagas.Call` |
 | Middleware | A value that wraps a handler to add behavior, such as logging, a limit or fault injection. | `sagas.Middleware` |
-| Result | What `Run` reports: `nil` for a completed run, else a `*RunError`. It names the kind of end and the pending steps. It holds one `*sagas.Error` for each action or compensation that did not succeed, in the order they happened. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
-| Completed | Every step succeeded, or the library skipped it. | `nil`, `StatusCompleted` |
-| Compensated | Backward recovery ran, and every compensation succeeded. No other writer appended to the execution. | `ErrCompensated` |
+| Result | What `Run` reports. It is `nil` for a completed run whose end the journal recorded, else a `*RunError`. The `*RunError` names the kind of end and the pending steps. It holds one `*sagas.Error` for each action or compensation that did not succeed, in the order they happened. If another writer appended to the execution first, the kind is `ErrConcurrentWriter`, whatever the end. If every step succeeded but the journal did not record the end, the kind is `ErrJournal` or `ErrGraceEnded`. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
+| Completed | Every step succeeded, or the library skipped it, and the journal recorded the end. | `nil`, `StatusCompleted` |
+| Compensated | Backward recovery ran, and every compensation succeeded. | `ErrCompensated` |
 | Compensation failed | A compensation did not succeed. A person must finish the undo. | `ErrCompensationFailed` |
-| Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. No other writer appended to the execution. A person must finish it. The library never undoes it. | `ErrIncomplete` |
+| Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish it. The library never undoes it. | `ErrIncomplete` |
