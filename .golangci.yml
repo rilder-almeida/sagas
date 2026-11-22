@@ -134,6 +134,7 @@ linters:
             - "!$test"
           allow:
             - $gostd
+            - github.com/rilder-almeida/sagas
     dupl:
       threshold: 100
     embeddedstructfieldcheck:
