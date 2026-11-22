@@ -3,6 +3,7 @@ package sagastest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -34,6 +35,17 @@ func withoutErr(calls []Call) []Call {
 	}
 
 	return out
+}
+
+func errMessages(calls []Call) []string {
+	msgs := make([]string, len(calls))
+	for i, c := range calls {
+		if c.Err != nil {
+			msgs[i] = c.Err.Error()
+		}
+	}
+
+	return msgs
 }
 
 func assertSameErr(t *testing.T, want, got error) {
@@ -122,6 +134,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 		build     func() []sagas.Flow
 		inner     []sagas.Middleware
 		wantCalls []Call
+		wantMsgs  []string
 		wantErr   bool
 		wantPanic bool
 		wantCause bool
@@ -136,6 +149,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 				}
 			},
 			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil), exec("c", keyC, 1, nil)},
+			wantMsgs:  []string{"", "", ""},
 		},
 		{
 			name: "[Fail] When: the last step fails ; Should: record the error it returned",
@@ -146,6 +160,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 				}
 			},
 			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil), exec("c", keyC, 1, errBoom)},
+			wantMsgs:  []string{"", "", errBoom.Error()},
 			wantErr:   true,
 		},
 		{
@@ -155,6 +170,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 				return []sagas.Flow{plain("a"), plain("b")}
 			},
 			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil)},
+			wantMsgs:  []string{"", ""},
 			unordered: true,
 		},
 		{
@@ -164,6 +180,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 				return []sagas.Flow{newProbe("a", fastRetry(), errBoom)}
 			},
 			wantCalls: []Call{exec("a", keyA, 1, errBoom), exec("a", keyA, 2, errBoom)},
+			wantMsgs:  []string{errBoom.Error(), errBoom.Error()},
 			wantErr:   true,
 		},
 		{
@@ -177,7 +194,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 				exec("b", keyB, 1, errBoom),
 				{Step: "a", Phase: sagas.PhaseCompensate, Attempt: 1, Key: keyA},
 			},
-			wantErr: true,
+			wantMsgs: []string{"", errBoom.Error(), ""},
+			wantErr:  true,
 		},
 		{
 			name: "[Success] When: a step has a pivot ; Should: record the pivot phase",
@@ -186,6 +204,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 				return []sagas.Flow{newPivot("a")}
 			},
 			wantCalls: []Call{{Step: "a", Phase: sagas.PhasePivot, Attempt: 1, Key: keyA}},
+			wantMsgs:  []string{""},
 		},
 		{
 			name: "[Fail] When: the call panics below the recorder ; " +
@@ -196,8 +215,10 @@ func Test_Recorder_Middleware(t *testing.T) {
 			},
 			inner:     []sagas.Middleware{Panic("a")},
 			wantCalls: []Call{exec("a", keyA, 1, sagas.ErrPanic)},
+			wantMsgs:  []string{`sagas: panic: sagastest: injected panic in step "a"`},
 			wantErr:   true,
 			wantPanic: true,
+			wantCause: true,
 		},
 		{
 			name: "[Fail] When: the step method panics ; " +
@@ -207,6 +228,7 @@ func Test_Recorder_Middleware(t *testing.T) {
 				return []sagas.Flow{newPanicProbe("a")}
 			},
 			wantCalls: []Call{exec("a", keyA, 1, sagas.ErrPanic)},
+			wantMsgs:  []string{"sagas: panic: " + errBoom.Error()},
 			wantErr:   true,
 			wantPanic: true,
 			wantCause: true,
@@ -233,6 +255,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 			} else {
 				assert.Equal(t, withoutErr(tt.wantCalls), withoutErr(calls))
 			}
+
+			assert.Equal(t, tt.wantMsgs, errMessages(calls))
 
 			for _, want := range tt.wantCalls {
 				i := slices.IndexFunc(calls, func(c Call) bool {
@@ -282,6 +306,65 @@ func Test_Recorder_Calls(t *testing.T) {
 			tt.corrupt(first)
 
 			assert.Equal(t, want, rec.Calls())
+		})
+	}
+}
+
+func Test_recordedPanicError_Error(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name:  "[Success] When: the panic value is an error ; Should: print the message of the panic error",
+			value: errBoom,
+			want:  "sagas: panic: boom",
+		},
+		{
+			name:  "[Success] When: the panic value is a string ; Should: print the message of the panic error",
+			value: "stop",
+			want:  "sagas: panic: stop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := &recordedPanicError{err: &sagas.PanicError{Value: tt.value}}
+
+			assert.Equal(t, tt.want, err.Error())
+		})
+	}
+}
+
+func Test_recordedPanicError_Unwrap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		inner error
+	}{
+		{
+			name:  "[Success] When: it holds a panic error ; Should: return sagas.ErrPanic and the panic error",
+			inner: &sagas.PanicError{Value: errBoom},
+		},
+		{
+			name:  "[Success] When: it holds a wrapped panic error ; Should: return sagas.ErrPanic and the wrapper",
+			inner: fmt.Errorf("outer: %w", &sagas.PanicError{Value: "stop"}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := &recordedPanicError{err: tt.inner}
+
+			assert.Equal(t, []error{sagas.ErrPanic, tt.inner}, err.Unwrap())
 		})
 	}
 }

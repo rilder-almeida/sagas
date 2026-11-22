@@ -3,7 +3,7 @@ package sagastest
 import (
 	"context"
 	"errors"
-	"fmt"
+	"runtime/debug"
 	"slices"
 	"sync"
 
@@ -63,18 +63,22 @@ func (r *Recorder) record(info sagas.CallInfo, err error) {
 	})
 }
 
+type recordedPanicError struct {
+	err error
+}
+
+func (e *recordedPanicError) Error() string { return e.err.Error() }
+
+func (e *recordedPanicError) Unwrap() []error { return []error{sagas.ErrPanic, e.err} }
+
 func markPanic(err error) error {
 	if _, ok := errors.AsType[*sagas.PanicError](err); ok {
-		return fmt.Errorf("%w: %w", sagas.ErrPanic, err)
+		return &recordedPanicError{err: err}
 	}
 
 	return err
 }
 
 func panicError(v any) error {
-	if err, ok := v.(error); ok {
-		return fmt.Errorf("%w: %w", sagas.ErrPanic, err)
-	}
-
-	return fmt.Errorf("%w: %v", sagas.ErrPanic, v)
+	return &recordedPanicError{err: &sagas.PanicError{Value: v, Stack: debug.Stack()}}
 }
