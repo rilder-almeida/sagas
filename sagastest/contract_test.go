@@ -433,6 +433,8 @@ type fakeTB struct {
 
 func (*fakeTB) Helper() {}
 
+func (*fakeTB) Context() context.Context { return context.Background() }
+
 func (f *fakeTB) Errorf(format string, args ...any) {
 	f.errors = append(f.errors, fmt.Sprintf(format, args...))
 }
@@ -443,6 +445,36 @@ func (f *fakeTB) Error(args ...any) {
 
 func (f *fakeTB) Logf(format string, args ...any) {
 	f.logs = append(f.logs, fmt.Sprintf(format, args...))
+}
+
+func ExampleCompensations() {
+	setup := func(mw ...sagas.Middleware) Case[probeState] {
+		book := newLedger(noTombstone)
+		flow := chargeThenShip(book)
+
+		saga, err := sagas.New[probeState]("shop", flow, sagas.WithMiddleware(mw...))
+		if err != nil {
+			panic(err)
+		}
+
+		return Case[probeState]{
+			Saga:  saga,
+			State: &probeState{},
+			Check: func(*probeState) error { return book.check() },
+			Flow:  flow,
+			Late:  lateCharge(book),
+		}
+	}
+
+	tb := &fakeTB{}
+	Compensations(tb, setup)
+
+	for _, msg := range tb.errors {
+		fmt.Println(msg)
+	}
+
+	// Output:
+	// sagastest: step "charge", case "step lands after its compensation": Check: balance off: balance 100, want 0
 }
 
 func Test_Compensations(t *testing.T) {
