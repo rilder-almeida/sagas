@@ -66,7 +66,9 @@ func (p RetryPolicy) multiplier() float64 {
 	return DefaultMultiplier
 }
 
-// NoRetry returns the policy of a step that makes one attempt and never retries.
+// NoRetry returns the policy of one attempt and no retry. It governs the compensation too, which also gets one
+// attempt. A persistent compensation takes a higher Retry.Attempts instead, bounded by the caller's context and
+// then by WithRecoveryTimeout.
 func NoRetry() RetryPolicy { return RetryPolicy{Attempts: 1} }
 
 var errPermanent = errors.New("sagas: permanent")

@@ -12,8 +12,10 @@ import (
 // takes the type name; set Name for a durable journal so a rename keeps it. New cannot see a method lost to an embedded
 // field that also embeds a provider of it, or to a field of the same name: declare step methods on the step type.
 type Step struct {
-	Name                string
-	Description         string
+	Name        string
+	Description string
+	// Retry governs the action and the compensation, so under NoRetry the compensation gets one attempt. More
+	// attempts make a compensation persist, bounded by the caller's context, then by WithRecoveryTimeout.
 	Retry               RetryPolicy
 	AttemptTimeout      time.Duration
 	CompensationFailure CompensationFailurePolicy
