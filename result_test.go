@@ -555,7 +555,7 @@ func Test_pendingOf(t *testing.T) {
 			want: []string{bookStep},
 		},
 		{
-			name: "[Success] When: a compensable step without a compensation loses its outcome ; Should: list nothing",
+			name: "[Success] When: a step without compensation loses its outcome ; Should: list nothing",
 			events: bareEvents(bookStep,
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepStarted, Step: bookStep},
@@ -564,7 +564,7 @@ func Test_pendingOf(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "[Success] When: a compensable step without a compensation ends unknown ; Should: list nothing",
+			name: "[Success] When: a step without compensation ends unknown ; Should: list nothing",
 			events: bareEvents(bookStep,
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepUnknown, Step: bookStep},

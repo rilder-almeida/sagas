@@ -1170,6 +1170,7 @@ func failureRows() []runRow {
 func journalRows() []runRow {
 	return []runRow{
 		rejectionRow(),
+		undoableRejectionRow(),
 		lateSiblingRow(),
 		predicateAppendRow(),
 		outcomeAppendRow(),
@@ -1178,6 +1179,7 @@ func journalRows() []runRow {
 		failureAppendRow(),
 		intentAppendRow(),
 		intentClosingFailsRow(),
+		intentClosingFailsUndoableRow(),
 		predicateIntentRow(),
 		finishedAppendRow(),
 		finishedRejectedRow(),
@@ -1350,6 +1352,23 @@ func rejectionRow() runRow {
 	}
 }
 
+func undoableRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal rejects the outcome of a step with a compensation ; Should: list it in Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.step("b"))
+		},
+		script:      map[int]error{3: ErrConcurrentWriter},
+		wantStatus:  statusUnfinished,
+		wantKind:    ErrConcurrentWriter,
+		wantErrs:    []error{ErrConcurrentWriter},
+		wantNotErrs: []error{ErrJournal},
+		wantSteps:   map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
+		wantPending: []string{"a"},
+		wantTrail:   seq(opened, startOf("a")),
+	}
+}
+
 func lateSiblingRow() runRow {
 	return runRow{
 		name: "[Fail] When: a sibling finishes after a rejection ; Should: commit and append nothing for it",
@@ -1494,6 +1513,23 @@ func intentClosingFailsRow() runRow {
 		wantErrs:   []error{ErrJournal, errJournalDown},
 		wantSteps:  map[string]stepStatus{"a": stepUnknown},
 		wantTrail:  seq(opened, startOf("a")),
+	}
+}
+
+func intentClosingFailsUndoableRow() runRow {
+	return runRow{
+		name: "[Fail] When: the closing failure append of a step with a compensation fails ; " +
+			"Should: leave it pending in the journal only",
+		steps: func(rec *recorder) Flow {
+			return rec.undoable("a")
+		},
+		script:          map[int]error{2: errJournalDown, 3: errJournalDown},
+		wantStatus:      statusUnfinished,
+		wantKind:        ErrCompensated,
+		wantErrs:        []error{ErrJournal, errJournalDown},
+		wantSteps:       map[string]stepStatus{"a": stepUnknown},
+		wantJournalOnly: []string{"a"},
+		wantTrail:       seq(opened, startOf("a")),
 	}
 }
 
