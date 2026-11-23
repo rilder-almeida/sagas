@@ -73,15 +73,24 @@ func journalEvent(seq int) *sagas.Event {
 		Changed: []string{"changed"},
 		Steps: []sagas.StepZone{
 			{Name: "step", Zone: sagas.ZoneCompensable, Compensable: true},
-			{Name: "bare", Zone: sagas.ZoneCompensable},
+			{Name: "bare", Zone: sagas.ZonePivot},
 		},
-		Time: time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC),
+		Status: sagas.StatusCompleted,
+		Time:   time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC),
 	}
 }
 
 func otherEvent(seq int) *sagas.Event {
 	e := journalEvent(seq)
 	e.Step = "other"
+
+	return e
+}
+
+func emptySlicesEvent(seq int) *sagas.Event {
+	e := journalEvent(seq)
+	e.Kind = sagas.EventSagaFinished
+	e.Changed, e.Steps, e.Err.Previous = []string{}, []sagas.StepZone{}, []string{}
 
 	return e
 }
@@ -118,8 +127,22 @@ func wantSentinel(tb testing.TB, rule, what string, err, sentinel error) {
 func sameEvent(got, want *sagas.Event) bool {
 	a, b := *got, *want
 	a.Time, b.Time = time.Time{}, time.Time{}
+	nilEmptySlices(reflect.ValueOf(&a).Elem())
+	nilEmptySlices(reflect.ValueOf(&b).Elem())
 
 	return got.Time.Equal(want.Time) && reflect.DeepEqual(a, b)
+}
+
+func nilEmptySlices(v reflect.Value) {
+	for _, f := range v.Fields() {
+		switch {
+		case f.Kind() == reflect.Slice && f.Len() == 0 && f.CanSet():
+			f.SetZero()
+		case f.Kind() == reflect.Struct && f.CanSet():
+			nilEmptySlices(f)
+		default:
+		}
+	}
 }
 
 func wantStored(tb testing.TB, rule string, j sagas.Journal, execution string, want ...*sagas.Event) {
@@ -161,7 +184,8 @@ func readRules(tb testing.TB, newJournal func() sagas.Journal) {
 	j := newJournal()
 	wantNil(tb, ruleStoredEvents, "Append of seq 1", j.Append(ctx, journalEvent(1)))
 	wantNil(tb, ruleStoredEvents, "Append of seq 2", j.Append(ctx, otherEvent(seqSecond)))
-	wantStored(tb, ruleStoredEvents, j, "execution", journalEvent(1), otherEvent(seqSecond))
+	wantNil(tb, ruleStoredEvents, "Append of seq 3", j.Append(ctx, emptySlicesEvent(seqThird)))
+	wantStored(tb, ruleStoredEvents, j, "execution", journalEvent(1), otherEvent(seqSecond), emptySlicesEvent(seqThird))
 
 	reader, ok := j.(sagas.EventReader)
 	if !ok {
@@ -349,6 +373,22 @@ func contextRules(tb testing.TB, newJournal func() sagas.Journal) {
 	wantError(tb, ruleDoneContext, "Append of seq 1 with a done context", j.Append(done, journalEvent(1)))
 	wantNil(tb, ruleDoneContext, "Append of another event at seq 1 after a done context",
 		j.Append(tb.Context(), otherEvent(1)))
+
+	reader, ok := j.(sagas.EventReader)
+	if !ok {
+		return
+	}
+
+	events, err := reader.Events(done, "execution")
+	if err == nil {
+		ruleFailedf(tb, ruleDoneContext,
+			"Events of execution %q with a done context returned nil and %d events, want %v",
+			"execution", len(events), done.Err())
+
+		return
+	}
+
+	wantSentinel(tb, ruleDoneContext, `Events of execution "execution" with a done context`, err, done.Err())
 }
 
 func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {

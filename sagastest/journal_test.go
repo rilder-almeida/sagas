@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rilder-almeida/sagas"
 	"github.com/stretchr/testify/assert"
@@ -181,6 +182,44 @@ func (j dropsCause) Events(ctx context.Context, execution string) ([]sagas.Event
 	}
 
 	return events, err
+}
+
+type dropsStatus struct{ *sagas.MemoryJournal }
+
+func (j dropsStatus) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	for i := range events {
+		events[i].Status = ""
+	}
+
+	return events, err
+}
+
+type readsEmptyAsNil struct{ *sagas.MemoryJournal }
+
+func (j readsEmptyAsNil) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	for i := range events {
+		if len(events[i].Changed) == 0 {
+			events[i].Changed = nil
+		}
+
+		if len(events[i].Steps) == 0 {
+			events[i].Steps = nil
+		}
+
+		if len(events[i].Err.Previous) == 0 {
+			events[i].Err.Previous = nil
+		}
+	}
+
+	return events, err
+}
+
+type readIgnoresContext struct{ *sagas.MemoryJournal }
+
+func (j readIgnoresContext) Events(_ context.Context, execution string) ([]sagas.Event, error) {
+	return j.MemoryJournal.Events(context.Background(), execution)
 }
 
 type emptyForMissing struct{ *sagas.MemoryJournal }
@@ -455,6 +494,22 @@ func journalRows() []journalRow {
 			wantCauses: []string{"Cause: Previous", `Events of execution "execution" returned event 2 as`},
 		},
 		{
+			name:       "[Fail] When: the journal drops Status ; Should: report the stored events that differ",
+			newJournal: func() sagas.Journal { return dropsStatus{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses: []string{`Events of execution "execution" returned event 1 as`, "Status: Time"},
+		},
+		{
+			name:       "[Success] When: the journal reads an empty slice back as nil ; Should: report nothing",
+			newJournal: func() sagas.Journal { return readsEmptyAsNil{sagas.NewMemoryJournal()} },
+		},
+		{
+			name:       "[Fail] When: Events ignores a done context ; Should: report the events it returned",
+			newJournal: func() sagas.Journal { return readIgnoresContext{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleDoneContext},
+			wantCauses: []string{`Events of execution "execution" with a done context returned nil`},
+		},
+		{
 			name:       "[Fail] When: the journal returns an empty slice for a missing execution ; Should: report it",
 			newJournal: func() sagas.Journal { return emptyForMissing{sagas.NewMemoryJournal()} },
 			wantRules:  []string{ruleNoEvents},
@@ -639,4 +694,86 @@ func Test_Journal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func zeroFields(v reflect.Value, path string) []string {
+	switch {
+	case v.Kind() == reflect.Slice && v.Len() == 0:
+		return []string{path}
+	case v.Kind() == reflect.Slice:
+		zero := zeroFields(v.Index(0), path+"[]")
+		for i := 1; i < v.Len(); i++ {
+			inElement := zeroFields(v.Index(i), path+"[]")
+			zero = slices.DeleteFunc(zero, func(p string) bool { return !slices.Contains(inElement, p) })
+		}
+
+		return zero
+	case v.Kind() == reflect.Struct && v.Type() != reflect.TypeFor[time.Time]():
+		var zero []string
+		for field, value := range v.Fields() {
+			zero = append(zero, zeroFields(value, path+"."+field.Name)...)
+		}
+
+		return zero
+	case v.IsZero():
+		return []string{path}
+	default:
+		return nil
+	}
+}
+
+func Test_Journal_referenceEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event *sagas.Event
+		want  []string
+	}{
+		{
+			name:  "[Success] When: the reference event of the contract ; Should: find no zero field",
+			event: journalEvent(1),
+		},
+		{
+			name:  "[Success] When: the other reference event of the contract ; Should: find no zero field",
+			event: otherEvent(seqSecond),
+		},
+		{
+			name:  "[Fail] When: the reference event with empty slices ; Should: name only the empty slices",
+			event: emptySlicesEvent(seqThird),
+			want:  []string{"Event.Err.Previous", "Event.Changed", "Event.Steps"},
+		},
+		{
+			name:  "[Fail] When: an event without Status ; Should: name Status",
+			event: withoutStatus(journalEvent(1)),
+			want:  []string{"Event.Status"},
+		},
+		{
+			name:  "[Fail] When: no step is compensable ; Should: name the Compensable field of the steps",
+			event: withoutCompensable(journalEvent(1)),
+			want:  []string{"Event.Steps[].Compensable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, zeroFields(reflect.ValueOf(*tt.event), "Event"))
+		})
+	}
+}
+
+func withoutStatus(e *sagas.Event) *sagas.Event {
+	e.Status = ""
+
+	return e
+}
+
+func withoutCompensable(e *sagas.Event) *sagas.Event {
+	for i := range e.Steps {
+		e.Steps[i].Compensable = false
+	}
+
+	return e
 }

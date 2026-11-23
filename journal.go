@@ -22,16 +22,16 @@ var (
 
 var errInvalidEvent = errors.New("sagas: invalid event")
 
-// Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of
-// every field of e when its Seq is its execution's last Seq plus one; an equal resend from the same Writer (slices
-// by content, Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected, wrapping
-// ErrExecutionExists at Seq 1 and ErrConcurrentWriter later; a nil e, a Seq below 1 or a Version not EventVersion
-// is invalid. Once ctx is done, Append stores nothing and returns an error. Rerun sagastest.Journal on each upgrade.
+// Journal only appends events and never delivers work, removes or marks one. A nil e, a Seq below 1 or a Version not
+// EventVersion is invalid. Append stores a deep copy of every field of e, never e or its slices, when e.Seq is its
+// execution's last Seq plus one; an equal resend from the same Writer (slices by content, Time by Time.Equal) returns
+// nil and writes nothing. Any other Seq is rejected, wrapping ErrExecutionExists at Seq 1 and ErrConcurrentWriter
+// later. Once ctx is done, Append stores nothing and returns an error. Rerun sagastest.Journal on each upgrade.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
 
-// EventReader reads a Journal: an execution's events in Seq order, or an error wrapping ErrNoEvents if it holds none.
+// EventReader gives an execution's events by Seq, or an error wrapping ctx.Err() if ctx is done or ErrNoEvents if none.
 type EventReader interface {
 	Events(ctx context.Context, execution string) ([]Event, error)
 }
