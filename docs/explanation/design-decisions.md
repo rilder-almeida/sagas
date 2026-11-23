@@ -130,7 +130,7 @@ The grace context is a context that the caller's cancel does not end. At the end
 
 A caller can cancel its context with a reason through `context.WithCancelCause`, and `context.Cause(ctx)` returns that reason. The error of `Run` matches the cause of the caller's context only where the cancel interrupted work. If `ctx.Err()` and the cause differ, it matches both. The rejected rule matches after every cancel, so a real forward-only failure looks like a cancel.
 
-### A late cancel does not undo finished work
+### A late cancel does not undo a run whose steps all succeeded
 
 If every step succeeded, the cancel came late and the journal recorded the end, the run completes. The rejected design compensates in that case, and it undoes a saga that already reached its goal.
 
