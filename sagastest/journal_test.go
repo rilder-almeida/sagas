@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rilder-almeida/sagas"
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,15 @@ func (j *keepsSlices) Append(ctx context.Context, e *sagas.Event) error {
 	return err
 }
 
+func storedOf(ctx context.Context, j *sagas.MemoryJournal, execution string) ([]sagas.Event, error) {
+	events, err := j.Events(ctx, execution)
+	if errors.Is(err, sagas.ErrNoEvents) {
+		return nil, nil
+	}
+
+	return events, err
+}
+
 type journalAcceptsGaps struct{ *sagas.MemoryJournal }
 
 func (j journalAcceptsGaps) Append(ctx context.Context, e *sagas.Event) error {
@@ -77,7 +87,12 @@ func (j journalAcceptsGaps) Append(ctx context.Context, e *sagas.Event) error {
 		return j.MemoryJournal.Append(ctx, e)
 	}
 
-	if e.Seq > len(j.Events(e.Execution))+1 {
+	stored, err := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if err != nil {
+		return err
+	}
+
+	if e.Seq > len(stored)+1 {
 		return nil
 	}
 
@@ -101,11 +116,16 @@ func (j rejectsEqualResend) Append(ctx context.Context, e *sagas.Event) error {
 		return j.MemoryJournal.Append(ctx, e)
 	}
 
-	if e.Seq == 1 && len(j.Events(e.Execution)) > 0 {
+	stored, err := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if err != nil {
+		return err
+	}
+
+	if e.Seq == 1 && len(stored) > 0 {
 		return fmt.Errorf("%w: resend", sagas.ErrExecutionExists)
 	}
 
-	if e.Seq > 1 && e.Seq <= len(j.Events(e.Execution)) {
+	if e.Seq > 1 && e.Seq <= len(stored) {
 		return fmt.Errorf("%w: resend", sagas.ErrConcurrentWriter)
 	}
 
@@ -129,6 +149,96 @@ func (j dropsCompensable) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, &stored)
 }
 
+type ignoresVersion struct{ *sagas.MemoryJournal }
+
+func (j ignoresVersion) Append(ctx context.Context, e *sagas.Event) error {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored := *e
+	stored.Version = sagas.EventVersion
+
+	return j.MemoryJournal.Append(ctx, &stored)
+}
+
+type zeroesVersion struct{ *sagas.MemoryJournal }
+
+func (j zeroesVersion) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	for i := range events {
+		events[i].Version = 0
+	}
+
+	return events, err
+}
+
+type dropsCause struct{ *sagas.MemoryJournal }
+
+func (j dropsCause) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	for i := range events {
+		events[i].Err.Cause = ""
+	}
+
+	return events, err
+}
+
+type dropsStatus struct{ *sagas.MemoryJournal }
+
+func (j dropsStatus) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	for i := range events {
+		events[i].Status = ""
+	}
+
+	return events, err
+}
+
+type readsEmptyAsNil struct{ *sagas.MemoryJournal }
+
+func (j readsEmptyAsNil) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	for i := range events {
+		if len(events[i].Changed) == 0 {
+			events[i].Changed = nil
+		}
+
+		if len(events[i].Steps) == 0 {
+			events[i].Steps = nil
+		}
+
+		if len(events[i].Err.Previous) == 0 {
+			events[i].Err.Previous = nil
+		}
+	}
+
+	return events, err
+}
+
+type readIgnoresContext struct{ *sagas.MemoryJournal }
+
+func (j readIgnoresContext) Events(_ context.Context, execution string) ([]sagas.Event, error) {
+	return j.MemoryJournal.Events(context.Background(), execution)
+}
+
+type emptyForMissing struct{ *sagas.MemoryJournal }
+
+func (j emptyForMissing) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
+	events, err := j.MemoryJournal.Events(ctx, execution)
+	if errors.Is(err, sagas.ErrNoEvents) {
+		return []sagas.Event{}, nil
+	}
+
+	return events, err
+}
+
+type appendOnly struct{ journal sagas.Journal }
+
+func (j appendOnly) Append(ctx context.Context, e *sagas.Event) error {
+	return j.journal.Append(ctx, e)
+}
+
 type acceptsOtherEvent struct {
 	*sagas.MemoryJournal
 
@@ -143,7 +253,12 @@ func (j *acceptsOtherEvent) Append(ctx context.Context, e *sagas.Event) error {
 		return j.MemoryJournal.Append(ctx, e)
 	}
 
-	if e.Seq >= 1 && e.Seq <= len(j.Events(e.Execution)) {
+	stored, err := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if err != nil {
+		return err
+	}
+
+	if e.Seq >= 1 && e.Seq <= len(stored) {
 		return nil
 	}
 
@@ -180,7 +295,11 @@ func (j *acceptsSecondWriter) Append(ctx context.Context, e *sagas.Event) error 
 		return j.MemoryJournal.Append(ctx, e)
 	}
 
-	stored := j.Events(e.Execution)
+	stored, err := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if err != nil {
+		return err
+	}
+
 	if e.Seq >= j.fromSeq && e.Seq <= len(stored) && stored[e.Seq-1].Writer != e.Writer {
 		return nil
 	}
@@ -191,7 +310,16 @@ func (j *acceptsSecondWriter) Append(ctx context.Context, e *sagas.Event) error 
 type acceptsGapOnEmpty struct{ *sagas.MemoryJournal }
 
 func (j acceptsGapOnEmpty) Append(ctx context.Context, e *sagas.Event) error {
-	if e != nil && e.Seq > 1 && len(j.Events(e.Execution)) == 0 {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored, err := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if err != nil {
+		return err
+	}
+
+	if e.Seq > 1 && len(stored) == 0 {
 		return nil
 	}
 
@@ -213,7 +341,12 @@ func (j *swapsSentinelForSecondWriter) Append(ctx context.Context, e *sagas.Even
 		return err
 	}
 
-	if stored := j.Events(e.Execution); e.Seq <= len(stored) && stored[e.Seq-1].Writer != e.Writer {
+	stored, readErr := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if readErr != nil {
+		return errors.Join(err, readErr)
+	}
+
+	if e.Seq <= len(stored) && stored[e.Seq-1].Writer != e.Writer {
 		return fmt.Errorf("%w: swapped", sagas.ErrExecutionExists)
 	}
 
@@ -249,8 +382,16 @@ func (j acceptsNil) Append(ctx context.Context, e *sagas.Event) error {
 type comparesTimeWithEquals struct{ *sagas.MemoryJournal }
 
 func (j comparesTimeWithEquals) Append(ctx context.Context, e *sagas.Event) error {
-	if e != nil && e.Seq >= 1 && e.Seq <= len(j.Events(e.Execution)) &&
-		j.Events(e.Execution)[e.Seq-1].Time != e.Time {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored, err := storedOf(ctx, j.MemoryJournal, e.Execution)
+	if err != nil {
+		return err
+	}
+
+	if e.Seq >= 1 && e.Seq <= len(stored) && stored[e.Seq-1].Time != e.Time {
 		return fmt.Errorf("%w: time differs", sagas.ErrConcurrentWriter)
 	}
 
@@ -277,17 +418,17 @@ func (j *rejectsSamePointer) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
-func Test_Journal(t *testing.T) {
-	t.Parallel()
+type journalRow struct {
+	name       string
+	newJournal func() sagas.Journal
+	wantRules  []string
+	wantCauses []string
+}
 
+func journalRows() []journalRow {
 	shared := sagas.NewMemoryJournal()
 
-	tests := []struct {
-		name       string
-		newJournal func() sagas.Journal
-		wantRules  []string
-		wantCauses []string
-	}{
+	return []journalRow{
 		{
 			name:       "[Success] When: the journal is the memory journal ; Should: report nothing",
 			newJournal: func() sagas.Journal { return sagas.NewMemoryJournal() },
@@ -323,11 +464,62 @@ func Test_Journal(t *testing.T) {
 		{
 			name:       "[Fail] When: the journal drops Compensable of each step ; Should: report the accepted change",
 			newJournal: func() sagas.Journal { return dropsCompensable{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleStoredCopy},
+			wantRules:  []string{ruleStoredCopy, ruleStoredEvents},
 			wantCauses: []string{
+				`Events of execution "execution" returned event 1 as`,
 				"resend of seq 1 after the caller changed its Steps Compensable from true returned nil",
 				"resend of seq 1 after the caller changed its Steps Compensable from false returned nil",
 			},
+		},
+		{
+			name:       "[Fail] When: the journal ignores Version ; Should: report the unknown versions it accepted",
+			newJournal: func() sagas.Journal { return ignoresVersion{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleUnknownVersion, ruleStoredCopy},
+			wantCauses: []string{
+				"Append of an event with version 0 returned nil",
+				"Append of an event with version 2 returned nil",
+				"resend of seq 1 after the caller changed its Version returned nil",
+			},
+		},
+		{
+			name:       "[Fail] When: the journal stores Version as 0 ; Should: report the stored events that differ",
+			newJournal: func() sagas.Journal { return zeroesVersion{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses: []string{"Version:0", `Events of execution "execution" returned event 1 as`},
+		},
+		{
+			name:       "[Fail] When: the journal drops Err.Cause ; Should: report the stored events that differ",
+			newJournal: func() sagas.Journal { return dropsCause{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses: []string{"Cause: Previous", `Events of execution "execution" returned event 2 as`},
+		},
+		{
+			name:       "[Fail] When: the journal drops Status ; Should: report the stored events that differ",
+			newJournal: func() sagas.Journal { return dropsStatus{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses: []string{`Events of execution "execution" returned event 1 as`, "Status: Time"},
+		},
+		{
+			name:       "[Success] When: the journal reads an empty slice back as nil ; Should: report nothing",
+			newJournal: func() sagas.Journal { return readsEmptyAsNil{sagas.NewMemoryJournal()} },
+		},
+		{
+			name:       "[Fail] When: Events ignores a done context ; Should: report the events it returned",
+			newJournal: func() sagas.Journal { return readIgnoresContext{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleDoneContext},
+			wantCauses: []string{`Events of execution "execution" with a done context returned nil`},
+		},
+		{
+			name:       "[Fail] When: the journal returns an empty slice for a missing execution ; Should: report it",
+			newJournal: func() sagas.Journal { return emptyForMissing{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleNoEvents},
+			wantCauses: []string{`Events of execution "missing" returned 0 events and a nil error`},
+		},
+		{
+			name:       "[Fail] When: the journal has no Events method ; Should: report that it is not an EventReader",
+			newJournal: func() sagas.Journal { return appendOnly{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleEventReader},
+			wantCauses: []string{"does not implement sagas.EventReader"},
 		},
 		{
 			name:       "[Fail] When: the journal accepts a gap ; Should: report that seq 3 after seq 1 was accepted",
@@ -454,8 +646,12 @@ func Test_Journal(t *testing.T) {
 			},
 		},
 	}
+}
 
-	for _, tt := range tests {
+func Test_Journal(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range journalRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -498,4 +694,86 @@ func Test_Journal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func zeroFields(v reflect.Value, path string) []string {
+	switch {
+	case v.Kind() == reflect.Slice && v.Len() == 0:
+		return []string{path}
+	case v.Kind() == reflect.Slice:
+		zero := zeroFields(v.Index(0), path+"[]")
+		for i := 1; i < v.Len(); i++ {
+			inElement := zeroFields(v.Index(i), path+"[]")
+			zero = slices.DeleteFunc(zero, func(p string) bool { return !slices.Contains(inElement, p) })
+		}
+
+		return zero
+	case v.Kind() == reflect.Struct && v.Type() != reflect.TypeFor[time.Time]():
+		var zero []string
+		for field, value := range v.Fields() {
+			zero = append(zero, zeroFields(value, path+"."+field.Name)...)
+		}
+
+		return zero
+	case v.IsZero():
+		return []string{path}
+	default:
+		return nil
+	}
+}
+
+func Test_Journal_referenceEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event *sagas.Event
+		want  []string
+	}{
+		{
+			name:  "[Success] When: the reference event of the contract ; Should: find no zero field",
+			event: journalEvent(1),
+		},
+		{
+			name:  "[Success] When: the other reference event of the contract ; Should: find no zero field",
+			event: otherEvent(seqSecond),
+		},
+		{
+			name:  "[Fail] When: the reference event with empty slices ; Should: name only the empty slices",
+			event: emptySlicesEvent(seqThird),
+			want:  []string{"Event.Err.Previous", "Event.Changed", "Event.Steps"},
+		},
+		{
+			name:  "[Fail] When: an event without Status ; Should: name Status",
+			event: withoutStatus(journalEvent(1)),
+			want:  []string{"Event.Status"},
+		},
+		{
+			name:  "[Fail] When: no step is compensable ; Should: name the Compensable field of the steps",
+			event: withoutCompensable(journalEvent(1)),
+			want:  []string{"Event.Steps[].Compensable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, zeroFields(reflect.ValueOf(*tt.event), "Event"))
+		})
+	}
+}
+
+func withoutStatus(e *sagas.Event) *sagas.Event {
+	e.Status = ""
+
+	return e
+}
+
+func withoutCompensable(e *sagas.Event) *sagas.Event {
+	for i := range e.Steps {
+		e.Steps[i].Compensable = false
+	}
+
+	return e
 }

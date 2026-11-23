@@ -21,6 +21,12 @@ This release rewrites the library. The API breaks with every earlier tag. Most c
 - `sagas.IdempotencyKey(ctx)` for a step method and `CallInfo.IdempotencyKey()` for middleware.
 - `Run` returns nil for a completed run and a `*sagas.RunError` for any other end that began.
 - The saga-started event carries `StepZone.Compensable` for each step, so a journal records whether the step has a compensation.
+- Every event carries `Version`, set to `sagas.EventVersion`. The version names the format of the event, which is its set of fields and their meaning. The library never reads stored events back. Your own code reads them, so it checks `Version` first and refuses a version that it does not know. A journal refuses an event with an unknown version.
+- Version 1 events hold no state values, so a later release cannot resume a version 1 execution.
+- The `sagas.EventReader` port reads the events of one execution back from a journal. `MemoryJournal` implements it, and `sagastest.Journal` requires it. If the context is done, `Events` returns an error that wraps the error of the context.
+- `sagas.ErrNoEvents` reports that the journal holds no event for an execution. `EventReader.Events` returns it instead of an empty list.
+- `Run` always starts a new execution. An execution ID that the journal of the saga already holds fails with `sagas.ErrExecutionExists`. Without `sagas.WithJournal`, each run gets a fresh journal, so a repeated ID does not fail.
+- The compatibility policy in the README says what each kind of release can change.
 - `Mermaid()` draws a saga as a Mermaid flowchart. The label of a step with `Enabled` ends in `(if Enabled)`.
 - `sagas.Inspect` runs the checks of `New` on a flow and reports each step.
 - The `sagastest` package: contract helpers, fault injection and a call recorder for your own saga.

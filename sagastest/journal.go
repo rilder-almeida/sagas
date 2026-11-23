@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -33,18 +34,29 @@ const (
 	ruleInvalidEvent   = "invalid event"
 	ruleTimeZone       = "time zone resend"
 	ruleExactResend    = "exact resend"
+	ruleUnknownVersion = "unknown version"
+	ruleEventReader    = "event reader"
+	ruleStoredEvents   = "stored events"
+	ruleNoEvents       = "no events"
 )
 
-// Journal proves the journal contract against any sagas.Journal. Each call of newJournal must return a fresh empty
-// journal.
+// Journal proves the journal contract against any sagas.Journal, which must also be a sagas.EventReader so the
+// contract can read back every field it stored. Each call of newJournal must return a fresh empty journal.
 func Journal(tb testing.TB, newJournal func() sagas.Journal) {
 	tb.Helper()
+
+	if _, ok := newJournal().(sagas.EventReader); !ok {
+		ruleFailedf(tb, ruleEventReader, "the journal does not implement sagas.EventReader")
+
+		return
+	}
 
 	if !freshRules(tb, newJournal) {
 		return
 	}
 
 	sequenceRules(tb, newJournal)
+	readRules(tb, newJournal)
 	copyRules(tb, newJournal)
 	concurrencyRules(tb, newJournal)
 	contextRules(tb, newJournal)
@@ -54,21 +66,31 @@ func Journal(tb testing.TB, newJournal func() sagas.Journal) {
 
 func journalEvent(seq int) *sagas.Event {
 	return &sagas.Event{
-		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Kind: sagas.EventStepStarted,
+		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Version: sagas.EventVersion,
+		Kind: sagas.EventStepStarted,
 		Step: "step", Attempt: 1,
 		Err:     sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
 		Changed: []string{"changed"},
 		Steps: []sagas.StepZone{
 			{Name: "step", Zone: sagas.ZoneCompensable, Compensable: true},
-			{Name: "bare", Zone: sagas.ZoneCompensable},
+			{Name: "bare", Zone: sagas.ZonePivot},
 		},
-		Time: time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC),
+		Status: sagas.StatusCompleted,
+		Time:   time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC),
 	}
 }
 
 func otherEvent(seq int) *sagas.Event {
 	e := journalEvent(seq)
 	e.Step = "other"
+
+	return e
+}
+
+func emptySlicesEvent(seq int) *sagas.Event {
+	e := journalEvent(seq)
+	e.Kind = sagas.EventSagaFinished
+	e.Changed, e.Steps, e.Err.Previous = []string{}, []sagas.StepZone{}, []string{}
 
 	return e
 }
@@ -100,6 +122,85 @@ func wantSentinel(tb testing.TB, rule, what string, err, sentinel error) {
 	if err != nil && !errors.Is(err, sentinel) {
 		ruleFailedf(tb, rule, "%s returned %v, want an error wrapping %v", what, err, sentinel)
 	}
+}
+
+func sameEvent(got, want *sagas.Event) bool {
+	a, b := *got, *want
+	a.Time, b.Time = time.Time{}, time.Time{}
+	nilEmptySlices(reflect.ValueOf(&a).Elem())
+	nilEmptySlices(reflect.ValueOf(&b).Elem())
+
+	return got.Time.Equal(want.Time) && reflect.DeepEqual(a, b)
+}
+
+func nilEmptySlices(v reflect.Value) {
+	for _, f := range v.Fields() {
+		switch {
+		case f.Kind() == reflect.Slice && f.Len() == 0 && f.CanSet():
+			f.SetZero()
+		case f.Kind() == reflect.Struct && f.CanSet():
+			nilEmptySlices(f)
+		default:
+		}
+	}
+}
+
+func wantStored(tb testing.TB, rule string, j sagas.Journal, execution string, want ...*sagas.Event) {
+	tb.Helper()
+
+	reader, ok := j.(sagas.EventReader)
+	if !ok {
+		ruleFailedf(tb, rule, "the journal does not implement sagas.EventReader")
+
+		return
+	}
+
+	got, err := reader.Events(tb.Context(), execution)
+	if err != nil {
+		ruleFailedf(tb, rule, "Events of execution %q returned %v, want nil", execution, err)
+
+		return
+	}
+
+	if len(got) != len(want) {
+		ruleFailedf(tb, rule, "Events of execution %q returned %d events, want %d", execution, len(got), len(want))
+
+		return
+	}
+
+	for i := range want {
+		if !sameEvent(&got[i], want[i]) {
+			ruleFailedf(tb, rule, "Events of execution %q returned event %d as %+v, want %+v",
+				execution, i+1, got[i], *want[i])
+		}
+	}
+}
+
+func readRules(tb testing.TB, newJournal func() sagas.Journal) {
+	tb.Helper()
+
+	ctx := tb.Context()
+
+	j := newJournal()
+	wantNil(tb, ruleStoredEvents, "Append of seq 1", j.Append(ctx, journalEvent(1)))
+	wantNil(tb, ruleStoredEvents, "Append of seq 2", j.Append(ctx, otherEvent(seqSecond)))
+	wantNil(tb, ruleStoredEvents, "Append of seq 3", j.Append(ctx, emptySlicesEvent(seqThird)))
+	wantStored(tb, ruleStoredEvents, j, "execution", journalEvent(1), otherEvent(seqSecond), emptySlicesEvent(seqThird))
+
+	reader, ok := j.(sagas.EventReader)
+	if !ok {
+		return
+	}
+
+	events, err := reader.Events(ctx, "missing")
+	if err == nil {
+		ruleFailedf(tb, ruleNoEvents, "Events of execution %q returned %d events and a nil error, want %v",
+			"missing", len(events), sagas.ErrNoEvents)
+
+		return
+	}
+
+	wantSentinel(tb, ruleNoEvents, `Events of execution "missing"`, err, sagas.ErrNoEvents)
 }
 
 func freshRules(tb testing.TB, newJournal func() sagas.Journal) bool {
@@ -179,6 +280,7 @@ type mutation struct {
 func copyMutations() []mutation {
 	return []mutation{
 		{"scalar field", func(e *sagas.Event) { e.Step = mutated }},
+		{"Version", func(e *sagas.Event) { e.Version = sagas.EventVersion + 1 }},
 		{"Changed slice", func(e *sagas.Event) { e.Changed[0] = mutated }},
 		{"Steps slice", func(e *sagas.Event) { e.Steps[0].Name = mutated }},
 		{"Steps Compensable from true", func(e *sagas.Event) { e.Steps[0].Compensable = false }},
@@ -201,6 +303,7 @@ func copyRules(tb testing.TB, newJournal func() sagas.Journal) {
 		wantError(tb, ruleStoredCopy, "resend of seq 1 after the caller changed its "+m.name, j.Append(ctx, e))
 		wantNil(tb, ruleStoredCopy, "resend of an unchanged copy of seq 1 after the caller changed its "+m.name,
 			j.Append(ctx, journalEvent(1)))
+		wantStored(tb, ruleStoredCopy, j, "execution", journalEvent(1))
 	}
 }
 
@@ -270,6 +373,22 @@ func contextRules(tb testing.TB, newJournal func() sagas.Journal) {
 	wantError(tb, ruleDoneContext, "Append of seq 1 with a done context", j.Append(done, journalEvent(1)))
 	wantNil(tb, ruleDoneContext, "Append of another event at seq 1 after a done context",
 		j.Append(tb.Context(), otherEvent(1)))
+
+	reader, ok := j.(sagas.EventReader)
+	if !ok {
+		return
+	}
+
+	events, err := reader.Events(done, "execution")
+	if err == nil {
+		ruleFailedf(tb, ruleDoneContext,
+			"Events of execution %q with a done context returned nil and %d events, want %v",
+			"execution", len(events), done.Err())
+
+		return
+	}
+
+	wantSentinel(tb, ruleDoneContext, `Events of execution "execution" with a done context`, err, done.Err())
 }
 
 func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {
@@ -279,6 +398,13 @@ func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {
 
 	wantError(tb, ruleInvalidEvent, "Append of a nil event", j.Append(tb.Context(), nil))
 	wantError(tb, ruleInvalidEvent, "Append of an event with seq 0", j.Append(tb.Context(), journalEvent(0)))
+
+	for _, version := range []int{0, sagas.EventVersion + 1} {
+		e := journalEvent(1)
+		e.Version = version
+		what := fmt.Sprintf("Append of an event with version %d", version)
+		wantError(tb, ruleUnknownVersion, what, j.Append(tb.Context(), e))
+	}
 }
 
 func resendRules(tb testing.TB, newJournal func() sagas.Journal) {

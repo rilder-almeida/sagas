@@ -420,6 +420,24 @@ flowchart TD
     class s3 forwardOnly
 ```
 
+## Compatibility
+
+These rules say what each kind of release can change, starting at `v0.1.0`. Before `v1.0.0`, a minor release can break the API, and the changelog lists each break. The last paragraph of this section says what changes at `v1.0.0`. The rules are:
+
+- A patch release, such as `v0.1.1`, never breaks the Go API, a stored format or a documented behavior.
+- A minor release before `v1.0.0`, such as `v0.2.0`, can break. Each break gets an entry under `### Breaking` in the [changelog](CHANGELOG.md). The entry names the old form, the new form and the steps to move from one to the other.
+- If the old form can keep working, it stays for a time first. Its godoc then starts a paragraph with `Deprecated:` and names the new form. A later minor release removes it, with a `### Breaking` entry.
+- A stored format changes only together with a higher `sagas.EventVersion`. A stored format is data that a journal keeps and a reader reads later. These are the stored formats:
+  - The fields of `Event` and the meaning of each field.
+  - The text values of `EventKind`, `Zone`, `Status`, `Phase` and `CompensationFailurePolicy`.
+  - The name of each `KindError`.
+  - The format of the idempotency key.
+  - The rule for the names of a saga, a step and an execution.
+  - The rules that encode the state.
+- The text of `Mermaid`, of each `Error()` message and of extra log fields is not part of the contract. Do not parse it.
+
+`v1.0.0` comes after a later set of releases that adds durable journals, resume and messaging. From `v1.0.0` on, a break needs a new module path that ends in `/v2`.
+
 ## Documentation
 
 - [Tutorial: book a trip with a saga](docs/tutorial/book-a-trip.md) builds the trip program and breaks it on purpose.

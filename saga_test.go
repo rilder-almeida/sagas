@@ -279,13 +279,14 @@ func Test_New_stepSettings(t *testing.T) {
 				runErr := s.Run(t.Context(), &tripState{})
 				elapsed := time.Since(start)
 
-				res := journal.results()[0]
+				res := journal.results(t)[0]
 
 				require.ErrorIs(t, runErr, tt.wantErr)
 				assert.Equal(t, tt.wantErr == nil, runErr == nil)
 				require.Len(t, res.Steps, 1)
 				assert.Equal(t, "a", res.Steps[0].Name)
-				assert.Equal(t, tt.wantAttempts, outcomeOf(journal.Events(res.Execution), "a").Attempt)
+				events := storedEvents(t, journal.MemoryJournal, res.Execution)
+				assert.Equal(t, tt.wantAttempts, outcomeOf(events, "a").Attempt)
 				assert.Equal(t, tt.wantElapsed, elapsed)
 
 				errTries := 0

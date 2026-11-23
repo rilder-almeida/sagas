@@ -31,6 +31,14 @@ tasks:
     cmds:
       - go test -run='^$' -bench=. -benchmem {{if eq .V "2"}}-v{{end}} ./... {{.CLI_ARGS}}
 
+  api:
+    desc: Report the public API changes since the last release tag, failing only on a break from v1 on (needs a clean tree)
+    vars:
+      BASE:
+        sh: git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true
+    cmds:
+      - go run {{if eq .V "2"}}-x{{end}} golang.org/x/exp/cmd/gorelease@v0.0.0-20261121134650-e1094eeca1b5 -base={{.BASE | default "none"}} {{.CLI_ARGS}}
+
   ci:
     desc: Run everything CI runs, stopping at the first failure
     cmds:
