@@ -18,14 +18,18 @@ import (
 )
 
 const (
-	lisbon     = "Lisbon"
-	anaAddress = "ana@example.com"
+	lisbon      = "Lisbon"
+	anaAddress  = "ana@example.com"
+	flightStep  = "flight"
+	hotelStep   = "hotel"
+	compensated = "trip-42: compensated, pending: []\n"
 )
 
 var (
-	errHotelDown    = errors.New("hotel service down")
-	errLeftBehind   = errors.New("bookings left behind")
-	errNoLateAction = errors.New("no late action for step")
+	errHotelDown     = errors.New("hotel service down")
+	errLeftBehind    = errors.New("bookings left behind")
+	errNoLateAction  = errors.New("no late action for step")
+	errNoEarlyCancel = errors.New("no early cancel for step")
 )
 
 type sink struct {
@@ -182,6 +186,17 @@ func bookLate(ctx context.Context, svc *services, t *trip, step, key string) err
 	}
 }
 
+func cancelEarly(ctx context.Context, svc *services, step, key string) error {
+	switch step {
+	case flightStep:
+		return svc.airline.Cancel(ctx, key)
+	case hotelStep:
+		return svc.hotels.Cancel(ctx, key)
+	default:
+		return fmt.Errorf("%w: %q", errNoEarlyCancel, step)
+	}
+}
+
 func tripSetup(t *testing.T) sagastest.Setup[trip] {
 	t.Helper()
 
@@ -237,6 +252,7 @@ func Test_newServices_refusals(t *testing.T) {
 		city       string
 		amount     int
 		address    string
+		canceled   string
 		step       string
 		wantReport string
 	}{
@@ -253,8 +269,8 @@ func Test_newServices_refusals(t *testing.T) {
 			city:       "Porto",
 			amount:     lisbonAmount,
 			address:    anaAddress,
-			step:       "hotel",
-			wantReport: "trip-42: compensated, pending: []\n",
+			step:       hotelStep,
+			wantReport: compensated,
 		},
 		{
 			name:       "[Fail] When: the charge is over the card limit ; Should: compensate after one charge attempt",
@@ -262,7 +278,7 @@ func Test_newServices_refusals(t *testing.T) {
 			amount:     cardLimit + 1,
 			address:    anaAddress,
 			step:       "charge",
-			wantReport: "trip-42: compensated, pending: []\n",
+			wantReport: compensated,
 		},
 		{
 			name:       "[Fail] When: the address is empty ; Should: end incomplete after one email attempt",
@@ -272,6 +288,24 @@ func Test_newServices_refusals(t *testing.T) {
 			step:       "email",
 			wantReport: "trip-42: incomplete, pending: [email]\n",
 		},
+		{
+			name:       "[Fail] When: the flight key is already canceled ; Should: compensate after one flight attempt",
+			city:       lisbon,
+			amount:     lisbonAmount,
+			address:    anaAddress,
+			canceled:   flightStep,
+			step:       flightStep,
+			wantReport: compensated,
+		},
+		{
+			name:       "[Fail] When: the hotel key is already canceled ; Should: compensate after one hotel attempt",
+			city:       lisbon,
+			amount:     lisbonAmount,
+			address:    anaAddress,
+			canceled:   hotelStep,
+			step:       hotelStep,
+			wantReport: compensated,
+		},
 	}
 
 	for _, tt := range tests {
@@ -279,12 +313,18 @@ func Test_newServices_refusals(t *testing.T) {
 			t.Parallel()
 
 			rec := sagastest.NewRecorder()
+			svc := newServices()
 
-			saga, err := sagas.New[trip]("trip", newServices().flow, sagas.WithMiddleware(rec.Middleware()))
+			saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(rec.Middleware()))
 			require.NoError(t, err)
 
 			state := newTrips()[0]
 			state.City, state.Amount, state.Email = tt.city, tt.amount, tt.address
+
+			if tt.canceled != "" {
+				key := sagas.CallInfo{Execution: state.ID, Step: tt.canceled}.IdempotencyKey()
+				require.ErrorIs(t, cancelEarly(t.Context(), svc, tt.canceled, key), errNotFound)
+			}
 
 			var out bytes.Buffer
 

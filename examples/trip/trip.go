@@ -42,6 +42,10 @@ type flight struct {
 
 func (f *flight) Execute(ctx context.Context, t *trip) error {
 	id, err := f.airline.Book(ctx, sagas.IdempotencyKey(ctx), t.Route)
+	if errors.Is(err, errCanceled) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -68,7 +72,7 @@ type hotel struct {
 
 func (h *hotel) Execute(ctx context.Context, t *trip) error {
 	id, err := h.hotels.Book(ctx, sagas.IdempotencyKey(ctx), t.City, t.Nights)
-	if errors.Is(err, errNoRooms) {
+	if errors.Is(err, errNoRooms) || errors.Is(err, errCanceled) {
 		return sagas.Permanent(err)
 	}
 

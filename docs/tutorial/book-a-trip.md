@@ -97,6 +97,10 @@ type flight struct {
 
 func (f *flight) Execute(ctx context.Context, t *trip) error {
 	id, err := f.airline.Book(ctx, sagas.IdempotencyKey(ctx), t.Route)
+	if errors.Is(err, errCanceled) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -120,6 +124,8 @@ The library can call a method more than once. An attempt is one call. After a ti
 
 The `Compensate` method is the compensation. It cancels by the key, not by the ID in the state. If the reply of the airline gets lost, the state holds no ID, but the key still finds the booking. If the airline answers `errNotFound`, the flight never booked. Nothing needs a cancel, so the compensation returns nil, which means success.
 
+`sagas.Permanent(err)` marks an error that stops the attempts at once. After the airline cancels a key, it refuses each new booking with that key, so another attempt cannot succeed. The step marks `errCanceled` permanent for this reason.
+
 Add the `hotel` step. It works like `flight`:
 
 ```go
@@ -131,7 +137,7 @@ type hotel struct {
 
 func (h *hotel) Execute(ctx context.Context, t *trip) error {
 	id, err := h.hotels.Book(ctx, sagas.IdempotencyKey(ctx), t.City, t.Nights)
-	if errors.Is(err, errNoRooms) {
+	if errors.Is(err, errNoRooms) || errors.Is(err, errCanceled) {
 		return sagas.Permanent(err)
 	}
 
@@ -154,7 +160,7 @@ func (h *hotel) Compensate(ctx context.Context, _ *trip) error {
 }
 ```
 
-`sagas.Permanent(err)` marks an error that stops the attempts at once. A city with no free room now has no free room on the next attempt either.
+A city with no free room now has no free room on the next attempt either, so the hotel marks `errNoRooms` permanent too. It marks `errCanceled` permanent for the same reason as the flight.
 
 Add the `charge` step. Its method is `Pivot`, not `Execute`, so this step is the pivot. A pivot has no compensation:
 
