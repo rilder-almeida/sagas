@@ -19,6 +19,8 @@ const (
 	portoAmount      = 600
 )
 
+// --8<-- [start:state]
+
 type trip struct {
 	ID       string
 	Route    string
@@ -33,6 +35,10 @@ type trip struct {
 }
 
 func (t *trip) ExecutionID() string { return t.ID }
+
+// --8<-- [end:state]
+
+// --8<-- [start:steps]
 
 type flight struct {
 	sagas.Step
@@ -136,6 +142,10 @@ func (e *email) Execute(ctx context.Context, t *trip) error {
 	return nil
 }
 
+// --8<-- [end:steps]
+
+// --8<-- [start:saga]
+
 type services struct {
 	airline  *airline
 	hotels   *hotels
@@ -162,6 +172,8 @@ func newServices() *services {
 	return s
 }
 
+// --8<-- [end:saga]
+
 func newTrips() []trip {
 	return []trip{
 		{
@@ -182,6 +194,8 @@ func newTrips() []trip {
 		},
 	}
 }
+
+// --8<-- [start:run]
 
 func run(w io.Writer) error {
 	saga, err := sagas.New[trip]("trip", newServices().flow)
@@ -216,6 +230,8 @@ func report(w io.Writer, id string, runErr error) error {
 		return runErr
 	}
 }
+
+// --8<-- [end:run]
 
 func execute(stdout, stderr io.Writer) int {
 	err := run(stdout)

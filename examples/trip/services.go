@@ -17,6 +17,8 @@ var (
 	errCanceled  = errors.New("booking key already canceled")
 )
 
+// --8<-- [start:services]
+
 type airline struct {
 	mu       sync.Mutex
 	byKey    map[string]string
@@ -213,3 +215,5 @@ func (m *mailer) Send(ctx context.Context, key, address string) (string, error) 
 
 	return id, nil
 }
+
+// --8<-- [end:services]
