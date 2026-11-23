@@ -17,6 +17,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	lisbon     = "Lisbon"
+	anaAddress = "ana@example.com"
+)
+
 var (
 	errHotelDown    = errors.New("hotel service down")
 	errLeftBehind   = errors.New("bookings left behind")
@@ -220,6 +225,81 @@ func Test_newServices(t *testing.T) {
 			t.Parallel()
 
 			tt.prove(t, tripSetup(t))
+		})
+	}
+}
+
+func Test_newServices_refusals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		city       string
+		amount     int
+		address    string
+		step       string
+		wantReport string
+	}{
+		{
+			name:       "[Success] When: every service accepts the trip ; Should: complete after one charge attempt",
+			city:       lisbon,
+			amount:     lisbonAmount,
+			address:    anaAddress,
+			step:       "charge",
+			wantReport: "trip-42: completed\n",
+		},
+		{
+			name:       "[Fail] When: the city has no rooms ; Should: compensate after one hotel attempt",
+			city:       "Porto",
+			amount:     lisbonAmount,
+			address:    anaAddress,
+			step:       "hotel",
+			wantReport: "trip-42: compensated, pending: []\n",
+		},
+		{
+			name:       "[Fail] When: the charge is over the card limit ; Should: compensate after one charge attempt",
+			city:       lisbon,
+			amount:     cardLimit + 1,
+			address:    anaAddress,
+			step:       "charge",
+			wantReport: "trip-42: compensated, pending: []\n",
+		},
+		{
+			name:       "[Fail] When: the address is empty ; Should: end incomplete after one email attempt",
+			city:       lisbon,
+			amount:     lisbonAmount,
+			address:    "",
+			step:       "email",
+			wantReport: "trip-42: incomplete, pending: [email]\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := sagastest.NewRecorder()
+
+			saga, err := sagas.New[trip]("trip", newServices().flow, sagas.WithMiddleware(rec.Middleware()))
+			require.NoError(t, err)
+
+			state := newTrips()[0]
+			state.City, state.Amount, state.Email = tt.city, tt.amount, tt.address
+
+			var out bytes.Buffer
+
+			require.NoError(t, report(&out, state.ID, saga.Run(t.Context(), &state)))
+			assert.Equal(t, tt.wantReport, out.String())
+
+			attempts := 0
+
+			for _, call := range rec.Calls() {
+				if call.Step == tt.step && call.Phase != sagas.PhaseCompensate {
+					attempts++
+				}
+			}
+
+			assert.Equal(t, 1, attempts)
 		})
 	}
 }

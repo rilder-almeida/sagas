@@ -30,10 +30,11 @@ The finished program is in the folder [`examples/trip`](../../examples/trip) of 
 
 2. Copy the file [`examples/trip/services.go`](../../examples/trip/services.go) from the repository into the `trip` folder.
 
-The file holds four simulated services: `airline`, `hotels`, `payments` and `mailer`. They stand in for real services and keep their data in memory. You need four facts about them:
+The file holds four simulated services: `airline`, `hotels`, `payments` and `mailer`. They stand in for real services and keep their data in memory. You need five facts about them:
 
 - Each booking call takes a key. A second call with the same key returns the first booking and books nothing new.
 - If the city has no free room, `hotels.Book` returns `errNoRooms`.
+- If the amount is above the card limit, `payments.Charge` returns `errOverLimit`. If the address is empty, `mailer.Send` returns `errNoAddress`.
 - `airline.Cancel` and `hotels.Cancel` cancel the booking of a key. For a key that never booked, they return `errNotFound`.
 - After a cancel, a booking call with the same key returns `errCanceled`.
 
@@ -166,6 +167,10 @@ type charge struct {
 
 func (c *charge) Pivot(ctx context.Context, t *trip) error {
 	id, err := c.payments.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
+	if errors.Is(err, errOverLimit) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -176,7 +181,9 @@ func (c *charge) Pivot(ctx context.Context, t *trip) error {
 }
 ```
 
-Add the `email` step:
+A charge over the card limit is a refusal for a business reason, like a full hotel, so the step marks it permanent too. A refused charge did not apply, so the library undoes the flight and the hotel.
+
+Add the `email` step. It marks an empty address permanent for the same reason:
 
 ```go
 type email struct {
@@ -187,6 +194,10 @@ type email struct {
 
 func (e *email) Execute(ctx context.Context, t *trip) error {
 	id, err := e.mailer.Send(ctx, sagas.IdempotencyKey(ctx), t.Email)
+	if errors.Is(err, errNoAddress) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}

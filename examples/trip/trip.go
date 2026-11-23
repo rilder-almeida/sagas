@@ -98,6 +98,10 @@ type charge struct {
 
 func (c *charge) Pivot(ctx context.Context, t *trip) error {
 	id, err := c.payments.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
+	if errors.Is(err, errOverLimit) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -115,6 +119,10 @@ type email struct {
 
 func (e *email) Execute(ctx context.Context, t *trip) error {
 	id, err := e.mailer.Send(ctx, sagas.IdempotencyKey(ctx), t.Email)
+	if errors.Is(err, errNoAddress) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}
