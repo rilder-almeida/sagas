@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rilder-almeida/sagas"
@@ -130,18 +129,22 @@ func Example() {
 
 func ExampleNew() {
 	_, err := sagas.New[trip]("trip", sagas.Sequence(&flight{}, &flight{}))
-	if _, werr := fmt.Printf("duplicate step: %t\n", errors.Is(err, sagas.ErrDuplicateStep)); werr != nil {
+	if _, werr := fmt.Println(err); werr != nil {
 		panic(werr)
 	}
 
 	saga, err := sagas.New[trip]("trip", sagas.Sequence(&flight{}, &hotel{}))
-	if _, werr := fmt.Printf("valid: %t\n", saga != nil && err == nil); werr != nil {
-		panic(werr)
+	if err != nil {
+		panic(err)
+	}
+
+	if _, err = fmt.Println(saga != nil); err != nil {
+		panic(err)
 	}
 
 	// Output:
-	// duplicate step: true
-	// valid: true
+	// sagas: duplicate step: step "flight": declared more than once; set Name on each step of type *sagas_test.flight
+	// true
 }
 
 func ExampleSaga_Mermaid() {
@@ -219,13 +222,19 @@ func ExampleSlog() {
 type seat struct {
 	sagas.Step
 
-	gate  *sync.WaitGroup
-	value string
+	arrive chan<- struct{}
+	peer   <-chan struct{}
+	value  string
 }
 
-func (s *seat) Execute(_ context.Context, t *trip) error {
-	s.gate.Done()
-	s.gate.Wait()
+func (s *seat) Execute(ctx context.Context, t *trip) error {
+	close(s.arrive)
+
+	select {
+	case <-s.peer:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	t.Hotel = s.value
 
@@ -245,12 +254,9 @@ func ExampleParallel() {
 		panic(err)
 	}
 
-	var gate sync.WaitGroup
-
-	gate.Add(2)
-
-	window := &seat{Name: "window", Retry: sagas.NoRetry(), gate: &gate, value: "window"}
-	aisle := &seat{Name: "aisle", Retry: sagas.NoRetry(), gate: &gate, value: "aisle"}
+	windowArrived, aisleArrived := make(chan struct{}), make(chan struct{})
+	window := &seat{Name: "window", Retry: sagas.NoRetry(), arrive: windowArrived, peer: aisleArrived, value: "window"}
+	aisle := &seat{Name: "aisle", Retry: sagas.NoRetry(), arrive: aisleArrived, peer: windowArrived, value: "aisle"}
 
 	clash, err := sagas.New[trip]("trip", sagas.Parallel(window, aisle))
 	if err != nil {
@@ -337,6 +343,7 @@ type abandon struct {
 	sagas.Step
 
 	cancel context.CancelFunc
+	stuck  bool
 }
 
 func (a *abandon) Execute(ctx context.Context, _ *trip) error {
@@ -346,23 +353,48 @@ func (a *abandon) Execute(ctx context.Context, _ *trip) error {
 	return ctx.Err()
 }
 
-func ExampleWithRecoveryTimeout() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	saga, err := sagas.New[trip]("trip", sagas.Sequence(&flight{}, &abandon{cancel: cancel}),
-		sagas.WithRecoveryTimeout(time.Minute))
-	if err != nil {
-		panic(err)
+func (a *abandon) Compensate(ctx context.Context, _ *trip) error {
+	if !a.stuck {
+		return nil
 	}
 
-	t := &trip{ID: tripID}
-	if err = printRun(os.Stdout, t, saga.Run(ctx, t)); err != nil {
-		panic(err)
+	<-ctx.Done()
+
+	return ctx.Err()
+}
+
+func ExampleWithRecoveryTimeout() {
+	for _, tc := range []struct {
+		grace time.Duration
+		stuck bool
+	}{{time.Minute, false}, {10 * time.Millisecond, true}} {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		saga, err := sagas.New[trip]("trip", sagas.Sequence(&flight{}, &abandon{cancel: cancel, stuck: tc.stuck}),
+			sagas.WithRecoveryTimeout(tc.grace))
+		if err != nil {
+			panic(err)
+		}
+
+		t := &trip{ID: tripID}
+		runErr := saga.Run(ctx, t)
+
+		cancel()
+
+		if err = printRun(os.Stdout, t, runErr); err != nil {
+			panic(err)
+		}
+
+		if _, err = fmt.Printf("grace ended: %t\n", errors.Is(runErr, sagas.ErrGraceEnded)); err != nil {
+			panic(err)
+		}
 	}
 
 	// Output:
 	// trip-42: compensated, failed: [abandon], pending: []
+	// grace ended: false
+	// trip-42: compensation_failed, failed: [abandon abandon], pending: [flight abandon]
+	// grace ended: true
 }
 
 func ExampleStep_name() {
