@@ -145,14 +145,22 @@ func currentEvents(ctx context.Context, journal sagas.EventReader, execution str
 		return nil, err
 	}
 
+	if versionErr := checkVersions(execution, events); versionErr != nil {
+		return nil, versionErr
+	}
+
+	return events, nil
+}
+
+func checkVersions(execution string, events []sagas.Event) error {
 	for i := range events {
 		if events[i].Version != sagas.EventVersion {
-			return nil, fmt.Errorf("%w: execution %q event %d has version %d",
+			return fmt.Errorf("%w: execution %q event %d has version %d",
 				errUnknownVersion, execution, i+1, events[i].Version)
 		}
 	}
 
-	return events, nil
+	return nil
 }
 
 func lastEventOf(events []sagas.Event, step string) string {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"io/fs"
 	"os"
@@ -199,35 +198,22 @@ func Test_inspectRun(t *testing.T) {
 	}
 }
 
-type fixedReader []sagas.Event
-
-func (r fixedReader) Events(context.Context, string) ([]sagas.Event, error) { return r, nil }
-
 func Test_currentEvents(t *testing.T) {
 	t.Parallel()
 
-	current := sagas.Event{Version: sagas.EventVersion, Kind: sagas.EventSagaStarted}
-	future := sagas.Event{Version: sagas.EventVersion + 1, Kind: sagas.EventSagaStarted}
-
 	tests := []struct {
 		name       string
-		reader     sagas.EventReader
-		wantEvents []sagas.Event
+		seed       []sagas.Event
+		wantEvents int
 		wantErr    error
 	}{
 		{
-			name:       "[Success] When: every event has the current Version ; Should: return the events",
-			reader:     fixedReader{current, current},
-			wantEvents: []sagas.Event{current, current},
-		},
-		{
-			name:    "[Fail] When: one event has a newer Version ; Should: return errUnknownVersion and no events",
-			reader:  fixedReader{current, future},
-			wantErr: errUnknownVersion,
+			name:       "[Success] When: the journal holds two events ; Should: return both",
+			seed:       []sagas.Event{eventAt(1, sagas.EventSagaStarted), eventAt(2, sagas.EventSagaFinished)},
+			wantEvents: 2,
 		},
 		{
 			name:    "[Fail] When: the journal holds no event for the execution ; Should: return ErrNoEvents",
-			reader:  sagas.NewMemoryJournal(),
 			wantErr: sagas.ErrNoEvents,
 		},
 	}
@@ -236,10 +222,99 @@ func Test_currentEvents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			events, err := currentEvents(t.Context(), tt.reader, "order-1")
+			journal := sagas.NewMemoryJournal()
+
+			for i := range tt.seed {
+				require.NoError(t, journal.Append(t.Context(), &tt.seed[i]))
+			}
+
+			events, err := currentEvents(t.Context(), journal, "order-1")
 
 			require.ErrorIs(t, err, tt.wantErr)
-			assert.Equal(t, tt.wantEvents, events)
+			assert.Len(t, events, tt.wantEvents)
+		})
+	}
+}
+
+func eventAt(seq int, kind sagas.EventKind) sagas.Event {
+	return sagas.Event{Execution: "order-1", Seq: seq, Version: sagas.EventVersion, Kind: kind}
+}
+
+func Test_checkVersions(t *testing.T) {
+	t.Parallel()
+
+	current := eventAt(1, sagas.EventSagaStarted)
+	future := sagas.Event{Version: sagas.EventVersion + 1, Kind: sagas.EventSagaStarted}
+
+	tests := []struct {
+		name    string
+		events  []sagas.Event
+		wantErr error
+	}{
+		{
+			name:   "[Success] When: every event has the current Version ; Should: return nil",
+			events: []sagas.Event{current, current},
+		},
+		{
+			name:   "[Success] When: there are no events ; Should: return nil",
+			events: nil,
+		},
+		{
+			name:    "[Fail] When: one event has a newer Version ; Should: return errUnknownVersion",
+			events:  []sagas.Event{current, future},
+			wantErr: errUnknownVersion,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.ErrorIs(t, checkVersions("order-1", tt.events), tt.wantErr)
+		})
+	}
+}
+
+const shipStep = "ship"
+
+func Test_lastEventOf(t *testing.T) {
+	t.Parallel()
+
+	failed := sagas.Event{Step: shipStep, Kind: sagas.EventStepFailed, Err: sagas.EventError{Message: "no truck"}}
+	started := sagas.Event{Step: shipStep, Kind: sagas.EventStepStarted}
+	other := sagas.Event{Step: "notify", Kind: sagas.EventStepStarted}
+
+	tests := []struct {
+		name   string
+		events []sagas.Event
+		step   string
+		want   string
+	}{
+		{
+			name:   "[Success] When: the last event of the step has a message ; Should: show the kind and the message",
+			events: []sagas.Event{started, other, failed},
+			step:   shipStep,
+			want:   "last event step-failed, error: no truck",
+		},
+		{
+			name:   "[Success] When: the last event of the step has no error ; Should: show the kind and none",
+			events: []sagas.Event{failed, started},
+			step:   shipStep,
+			want:   "last event step-started, error: none",
+		},
+		{
+			name:   "[Success] When: the step has no event ; Should: say no event",
+			events: []sagas.Event{other},
+			step:   shipStep,
+			want:   "no event",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, lastEventOf(tt.events, tt.step))
 		})
 	}
 }
