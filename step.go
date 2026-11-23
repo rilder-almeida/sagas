@@ -7,10 +7,10 @@ import (
 )
 
 // Step holds a step's name and settings. A step is a pointer to a type that embeds Step and has Execute or Pivot, and
-// optionally Compensate, Enabled and Wrap. All of these methods are safe for concurrent use and idempotent. Execute,
-// Pivot, Compensate and Wrap honor their context. A call that returns after the grace period can miss the journal, but
-// Run reports it. An empty Name takes the type name in kebab case. Declare step methods on the step type. New cannot
-// see one lost to a same-name field or to an embedded field that also embeds a provider of it.
+// optionally Compensate, Enabled and Wrap. All of these methods must be safe for concurrent use and idempotent.
+// Execute, Pivot, Compensate and Wrap must honor their context. A call that returns after the grace period can miss the
+// journal, but Run reports it. An empty Name takes the type name in kebab case. Declare step methods on the step type.
+// New cannot see one lost to a same-name field or to an embedded field that also embeds a provider of it.
 type Step struct {
 	// Set Name for a durable journal, so a rename of the step type keeps the step name that the journal holds.
 	Name        string
