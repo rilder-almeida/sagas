@@ -26,6 +26,7 @@ type store struct {
 	prefix  string
 	refused []string
 	byKey   map[string]string
+	issued  int
 }
 
 func newStore(prefix string, refused ...string) *store {
@@ -48,7 +49,8 @@ func (s *store) put(ctx context.Context, key, value string) (string, error) {
 		return "", fmt.Errorf("%w: %s", errNoCapacity, value)
 	}
 
-	id := fmt.Sprintf("%s-%d", s.prefix, len(s.byKey)+1)
+	s.issued++
+	id := fmt.Sprintf("%s-%d", s.prefix, s.issued)
 	s.byKey[key] = id
 
 	return id, nil
@@ -69,13 +71,6 @@ func (s *store) remove(ctx context.Context, key string) error {
 	delete(s.byKey, key)
 
 	return nil
-}
-
-func (s *store) size() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return len(s.byKey)
 }
 
 // --8<-- [start:state]
@@ -254,29 +249,35 @@ func (w *welcome) Execute(ctx context.Context, a *account) error {
 // --8<-- [end:steps]
 
 type services struct {
+	accounts  *store
 	referrals *store
+	servers   *store
+	payments  *store
+	mails     *store
 	undone    *undone
-	flow      sagas.Flow
 }
 
 func newServices() *services {
-	s := &services{referrals: newStore("REF"), undone: &undone{}}
-
-	s.flow = sagas.Sequence(
-		&register{accounts: newStore("ACC"), undone: s.undone},
-		&referral{referrals: s.referrals, undone: s.undone},
-		&provision{servers: newStore("SRV", "dedicated"), undone: s.undone},
-		&charge{payments: newStore("PAY")},
-		&welcome{mails: newStore("MAIL")},
-	)
-
-	return s
+	return &services{
+		accounts:  newStore("ACC"),
+		referrals: newStore("REF"),
+		servers:   newStore("SRV", "dedicated"),
+		payments:  newStore("PAY"),
+		mails:     newStore("MAIL"),
+		undone:    &undone{},
+	}
 }
 
 // --8<-- [start:saga]
 
 func newSaga(s *services) (*sagas.Saga[account], error) {
-	return sagas.New[account]("signup", s.flow)
+	return sagas.New[account]("signup", sagas.Sequence(
+		&register{accounts: s.accounts, undone: s.undone},
+		&referral{referrals: s.referrals, undone: s.undone},
+		&provision{servers: s.servers, undone: s.undone},
+		&charge{payments: s.payments},
+		&welcome{mails: s.mails},
+	))
 }
 
 // --8<-- [end:saga]
@@ -308,7 +309,7 @@ func run(w io.Writer) error {
 	return nil
 }
 
-func report(w io.Writer, a *account, undone []string, runErr error) error {
+func report(w io.Writer, a *account, ran []string, runErr error) error {
 	var failed *sagas.RunError
 
 	switch {
@@ -321,7 +322,7 @@ func report(w io.Writer, a *account, undone []string, runErr error) error {
 
 		return err
 	case errors.As(runErr, &failed):
-		_, err := fmt.Fprintf(w, "%s: %s, pending: %v, undone: %v\n", a.ID, failed.Kind.Name(), failed.Pending, undone)
+		_, err := fmt.Fprintf(w, "%s: %s, pending: %v, undone: %v\n", a.ID, failed.Kind.Name(), failed.Pending, ran)
 
 		return err
 	default:

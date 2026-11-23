@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/rilder-almeida/sagas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,6 +134,54 @@ func Test_execute(t *testing.T) {
 
 			assert.Equal(t, tt.wantCode, execute(stdout.writer, stderr.writer))
 			assert.Equal(t, tt.wantStderr, stderr.written() != "")
+		})
+	}
+}
+
+func Test_newSaga(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		id             string
+		plan           string
+		wantRegistered bool
+	}{
+		{
+			name:           "[Success] When: the sign-up completes ; Should: keep the registered account",
+			id:             "acct-1",
+			plan:           "basic",
+			wantRegistered: true,
+		},
+		{
+			name: "[Fail] When: provision fails ; Should: undo the registration",
+			id:   "acct-2",
+			plan: "dedicated",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			accounts := newStore("ACC")
+
+			saga, err := newSaga(accounts)
+			require.NoError(t, err)
+
+			a := account{ID: tt.id, Email: "ana@example.com", Plan: tt.plan}
+			runErr := saga.Run(t.Context(), &a)
+
+			key := sagas.CallInfo{Execution: a.ID, Step: "register"}.IdempotencyKey()
+			removeErr := accounts.remove(t.Context(), key)
+
+			if tt.wantRegistered {
+				require.NoError(t, runErr)
+				require.NoError(t, removeErr)
+			} else {
+				require.Error(t, runErr)
+				require.ErrorIs(t, removeErr, errNotFound)
+			}
 		})
 	}
 }

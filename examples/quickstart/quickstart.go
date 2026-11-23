@@ -26,6 +26,7 @@ type store struct {
 	prefix  string
 	refused []string
 	byKey   map[string]string
+	issued  int
 }
 
 func newStore(prefix string, refused ...string) *store {
@@ -48,7 +49,8 @@ func (s *store) put(ctx context.Context, key, value string) (string, error) {
 		return "", fmt.Errorf("%w: %s", errNoCapacity, value)
 	}
 
-	id := fmt.Sprintf("%s-%d", s.prefix, len(s.byKey)+1)
+	s.issued++
+	id := fmt.Sprintf("%s-%d", s.prefix, s.issued)
 	s.byKey[key] = id
 
 	return id, nil
@@ -183,9 +185,9 @@ func (w *welcome) Execute(ctx context.Context, a *account) error {
 
 // --8<-- [start:saga]
 
-func newSaga() (*sagas.Saga[account], error) {
+func newSaga(accounts *store) (*sagas.Saga[account], error) {
 	return sagas.New[account]("signup", sagas.Sequence(
-		&register{accounts: newStore("ACC")},
+		&register{accounts: accounts},
 		&provision{servers: newStore("SRV", "dedicated")},
 		&charge{payments: newStore("PAY")},
 		&welcome{mails: newStore("MAIL")},
@@ -197,7 +199,7 @@ func newSaga() (*sagas.Saga[account], error) {
 // --8<-- [start:run]
 
 func run(w io.Writer) error {
-	saga, err := newSaga()
+	saga, err := newSaga(newStore("ACC"))
 	if err != nil {
 		return err
 	}

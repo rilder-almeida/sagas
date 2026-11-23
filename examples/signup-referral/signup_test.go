@@ -140,7 +140,7 @@ func Test_execute(t *testing.T) {
 	}
 }
 
-func Test_newServices(t *testing.T) {
+func Test_newSaga(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -148,7 +148,7 @@ func Test_newServices(t *testing.T) {
 		referral     string
 		plan         string
 		wantReport   string
-		wantCredited int
+		wantCredited bool
 		wantUndone   []string
 	}{
 		{
@@ -156,7 +156,7 @@ func Test_newServices(t *testing.T) {
 			referral:     "FRIEND",
 			plan:         "basic",
 			wantReport:   "acct-9: completed, referral credited\n",
-			wantCredited: 1,
+			wantCredited: true,
 		},
 		{
 			name:       "[Success] When: the account has no code ; Should: skip the referral and never compensate it",
@@ -184,19 +184,28 @@ func Test_newServices(t *testing.T) {
 
 			svc := newServices()
 
-			saga, err := sagas.New[account]("signup", svc.flow)
+			saga, err := newSaga(svc)
 			require.NoError(t, err)
 
 			a := account{ID: "acct-9", Email: "cai@example.com", Plan: tt.plan, Referral: tt.referral}
 			runErr := saga.Run(t.Context(), &a)
-			undone := svc.undone.take()
+			ran := svc.undone.take()
 
 			var out bytes.Buffer
 
-			require.NoError(t, report(&out, &a, undone, runErr))
+			require.NoError(t, report(&out, &a, ran, runErr))
 			assert.Equal(t, tt.wantReport, out.String())
-			assert.Equal(t, tt.wantCredited, svc.referrals.size())
-			assert.Equal(t, tt.wantUndone, undone)
+
+			key := sagas.CallInfo{Execution: a.ID, Step: "referral"}.IdempotencyKey()
+			removeErr := svc.referrals.remove(t.Context(), key)
+
+			if tt.wantCredited {
+				require.NoError(t, removeErr)
+			} else {
+				require.ErrorIs(t, removeErr, errNotFound)
+			}
+
+			assert.Equal(t, tt.wantUndone, ran)
 		})
 	}
 }
