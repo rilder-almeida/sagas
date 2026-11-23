@@ -63,7 +63,7 @@ Middleware is a value with a `Wrap(ctx, info, call)` method. Its `info` argument
 
 ### Retries
 
-A step retries its action and its compensation under one policy. The default is three attempts with an exponential delay and jitter. `Retry` on the step changes it. Jitter is a random change to each delay. A step with `sagas.NoRetry()` makes one attempt, and its compensation also gets one attempt. A caller that wants a more persistent compensation raises `Retry.Attempts`. `sagas.WithRecoveryTimeout(d)`, passed to `New`, sets `RecoveryTimeout`. It sets the length of the grace period. The section on the grace period below explains how it bounds the recovery. Recovery is the work after a failure, an unknown outcome, a caller cancel or a journal fault. If the run stops before the pivot applies, backward recovery runs the compensations in reverse order. If another `Run` call appended to the execution first, backward recovery does not run them. After a caller cancel, once the pivot started, forward recovery goes forward instead of undoing anything. It runs the started pivot to its end. If the pivot fails, it did not apply, so backward recovery runs. If the pivot succeeds, forward recovery finishes the forward-only zone. A failure, an unknown outcome or a journal fault in that zone, or the end of the grace period, stops the run. The rest stays pending.
+A step retries its action and its compensation under one policy. The default is three attempts with an exponential delay and jitter. `Retry` on the step changes it. Jitter is a random change to each delay. A step with `sagas.NoRetry()` makes one attempt, and its compensation also gets one attempt. A caller that wants a more persistent compensation raises `Retry.Attempts`. `sagas.WithRecoveryTimeout(d)`, passed to `New`, sets the length of the grace period. The section on the grace period below explains how it bounds the recovery. Recovery is the work after a failure, an unknown outcome, a caller cancel or a journal fault. If the run stops before the pivot applies, backward recovery runs the compensations in reverse order. If another `Run` call appended to the execution first, backward recovery does not run them. After a caller cancel, once the pivot started, forward recovery goes forward instead of undoing anything. It runs the started pivot to its end. If the pivot fails, it did not apply, so backward recovery runs. If the pivot succeeds, forward recovery finishes the forward-only zone. A failure, an unknown outcome or a journal fault in that zone, or the end of the grace period, stops the run. The rest stays pending.
 
 The retries stop at the first of these events. The attempts run out. The call returns an error that carries the mark of `sagas.Permanent(err)`. The call panics. The deadline passes. In the compensable zone, the deadline is the caller's context. The pivot, the forward-only zone and the compensations run until the grace period ends. The grace period starts at the end of the caller's context, never earlier. The `Permanent` mark counts at any depth of the error chain, so wrapping it with `%w` keeps it. A panic is a code defect, and a retry only repeats it.
 
@@ -134,7 +134,7 @@ These rules describe how a run ends. They matter most for a caller cancel or a j
 
 ### The grace period
 
-While the caller's context is alive, the saga runs, bounded by the attempts and by the `AttemptTimeout` of each step. When the caller's context ends, the library starts no new step of the compensable zone and no new pivot. The forward-only zone goes on until the grace period ends. The grace period lasts `RecoveryTimeout` from the end of the caller's context. The default is five minutes.
+While the caller's context is alive, the saga runs, bounded by the attempts and by the `AttemptTimeout` of each step. When the caller's context ends, the library starts no new step of the compensable zone and no new pivot. The forward-only zone goes on until the grace period ends. The grace period starts at the end of the caller's context and lasts the time that `sagas.WithRecoveryTimeout(d)` sets. The default is five minutes.
 
 If the caller's context never ends, no extra clock runs. A caller that wants a bound on the whole run sets a deadline on its own context. A hung compensation waits until that context ends, and then the grace period starts.
 
@@ -144,7 +144,7 @@ A rule follows for the step author. Every step and every compensation honors its
 
 ### Why `AttemptTimeout` covers only the action
 
-`AttemptTimeout` bounds each attempt of the action. It does not bound a compensation attempt. Only the grace period, which `RecoveryTimeout` sets, bounds those. A hung compensation attempt can use the whole grace period. Middleware can cut each compensation attempt, because it reads the phase from `info.Phase`. The phase is `PhaseExecute`, `PhasePivot` or `PhaseCompensate`.
+`AttemptTimeout` bounds each attempt of the action. It does not bound a compensation attempt. Only the grace period, which `sagas.WithRecoveryTimeout(d)` sets, bounds those. A hung compensation attempt can use the whole grace period. Middleware can cut each compensation attempt, because it reads the phase from `info.Phase`. The phase is `PhaseExecute`, `PhasePivot` or `PhaseCompensate`.
 
 ### Reading the error of `Run`
 
