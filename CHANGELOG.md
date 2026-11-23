@@ -21,6 +21,7 @@ This release rewrites the library. The API breaks with every earlier tag. Most c
 - `sagas.IdempotencyKey(ctx)` for a step method and `CallInfo.IdempotencyKey()` for middleware.
 - `Run` returns nil for a completed run and a `*sagas.RunError` for any other end that began.
 - The saga-started event carries `StepZone.Compensable` for each step, so a journal records whether the step has a compensation.
+- Every event carries `Version`, set to `sagas.EventVersion`. A reader checks `Version` before it reads `Compensable`, and `MemoryJournal` refuses an unknown version.
 - `Mermaid()` draws a saga as a Mermaid flowchart. The label of a step with `Enabled` ends in `(if Enabled)`.
 - `sagas.Inspect` runs the checks of `New` on a flow and reports each step.
 - The `sagastest` package: contract helpers, fault injection and a call recorder for your own saga.
