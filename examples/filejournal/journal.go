@@ -120,7 +120,7 @@ func (j *fileJournal) Append(ctx context.Context, e *sagas.Event) error {
 	case e.Seq == len(stored)+1:
 		return writeEvent(j.root, e)
 	case e.Seq <= len(stored) && sameEvent(&stored[e.Seq-1], e):
-		return nil
+		return syncDir(j.root)
 	case e.Seq == 1:
 		return fmt.Errorf("%w: execution %q", sagas.ErrExecutionExists, e.Execution)
 	default:

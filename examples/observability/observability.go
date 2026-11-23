@@ -34,6 +34,8 @@ func (o *order) ExecutionID() string { return o.ID }
 
 // --8<-- [end:state]
 
+// --8<-- [start:provider]
+
 type provider struct {
 	mu   sync.Mutex
 	seen map[string]bool
@@ -53,6 +55,8 @@ func (p *provider) charge(key string) error {
 
 	return nil
 }
+
+// --8<-- [end:provider]
 
 // --8<-- [start:steps]
 

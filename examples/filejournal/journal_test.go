@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -513,10 +514,12 @@ func Test_fileJournal_Append_failedWrite(t *testing.T) {
 	tests := []struct {
 		name        string
 		limitBlocks int
+		wantOutput  string
 	}{
 		{
 			name:        "[Fail] When: a write passes the size limit ; Should: leave the file as it was and readable",
 			limitBlocks: 1,
+			wantOutput:  "--- PASS: Test_fileJournal_Append_failedWrite/",
 		},
 	}
 
@@ -530,6 +533,10 @@ func Test_fileJournal_Append_failedWrite(t *testing.T) {
 				return
 			}
 
+			if _, err := exec.LookPath("sh"); err != nil {
+				t.Skip("the child run needs sh and ulimit")
+			}
+
 			env := append(os.Environ(),
 				childEnv+"=1", exeEnv+"="+os.Args[0], limitEnv+"="+strconv.Itoa(tt.limitBlocks))
 			cmd := exec.CommandContext(t.Context(), "sh", "-c", childScript)
@@ -538,7 +545,7 @@ func Test_fileJournal_Append_failedWrite(t *testing.T) {
 			out, err := cmd.CombinedOutput()
 
 			require.NoError(t, err, string(out))
-			assert.Contains(t, string(out), "--- PASS: Test_fileJournal_Append_failedWrite/")
+			assert.Contains(t, string(out), tt.wantOutput)
 		})
 	}
 }
@@ -547,18 +554,29 @@ func Test_fileJournal_Append_dirSync(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		mode    os.FileMode
-		wantErr error
+		name     string
+		modes    []os.FileMode
+		wantErrs []error
 	}{
 		{
-			name: "[Success] When: the directory can be opened ; Should: store the first event and sync the directory",
-			mode: dirReadWrite,
+			name:     "[Success] When: the directory opens ; Should: store the first event and sync the directory",
+			modes:    []os.FileMode{dirReadWrite},
+			wantErrs: []error{nil},
 		},
 		{
-			name:    "[Fail] When: the directory cannot be opened for sync ; Should: return the open error",
-			mode:    dirNoRead,
-			wantErr: fs.ErrPermission,
+			name:     "[Fail] When: the directory cannot be opened for sync ; Should: return the open error",
+			modes:    []os.FileMode{dirNoRead},
+			wantErrs: []error{fs.ErrPermission},
+		},
+		{
+			name:     "[Success] When: a resend follows a failed sync and the directory opens ; Should: return nil",
+			modes:    []os.FileMode{dirNoRead, dirReadWrite},
+			wantErrs: []error{fs.ErrPermission, nil},
+		},
+		{
+			name:     "[Fail] When: a resend follows a failed sync and the directory fails ; Should: return the error",
+			modes:    []os.FileMode{dirNoRead, dirNoRead},
+			wantErrs: []error{fs.ErrPermission, fs.ErrPermission},
 		},
 	}
 
@@ -573,10 +591,12 @@ func Test_fileJournal_Append_dirSync(t *testing.T) {
 			dir := t.TempDir()
 			j := newTestJournal(t, dir)
 
-			require.NoError(t, os.Chmod(dir, tt.mode))
 			t.Cleanup(func() { assert.NoError(t, os.Chmod(dir, dirReadWrite)) })
 
-			require.ErrorIs(t, j.Append(t.Context(), testEvent(1, "a")), tt.wantErr)
+			for i, mode := range tt.modes {
+				require.NoError(t, os.Chmod(dir, mode))
+				require.ErrorIs(t, j.Append(t.Context(), testEvent(1, "a")), tt.wantErrs[i])
+			}
 		})
 	}
 }
@@ -625,11 +645,19 @@ func Test_fileJournal_Append_doneWhileWaiting(t *testing.T) {
 	}
 }
 
-func appendTwice(t *testing.T, writers [2]string) (*fileJournal, bool) {
+func appendTwice(t *testing.T, writers [2]string) ([2]*fileJournal, bool) {
 	t.Helper()
 
 	dir := t.TempDir()
-	journals := [2]*fileJournal{newTestJournal(t, dir), newTestJournal(t, dir)}
+
+	var journals [2]*fileJournal
+
+	for i := range journals {
+		j, err := openFileJournal(dir)
+		require.NoError(t, err)
+
+		journals[i] = j
+	}
 
 	var wg sync.WaitGroup
 
@@ -651,17 +679,26 @@ func appendTwice(t *testing.T, writers [2]string) (*fileJournal, bool) {
 	close(start)
 	wg.Wait()
 
-	return journals[0], errs[0] == nil && errs[1] == nil
+	return journals, errs[0] == nil && errs[1] == nil
+}
+
+func closeAll(t *testing.T, journals [2]*fileJournal) {
+	t.Helper()
+
+	for _, j := range journals {
+		require.NoError(t, j.Close())
+	}
 }
 
 func Test_fileJournal_Append_twoValues(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		writers  [2]string
-		attempts int
-		wantErr  error
+		name       string
+		writers    [2]string
+		attempts   int
+		wantEvents []sagas.Event
+		wantErr    error
 	}{
 		{
 			name:     "[Fail] When: two journal values race for Seq 1 ; Should: accept both and fail on read",
@@ -675,16 +712,23 @@ func Test_fileJournal_Append_twoValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			if runtime.GOMAXPROCS(0) < 2 {
+				t.Skip("two journal values cannot race on one CPU")
+			}
+
 			for range tt.attempts {
-				first, bothAccepted := appendTwice(t, tt.writers)
+				journals, bothAccepted := appendTwice(t, tt.writers)
 				if !bothAccepted {
+					closeAll(t, journals)
+
 					continue
 				}
 
-				events, err := first.Events(t.Context(), runID)
+				events, err := journals[0].Events(t.Context(), runID)
 
+				closeAll(t, journals)
 				require.ErrorIs(t, err, tt.wantErr)
-				assert.Nil(t, events)
+				assert.Equal(t, tt.wantEvents, events)
 
 				return
 			}

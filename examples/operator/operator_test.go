@@ -303,6 +303,12 @@ func Test_lastEventOf(t *testing.T) {
 			want:   "last event step-started, error: none",
 		},
 		{
+			name:   "[Success] When: another step is asked for ; Should: show the last event of that step",
+			events: []sagas.Event{failed, other},
+			step:   "notify",
+			want:   "last event step-started, error: none",
+		},
+		{
 			name:   "[Success] When: the step has no event ; Should: say no event",
 			events: []sagas.Event{other},
 			step:   shipStep,
