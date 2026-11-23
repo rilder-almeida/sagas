@@ -43,7 +43,7 @@ const EventVersion = 1
 // Event is one record of an execution. Each event holds Saga, the Execution ID, the Writer token of its run, Seq from
 // 1, Kind and Time. A reader checks Version, the EventVersion, first. Step names the step of a step or compensation
 // event. Attempt counts its attempts. Err is set on a failed, unknown or compensation-failed event. Changed names the
-// fields that a success committed. Steps lists every step on saga-started. Status is the end on saga-finished.
+// fields that a success committed. Steps lists all steps on saga-started. Status is how the run ended on saga-finished.
 type Event struct {
 	Saga      string
 	Execution string
