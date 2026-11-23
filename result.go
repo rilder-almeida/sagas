@@ -11,7 +11,8 @@ var (
 	// ErrCompensationFailed is returned when a run stops before the pivot applies, a pivot error included, and a
 	// compensation fails for good, is blocked or is halted.
 	ErrCompensationFailed = &KindError{name: "compensation_failed", message: "sagas: compensation failed"}
-	// ErrIncomplete is returned when a run passed the pivot and stopped before the end, or the pivot stayed unknown.
+	// ErrIncomplete is returned when a run passed the pivot and stopped before the end, or the outcome of the pivot
+	// stayed unknown.
 	ErrIncomplete = &KindError{name: "incomplete", message: "sagas: incomplete"}
 )
 

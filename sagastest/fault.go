@@ -43,7 +43,7 @@ func (f *fault) matches(info sagas.CallInfo) bool {
 }
 
 // Fail returns err without running the call of the step called step, which must equal CallInfo.Step.
-// It panics when err is nil, because a nil error would make the fault do nothing.
+// It panics when err is nil, because the step would then fail with ErrCallNotRun instead of err.
 func Fail(step string, err error, opts ...FaultOption) sagas.MiddlewareFunc {
 	if err == nil {
 		panic("sagastest: Fail needs a non-nil error")

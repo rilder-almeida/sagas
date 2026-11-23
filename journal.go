@@ -40,10 +40,10 @@ var _ EventReader = (*MemoryJournal)(nil)
 // EventVersion is this release's event format. Version 1 holds no state values, so its executions cannot be resumed.
 const EventVersion = 1
 
-// Event is one record of an execution. Each event holds the Saga name, the Execution ID, the Writer token of its run,
-// Seq from 1, Kind, Time and Version, the EventVersion a reader checks first. Step names the step of a step or
-// compensation event, Attempt its attempts. Err is set on a failed, unknown or compensation-failed event. Changed names
-// the fields a success committed. Steps lists every step on saga-started, and Status the run's end on saga-finished.
+// Event is one record of an execution. Each event holds Saga, the Execution ID, the Writer token of its run, Seq from
+// 1, Kind and Time. A reader checks Version, the EventVersion, first. Step names the step of a step or compensation
+// event. Attempt counts its attempts. Err is set on a failed, unknown or compensation-failed event. Changed names the
+// fields that a success committed. Steps lists every step on saga-started. Status is the end on saga-finished.
 type Event struct {
 	Saga      string
 	Execution string
