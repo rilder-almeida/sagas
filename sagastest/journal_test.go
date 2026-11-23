@@ -112,6 +112,23 @@ func (j rejectsEqualResend) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
+type dropsCompensable struct{ *sagas.MemoryJournal }
+
+func (j dropsCompensable) Append(ctx context.Context, e *sagas.Event) error {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored := *e
+	stored.Steps = slices.Clone(e.Steps)
+
+	for i := range stored.Steps {
+		stored.Steps[i].Compensable = false
+	}
+
+	return j.MemoryJournal.Append(ctx, &stored)
+}
+
 type acceptsOtherEvent struct {
 	*sagas.MemoryJournal
 
@@ -301,6 +318,15 @@ func Test_Journal(t *testing.T) {
 			wantCauses: []string{
 				"resend of seq 1 after the caller changed its Steps slice returned nil",
 				"resend of seq 1 after the caller changed its Err.Previous slice returned nil",
+			},
+		},
+		{
+			name:       "[Fail] When: the journal drops Compensable of each step ; Should: report the accepted change",
+			newJournal: func() sagas.Journal { return dropsCompensable{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleStoredCopy},
+			wantCauses: []string{
+				"resend of seq 1 after the caller changed its Steps Compensable from true returned nil",
+				"resend of seq 1 after the caller changed its Steps Compensable from false returned nil",
 			},
 		},
 		{

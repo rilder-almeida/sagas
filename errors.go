@@ -120,13 +120,15 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
-// RunError reports a run that began and did not complete cleanly. Steps holds every failed step in failure order, and
-// Pending lists the steps that still need action. errors.Is also walks the step errors, the journal rejection, the
-// journal errors, the cause of a caller's context that stopped the run and the state write-back error; read the kind
-// of the run itself with errors.As and its Kind field.
+// RunError reports a run that began and did not complete cleanly. Steps holds every failed step in failure order.
+// errors.Is also walks the step errors, the journal rejection, the journal errors, the cause of a caller's context that
+// stopped the run and the state write-back error; read the kind of the run itself with errors.As and its Kind field.
 type RunError struct {
-	Kind    *KindError
-	Steps   []*Error
+	Kind  *KindError
+	Steps []*Error
+	// Pending holds, in step order, each unknown step that has a compensation or runs outside the compensable zone,
+	// each step whose compensation failed, was blocked or was halted, and, after a succeeded pivot, each forward-only
+	// step that failed or did not start.
 	Pending []string
 	causes  []error
 }

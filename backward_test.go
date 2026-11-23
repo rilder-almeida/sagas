@@ -233,9 +233,9 @@ func unknownBarrierRow() runRow {
 			seq(compStartOf("a"), undoneOf("a"), closed),
 		),
 		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable},
-			{Name: "b", Zone: ZoneCompensable},
-			{Name: "c", Zone: ZoneCompensable},
+			{Name: "a", Zone: ZoneCompensable, Compensable: true},
+			{Name: "b", Zone: ZoneCompensable, Compensable: true},
+			{Name: "c", Zone: ZoneCompensable, Compensable: true},
 			{Name: "p", Zone: ZonePivot},
 		},
 	}

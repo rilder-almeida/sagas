@@ -19,8 +19,8 @@ const (
 
 func runSteps() []StepZone {
 	return []StepZone{
-		{Name: holdStep, Zone: ZoneCompensable},
-		{Name: bookStep, Zone: ZoneCompensable},
+		{Name: holdStep, Zone: ZoneCompensable, Compensable: true},
+		{Name: bookStep, Zone: ZoneCompensable, Compensable: true},
 		{Name: payStep, Zone: ZonePivot},
 		{Name: shipStep, Zone: ZoneForwardOnly},
 		{Name: notifyStep, Zone: ZoneForwardOnly},
@@ -42,6 +42,17 @@ func runEventsFrom(events []Event) []Event {
 	return events
 }
 
+func bareEvents(bare string, tail ...Event) []Event {
+	steps := runSteps()
+	for i := range steps {
+		if steps[i].Name == bare {
+			steps[i].Compensable = false
+		}
+	}
+
+	return runEventsFrom(append([]Event{{Kind: EventSagaStarted, Steps: steps}}, tail...))
+}
+
 func wantSteps(reached ...stepResult) []stepResult {
 	zones := runSteps()
 	steps := make([]stepResult, len(zones))
@@ -60,8 +71,8 @@ func wantSteps(reached ...stepResult) []stepResult {
 
 func literalEvents(tail ...Event) []Event {
 	steps := []StepZone{
-		{Name: holdStep, Zone: "compensable"},
-		{Name: bookStep, Zone: "compensable"},
+		{Name: holdStep, Zone: "compensable", Compensable: true},
+		{Name: bookStep, Zone: "compensable", Compensable: true},
 		{Name: payStep, Zone: "pivot"},
 		{Name: shipStep, Zone: "forward-only"},
 		{Name: notifyStep, Zone: "forward-only"},
@@ -542,6 +553,25 @@ func Test_pendingOf(t *testing.T) {
 				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
 			),
 			want: []string{bookStep},
+		},
+		{
+			name: "[Success] When: a compensable step without a compensation loses its outcome ; Should: list nothing",
+			events: bareEvents(bookStep,
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepStarted, Step: bookStep},
+				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+			),
+			want: nil,
+		},
+		{
+			name: "[Success] When: a compensable step without a compensation ends unknown ; Should: list nothing",
+			events: bareEvents(bookStep,
+				Event{Kind: EventStepSucceeded, Step: holdStep},
+				Event{Kind: EventStepUnknown, Step: bookStep},
+				Event{Kind: EventCompensationSucceeded, Step: holdStep},
+				Event{Kind: EventSagaFinished, Status: StatusCompensated},
+			),
+			want: nil,
 		},
 		{
 			name: "[Success] When: a compensable step ends unknown and is compensated ; Should: list nothing",

@@ -120,6 +120,10 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	return s
 }
 
+func (n *stepNode[S]) stepZone() StepZone {
+	return StepZone{Name: n.name, Zone: n.zone, Compensable: n.compensation != nil}
+}
+
 func (n *stepNode[S]) buildCalls(saga string, rep *StepReport, m *stepMethods[S], middleware []Middleware) {
 	spec := callSpec{
 		saga: saga, step: rep.Name, phase: PhaseExecute, retry: rep.Retry, timeout: rep.AttemptTimeout,
