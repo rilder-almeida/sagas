@@ -120,7 +120,10 @@ type built struct {
 
 type fixture func() built
 
-const probeName = "probe"
+const (
+	probeName = "probe"
+	otherName = "other"
+)
 
 func executeFixture() built {
 	p := newProbe(probeName, sagas.NoRetry(), nil)
@@ -173,7 +176,7 @@ func Test_Fail(t *testing.T) {
 		},
 		{
 			name:      "[Success] When: another step name is given ; Should: leave the run untouched",
-			step:      "other",
+			step:      otherName,
 			inject:    errBoom,
 			wantCalls: 1,
 		},
@@ -214,6 +217,8 @@ func Test_Unknown(t *testing.T) {
 	tests := []struct {
 		name      string
 		step      string
+		opts      []FaultOption
+		retry     sagas.RetryPolicy
 		probeErr  error
 		wantErr   error
 		wantNot   error
@@ -222,20 +227,43 @@ func Test_Unknown(t *testing.T) {
 		{
 			name:      "[Fail] When: the step name matches ; Should: run the call once and end unknown",
 			step:      probeName,
+			retry:     sagas.NoRetry(),
 			wantErr:   sagas.ErrUnknown,
 			wantCalls: 1,
 		},
 		{
 			name:      "[Success] When: another step name is given ; Should: leave the run untouched",
-			step:      "other",
+			step:      otherName,
+			retry:     sagas.NoRetry(),
 			wantCalls: 1,
 		},
 		{
 			name:      "[Fail] When: the call returns an error ; Should: keep that error and report no deadline",
 			step:      probeName,
+			retry:     sagas.NoRetry(),
 			probeErr:  errBoom,
 			wantErr:   errBoom,
 			wantNot:   context.DeadlineExceeded,
+			wantCalls: 1,
+		},
+		{
+			name:      "[Fail] When: it matches every attempt of two ; Should: retry the lost reply and end unknown",
+			step:      probeName,
+			retry:     fastRetry(),
+			wantErr:   sagas.ErrUnknown,
+			wantCalls: 2,
+		},
+		{
+			name:      "[Success] When: it matches only attempt 1 of two ; Should: retry once and succeed",
+			step:      probeName,
+			opts:      []FaultOption{OnAttempts(1)},
+			retry:     fastRetry(),
+			wantCalls: 2,
+		},
+		{
+			name:      "[Success] When: another step name is given with two attempts ; Should: run the call once",
+			step:      otherName,
+			retry:     fastRetry(),
 			wantCalls: 1,
 		},
 	}
@@ -244,7 +272,7 @@ func Test_Unknown(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			calls, err := runProbe(t, sagas.NoRetry(), tt.probeErr, Unknown(tt.step))
+			calls, err := runProbe(t, tt.retry, tt.probeErr, Unknown(tt.step, tt.opts...))
 
 			assertErr(t, err, tt.wantErr)
 
@@ -263,6 +291,7 @@ func Test_Panic(t *testing.T) {
 	tests := []struct {
 		name      string
 		step      string
+		retry     sagas.RetryPolicy
 		probeErr  error
 		wantErr   error
 		wantPanic bool
@@ -271,21 +300,40 @@ func Test_Panic(t *testing.T) {
 		{
 			name:      "[Fail] When: the step name matches ; Should: run the call once and report a panic error",
 			step:      probeName,
+			retry:     sagas.NoRetry(),
 			wantErr:   sagas.ErrPanic,
 			wantPanic: true,
 			wantCalls: 1,
 		},
 		{
 			name:      "[Success] When: another step name is given ; Should: leave the run untouched",
-			step:      "other",
+			step:      otherName,
+			retry:     sagas.NoRetry(),
 			wantCalls: 1,
 		},
 		{
 			name:      "[Fail] When: the matched call returns an error ; Should: keep that error and not panic",
 			step:      probeName,
+			retry:     sagas.NoRetry(),
 			probeErr:  errBoom,
 			wantErr:   errBoom,
 			wantCalls: 1,
+		},
+		{
+			name:      "[Fail] When: the step name matches with two attempts ; Should: not retry the panic",
+			step:      probeName,
+			retry:     fastRetry(),
+			wantErr:   sagas.ErrPanic,
+			wantPanic: true,
+			wantCalls: 1,
+		},
+		{
+			name:      "[Fail] When: the call errs with two attempts ; Should: retry the error and not panic",
+			step:      probeName,
+			retry:     fastRetry(),
+			probeErr:  errBoom,
+			wantErr:   errBoom,
+			wantCalls: 2,
 		},
 	}
 
@@ -293,7 +341,7 @@ func Test_Panic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			calls, err := runProbe(t, sagas.NoRetry(), tt.probeErr, Panic(tt.step))
+			calls, err := runProbe(t, tt.retry, tt.probeErr, Panic(tt.step))
 
 			assertErr(t, err, tt.wantErr)
 
