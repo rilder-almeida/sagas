@@ -36,7 +36,7 @@ At run time, a failure of the pivot call means that it did not apply, so the lib
 
 An unknown outcome from the pivot is different. An unknown outcome follows a timeout, a cancel or a panic of the call. Nobody knows then whether the effect happened. The library retries the pivot with the same idempotency key (defined below) and never undoes it. When the attempts run out, the run ends `ErrIncomplete` with only the pivot pending, and the library compensates nothing. "Pending" means that a person must still finish, undo or look into the step. The unknown pivot is one case of a pending step. The [glossary](../glossary.md) gives every case. A failure or an unknown outcome after the pivot also ends `ErrIncomplete`, because the saga must finish and cannot go back.
 
-The pivot call runs in one retry loop on a context that the caller's cancel does not stop. The reason is that a cancel half way through a pivot leaves its outcome unknown. The grace period bounds that loop. The grace period is the time that recovery gets after the caller's context ends.
+The pivot call runs in one retry loop on a context that the caller's cancel does not stop. The reason is that a cancel half way through a pivot leaves its outcome unknown. The grace period is the time that recovery gets after the caller's context ends. The grace period bounds that loop.
 
 The committed state is the state value that the successful attempts so far changed. A commit applies the changes of one successful attempt to it at once. Each commit is a journal event. If the library cannot encode the new state, the commit fails, as the section on the state explains. A conflict between parallel steps cannot fail the commit of the pivot, because the pivot has no parallel sibling. If the pivot call succeeds and its commit fails, the library counts the pivot as unknown. It commits nothing and compensates nothing. The run ends `ErrIncomplete` with the pivot in `Pending` and `ErrInvalidState` in its error. The other choice, to count the pivot as failed, compensates around a pivot that did apply.
 
@@ -134,7 +134,7 @@ These rules describe how a run ends. They matter most for a caller cancel or a j
 
 ### The grace period
 
-While the caller's context is alive, the saga runs, bounded by the attempts and by the `AttemptTimeout` of each step. When the caller's context ends, the library starts no new step of the compensable zone and no new pivot. The forward-only zone goes on until the grace period ends. Recovery then gets at most `RecoveryTimeout` from that moment. This time is the grace period. The default is five minutes.
+While the caller's context is alive, the saga runs, bounded by the attempts and by the `AttemptTimeout` of each step. When the caller's context ends, the library starts no new step of the compensable zone and no new pivot. The forward-only zone goes on until the grace period ends. The grace period then gives recovery at most `RecoveryTimeout` from that moment. The default is five minutes.
 
 If the caller's context never ends, no extra clock runs. A caller that wants a bound on the whole run sets a deadline on its own context. A hung compensation waits until that context ends, and then the grace period starts.
 
