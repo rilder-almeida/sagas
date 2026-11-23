@@ -4,6 +4,8 @@ This file lists the notable changes of each release. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-23
+
 This release rewrites the library. The API breaks with every earlier tag. Most code that uses an earlier tag does not compile against this release.
 
 ### Added
@@ -39,4 +41,5 @@ This release rewrites the library. The API breaks with every earlier tag. Most c
   - `Status`, with `Undefined`, `Failed` and `Successed`
 - `Saga`, `Step`, `Event` and `Status` return as new types with a different meaning. Old code that uses one of these names can still compile, so read each use again. `Saga` was an interface and is now the generic struct `Saga[S]`. `Step` was an interface and is now a struct that a step type embeds. `Event` was an interface and is now a struct. `Status` was an `int` and is now a `string`.
 
-[Unreleased]: https://github.com/rilder-almeida/sagas/compare/v.0.0.11a...HEAD
+[Unreleased]: https://github.com/rilder-almeida/sagas/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/rilder-almeida/sagas/releases/tag/v0.1.0
