@@ -197,14 +197,10 @@ func Test_newSaga(t *testing.T) {
 			assert.Equal(t, tt.wantReport, out.String())
 
 			key := sagas.CallInfo{Execution: a.ID, Step: "referral"}.IdempotencyKey()
-			removeErr := svc.referrals.remove(t.Context(), key)
+			id, putErr := svc.referrals.put(t.Context(), key, "FRIEND")
 
-			if tt.wantCredited {
-				require.NoError(t, removeErr)
-			} else {
-				require.ErrorIs(t, removeErr, errNotFound)
-			}
-
+			require.NoError(t, putErr)
+			assert.Equal(t, tt.wantCredited, id == a.ReferralID)
 			assert.Equal(t, tt.wantUndone, ran)
 		})
 	}

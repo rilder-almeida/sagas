@@ -16,10 +16,9 @@ const (
 	exitWriteFailure = 2
 )
 
-var (
-	errNoCapacity = errors.New("no capacity for this plan")
-	errNotFound   = errors.New("nothing stored for this key")
-)
+// --8<-- [start:store]
+
+var errNoCapacity = errors.New("no capacity for this plan")
 
 type store struct {
 	mu      sync.Mutex
@@ -64,14 +63,12 @@ func (s *store) remove(ctx context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.byKey[key]; !ok {
-		return fmt.Errorf("%w: %s", errNotFound, key)
-	}
-
 	delete(s.byKey, key)
 
 	return nil
 }
+
+// --8<-- [end:store]
 
 // --8<-- [start:state]
 
@@ -109,12 +106,7 @@ func (r *register) Execute(ctx context.Context, a *account) error {
 }
 
 func (r *register) Compensate(ctx context.Context, _ *account) error {
-	err := r.accounts.remove(ctx, sagas.IdempotencyKey(ctx))
-	if errors.Is(err, errNotFound) {
-		return nil
-	}
-
-	return err
+	return r.accounts.remove(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type provision struct {
@@ -139,12 +131,7 @@ func (p *provision) Execute(ctx context.Context, a *account) error {
 }
 
 func (p *provision) Compensate(ctx context.Context, _ *account) error {
-	err := p.servers.remove(ctx, sagas.IdempotencyKey(ctx))
-	if errors.Is(err, errNotFound) {
-		return nil
-	}
-
-	return err
+	return p.servers.remove(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type charge struct {

@@ -173,15 +173,53 @@ func Test_newSaga(t *testing.T) {
 			runErr := saga.Run(t.Context(), &a)
 
 			key := sagas.CallInfo{Execution: a.ID, Step: "register"}.IdempotencyKey()
-			removeErr := accounts.remove(t.Context(), key)
+			id, putErr := accounts.put(t.Context(), key, a.Email)
+
+			require.NoError(t, putErr)
+			assert.Equal(t, tt.wantRegistered, id == a.AccountID)
 
 			if tt.wantRegistered {
 				require.NoError(t, runErr)
-				require.NoError(t, removeErr)
 			} else {
 				require.Error(t, runErr)
-				require.ErrorIs(t, removeErr, errNotFound)
 			}
+		})
+	}
+}
+
+func Test_store_remove(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		key   string
+		stock string
+	}{
+		{
+			name:  "[Success] When: the key was stored ; Should: remove it",
+			key:   "k3",
+			stock: "k3",
+		},
+		{
+			name:  "[Success] When: the key never applied ; Should: succeed without error",
+			key:   "k2",
+			stock: "k1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newStore("ACC")
+			stored, err := s.put(t.Context(), tt.stock, "v")
+			require.NoError(t, err)
+
+			require.NoError(t, s.remove(t.Context(), tt.key))
+
+			again, err := s.put(t.Context(), tt.stock, "v")
+			require.NoError(t, err)
+			assert.Equal(t, tt.key != tt.stock, again == stored)
 		})
 	}
 }
