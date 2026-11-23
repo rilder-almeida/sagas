@@ -1,6 +1,6 @@
 # sagas
 
-A business operation often changes several services, such as an airline, a hotel and a bank, and no single transaction covers them all. This Go library runs such an operation as a saga: either every step completes, or the library undoes the part that ran.
+A business operation often changes several services, such as an airline, a hotel and a bank, and no single transaction covers them all. This Go library runs such an operation as a saga: either every step completes, or the library undoes the part that ran. Past the pivot, the step at the point of no return, the saga finishes instead.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/rilder-almeida/sagas.svg)](https://pkg.go.dev/github.com/rilder-almeida/sagas)
 
@@ -318,7 +318,7 @@ A saga is not a database transaction. No lock holds the steps together, and othe
 
 ### All or nothing, up to the pivot
 
-When a run ends, either every step is done or the library undoes the part that ran. The library compensates every started step that has a compensation, also a step whose call failed or timed out. Such a call can still change something outside. Before it compensates, the library stops the running steps and waits for them. The compensations then run in the reverse order of the flow. Steps that ran in parallel compensate in parallel.
+When a run ends, either every step is done or the library undoes the part that ran. Past the pivot, the saga finishes instead, as the next section explains. The library compensates every started step that has a compensation, also a step whose call failed or timed out. Such a call can still change something outside. Before it compensates, the library stops the running steps and waits for them. The compensations then run in the reverse order of the flow. Steps that ran in parallel compensate in parallel.
 
 ### The pivot
 

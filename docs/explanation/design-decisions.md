@@ -68,7 +68,7 @@ A saga name, a step name and an execution ID hold only ASCII letters, digits, `-
 
 ### Every started step gets its compensation
 
-A step that succeeded, failed, timed out or stopped on a cancel gets a compensation. A skipped step does not. A call that timed out can still land outside later. The rejected design compensates only completed steps. It never refunds a charge that the bank accepts late.
+A step that succeeded, failed, timed out or stopped on a cancel gets a compensation. A skipped step does not. A call that timed out can still land outside later. The rejected design compensates only completed steps. It never cancels a hotel booking that the service accepts late.
 
 ### Compensation follows the reversed graph
 
