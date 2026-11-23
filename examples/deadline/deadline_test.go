@@ -145,6 +145,13 @@ func Test_execute(t *testing.T) {
 	}
 }
 
+const (
+	invoiceStep = "invoice"
+	packStep    = "pack"
+	reserveStep = "reserve"
+	tagStep     = "tag"
+)
+
 func Test_newSaga(t *testing.T) {
 	t.Parallel()
 
@@ -154,29 +161,30 @@ func Test_newSaga(t *testing.T) {
 		policy       sagas.CompensationFailurePolicy
 		fault        string
 		wantReport   string
-		wantReserved bool
+		wantHeld     []string
 		wantGraceEnd bool
 	}{
 		{
 			name:       "[Success] When: the grace period is long enough ; Should: undo every step after the deadline",
 			grace:      longGrace,
 			wantReport: "t-1: compensated, pending: [], undone: [invoice pack reserve tag]\n",
+			wantHeld:   []string{},
 		},
 		{
 			name:         "[Fail] When: a compensation outlasts the grace ; Should: end with ErrGraceEnded",
 			grace:        shortGrace,
 			fault:        faultSlowUndo,
 			wantReport:   "t-1: compensation_failed, pending: [reserve pack tag], undone: [invoice], grace ended\n",
-			wantReserved: true,
+			wantHeld:     []string{packStep, reserveStep, tagStep},
 			wantGraceEnd: true,
 		},
 		{
-			name:         "[Fail] When: a compensation fails under block ; Should: block the steps that wait on it",
-			grace:        longGrace,
-			policy:       sagas.CompensationBlock,
-			fault:        faultInvoiceUndo,
-			wantReport:   "t-1: compensation_failed, pending: [reserve invoice], undone: [pack tag]\n",
-			wantReserved: true,
+			name:       "[Fail] When: a compensation fails under block ; Should: block the steps that wait on it",
+			grace:      longGrace,
+			policy:     sagas.CompensationBlock,
+			fault:      faultInvoiceUndo,
+			wantReport: "t-1: compensation_failed, pending: [reserve invoice], undone: [pack tag]\n",
+			wantHeld:   []string{invoiceStep, reserveStep},
 		},
 		{
 			name:       "[Fail] When: a compensation fails under continue ; Should: undo every other step",
@@ -184,14 +192,15 @@ func Test_newSaga(t *testing.T) {
 			policy:     sagas.CompensationContinue,
 			fault:      faultInvoiceUndo,
 			wantReport: "t-1: compensation_failed, pending: [invoice], undone: [pack reserve tag]\n",
+			wantHeld:   []string{invoiceStep},
 		},
 		{
-			name:         "[Fail] When: a compensation fails under halt ; Should: halt every compensation not started",
-			grace:        longGrace,
-			policy:       sagas.CompensationHalt,
-			fault:        faultInvoiceUndo,
-			wantReport:   "t-1: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n",
-			wantReserved: true,
+			name:       "[Fail] When: a compensation fails under halt ; Should: halt every compensation not started",
+			grace:      longGrace,
+			policy:     sagas.CompensationHalt,
+			fault:      faultInvoiceUndo,
+			wantReport: "t-1: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n",
+			wantHeld:   []string{invoiceStep, packStep, reserveStep},
 		},
 	}
 
@@ -199,9 +208,9 @@ func Test_newSaga(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := newServices()
+			svc := newServices(tt.fault)
 
-			saga, err := newSaga(svc, tt.grace, tt.policy)
+			saga, err := newSaga(svc, tt.grace, tt.policy, svc.options()...)
 			require.NoError(t, err)
 
 			ctx, cancel := context.WithTimeout(t.Context(), callerTimeout)
@@ -218,11 +227,29 @@ func Test_newSaga(t *testing.T) {
 			assert.Equal(t, tt.wantReport, out.String())
 			assert.Equal(t, tt.wantGraceEnd, errors.Is(runErr, sagas.ErrGraceEnded))
 
-			key := sagas.CallInfo{Execution: o.ID, Step: "reserve"}.IdempotencyKey()
-			id, putErr := svc.stock.put(t.Context(), key)
+			held := []string{}
 
-			require.NoError(t, putErr)
-			assert.Equal(t, tt.wantReserved, id == "STK-1")
+			for _, probe := range []struct {
+				step  string
+				store *store
+				first string
+			}{
+				{invoiceStep, svc.ledger, "INV-1"},
+				{packStep, svc.dock, "PCK-1"},
+				{reserveStep, svc.stock, "STK-1"},
+				{tagStep, svc.labels, "LBL-1"},
+			} {
+				key := sagas.CallInfo{Execution: o.ID, Step: probe.step}.IdempotencyKey()
+				id, putErr := probe.store.put(t.Context(), key)
+
+				require.NoError(t, putErr)
+
+				if id == probe.first {
+					held = append(held, probe.step)
+				}
+			}
+
+			assert.Equal(t, tt.wantHeld, held)
 		})
 	}
 }

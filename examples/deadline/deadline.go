@@ -19,12 +19,16 @@ const (
 	callerTimeout = 100 * time.Millisecond
 	longGrace     = 5 * time.Second
 	shortGrace    = 100 * time.Millisecond
+	giveUpAfter   = time.Minute
 
 	faultSlowUndo    = "slow-undo"
 	faultInvoiceUndo = "invoice-undo"
 )
 
-var errRefused = errors.New("invoice service refused the undo")
+var (
+	errRefused = errors.New("invoice service refused the undo")
+	errGaveUp  = errors.New("label service gave up waiting")
+)
 
 // --8<-- [start:store]
 
@@ -91,12 +95,13 @@ func (o *order) ExecutionID() string { return o.ID }
 type failureGate struct {
 	*sagas.MemoryJournal
 
-	once sync.Once
-	open chan struct{}
+	armed bool
+	once  sync.Once
+	open  chan struct{}
 }
 
-func newFailureGate() *failureGate {
-	return &failureGate{MemoryJournal: sagas.NewMemoryJournal(), open: make(chan struct{})}
+func newFailureGate(armed bool) *failureGate {
+	return &failureGate{MemoryJournal: sagas.NewMemoryJournal(), armed: armed, open: make(chan struct{})}
 }
 
 func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
@@ -111,13 +116,16 @@ func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
 	return nil
 }
 
-func (g *failureGate) waitFailure(ctx context.Context) error {
-	select {
-	case <-g.open:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+func (g *failureGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
+	if g.armed && info.Step == "tag" && info.Phase == sagas.PhaseCompensate {
+		select {
+		case <-g.open:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+
+	return call(ctx)
 }
 
 type undone struct {
@@ -228,11 +236,14 @@ type tag struct {
 	sagas.Step
 
 	labels *store
-	gate   *failureGate
 	undone *undone
 }
 
-func (*tag) Execute(ctx context.Context, _ *order) error {
+func (t *tag) Execute(ctx context.Context, _ *order) error {
+	if _, err := t.labels.put(ctx, sagas.IdempotencyKey(ctx)); err != nil {
+		return err
+	}
+
 	<-ctx.Done()
 
 	return ctx.Err()
@@ -240,14 +251,14 @@ func (*tag) Execute(ctx context.Context, _ *order) error {
 
 func (t *tag) Compensate(ctx context.Context, o *order) error {
 	if o.Fault == faultSlowUndo {
-		<-ctx.Done()
+		giveUp := time.NewTimer(giveUpAfter)
+		defer giveUp.Stop()
 
-		return ctx.Err()
-	}
-
-	if o.Fault == faultInvoiceUndo {
-		if err := t.gate.waitFailure(ctx); err != nil {
-			return err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-giveUp.C:
+			return sagas.Permanent(errGaveUp)
 		}
 	}
 
@@ -265,30 +276,36 @@ type services struct {
 	gate   *failureGate
 }
 
-func newServices() *services {
+func newServices(fault string) *services {
 	return &services{
 		stock:  newStore("STK"),
 		ledger: newStore("INV"),
 		dock:   newStore("PCK"),
 		labels: newStore("LBL"),
 		undone: &undone{},
-		gate:   newFailureGate(),
+		gate:   newFailureGate(fault == faultInvoiceUndo),
 	}
+}
+
+func (s *services) options() []sagas.Option {
+	return []sagas.Option{sagas.WithJournal(s.gate), sagas.WithMiddleware(s.gate)}
 }
 
 // --8<-- [start:saga]
 
-func newSaga(s *services, grace time.Duration, policy sagas.CompensationFailurePolicy) (*sagas.Saga[order], error) {
+func newSaga(
+	s *services, grace time.Duration, policy sagas.CompensationFailurePolicy, opts ...sagas.Option,
+) (*sagas.Saga[order], error) {
 	return sagas.New[order]("deadline", sagas.Sequence(
 		&reserve{stock: s.stock, undone: s.undone},
 		sagas.Parallel(
 			&invoice{CompensationFailure: policy, ledger: s.ledger, undone: s.undone},
 			sagas.Sequence(
 				&pack{dock: s.dock, undone: s.undone},
-				&tag{labels: s.labels, gate: s.gate, undone: s.undone},
+				&tag{labels: s.labels, undone: s.undone},
 			),
 		),
-	), sagas.WithRecoveryTimeout(grace), sagas.WithJournal(s.gate))
+	), append(opts, sagas.WithRecoveryTimeout(grace))...)
 }
 
 // --8<-- [end:saga]
@@ -327,9 +344,9 @@ func policyRuns() []scenario {
 
 func run(w io.Writer) error {
 	for _, sc := range slices.Concat(graceRuns(), policyRuns()) {
-		svc := newServices()
+		svc := newServices(sc.fault)
 
-		saga, err := newSaga(svc, sc.grace, sc.policy)
+		saga, err := newSaga(svc, sc.grace, sc.policy, svc.options()...)
 		if err != nil {
 			return err
 		}

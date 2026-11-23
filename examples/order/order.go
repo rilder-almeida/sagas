@@ -107,13 +107,16 @@ func (g *commitGate) Append(ctx context.Context, e *sagas.Event) error {
 	return nil
 }
 
-func (g *commitGate) waitReserved(ctx context.Context) error {
-	select {
-	case <-g.open:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+func (g *commitGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
+	if info.Step == "fraud-check" && info.Phase == sagas.PhaseExecute {
+		select {
+		case <-g.open:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+
+	return call(ctx)
 }
 
 type undone struct {
@@ -126,6 +129,16 @@ func (u *undone) add(name string) {
 	defer u.mu.Unlock()
 
 	u.names = append(u.names, name)
+}
+
+func (u *undone) release(ctx context.Context, s *store, name string) error {
+	if err := s.removeIfPresent(ctx, sagas.IdempotencyKey(ctx)); err != nil {
+		return err
+	}
+
+	u.add(name)
+
+	return nil
 }
 
 func (u *undone) take() []string {
@@ -160,23 +173,16 @@ func (r *reserve) Execute(ctx context.Context, o *order) error {
 }
 
 func (r *reserve) Compensate(ctx context.Context, _ *order) error {
-	r.undone.add("reserve")
-
-	return r.warehouse.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
+	return r.undone.release(ctx, r.warehouse, "reserve")
 }
 
 type fraudCheck struct {
 	sagas.Step
 
-	gate     *commitGate
 	annotate bool
 }
 
-func (f *fraudCheck) Execute(ctx context.Context, o *order) error {
-	if err := f.gate.waitReserved(ctx); err != nil {
-		return err
-	}
-
+func (f *fraudCheck) Execute(_ context.Context, o *order) error {
 	if o.Amount > fraudLimit {
 		return sagas.Permanent(errFlagged)
 	}
@@ -248,15 +254,17 @@ func newServices() *services {
 	}
 }
 
+func (s *services) options(mw ...sagas.Middleware) []sagas.Option {
+	return []sagas.Option{sagas.WithJournal(s.gate), sagas.WithMiddleware(append([]sagas.Middleware{s.gate}, mw...)...)}
+}
+
 // --8<-- [start:saga]
 
 func newSaga(s *services, annotate bool, opts ...sagas.Option) (*sagas.Saga[order], error) {
-	opts = append(opts, sagas.WithJournal(s.gate))
-
 	return sagas.New[order]("order", sagas.Sequence(
 		sagas.Parallel(
 			&reserve{warehouse: s.warehouse, undone: s.undone},
-			&fraudCheck{gate: s.gate, annotate: annotate},
+			&fraudCheck{annotate: annotate},
 		),
 		&charge{payments: s.payments},
 		&ship{carrier: s.carrier},
@@ -280,7 +288,7 @@ func run(w io.Writer) error {
 	for i := range orders {
 		svc := newServices()
 
-		saga, err := newSaga(svc, orders[i].annotate)
+		saga, err := newSaga(svc, orders[i].annotate, svc.options()...)
 		if err != nil {
 			return err
 		}

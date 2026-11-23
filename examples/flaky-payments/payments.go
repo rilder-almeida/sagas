@@ -333,12 +333,20 @@ func report(w io.Writer, o *order, used usage, runErr error) error {
 		return err
 	case errors.As(runErr, &failed):
 		_, err := fmt.Fprintf(w, "%s: %s, pending: %v, outcome: %s, provider calls: %d, refunds: %d\n",
-			o.ID, failed.Kind.Name(), failed.Pending, failed.Steps[0].Kind.Name(), used.calls, used.refunds)
+			o.ID, failed.Kind.Name(), failed.Pending, outcomeOf(failed), used.calls, used.refunds)
 
 		return err
 	default:
 		return runErr
 	}
+}
+
+func outcomeOf(failed *sagas.RunError) string {
+	if stepErr, ok := errors.AsType[*sagas.Error](failed); ok {
+		return stepErr.Kind.Name()
+	}
+
+	return "none"
 }
 
 // --8<-- [end:run]

@@ -337,12 +337,13 @@ func Test_rateLimit_Wrap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			started := time.Now()
+
 			ctx, cancel := context.WithTimeout(t.Context(), tt.timeout)
 			defer cancel()
 
 			limit := &rateLimit{every: tt.every}
 			ran := 0
-			started := time.Now()
 
 			var err error
 
