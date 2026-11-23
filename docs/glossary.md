@@ -23,7 +23,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Compensable zone | The steps before the pivot. In a saga with no pivot, every step. A failure or an unknown outcome here undoes them. | `ZoneCompensable` |
 | Forward-only zone | The steps after the pivot. A failure or an unknown outcome here never undoes anything. | `ZoneForwardOnly` |
 | Backward recovery | If the run stops before the pivot applies, the library runs the compensations in reverse order. If another `Run` call appended to the execution first, it does not run them. Example causes are a failure or an unknown outcome of a step, a caller cancel, a journal fault, and a failure of the pivot. | `PhaseCompensate` |
-| Forward recovery | Finishing a started pivot and the forward-only zone instead of undoing anything. | no code name |
+| Forward recovery | What the library does after a caller cancel once the pivot started: it goes forward instead of undoing anything. It runs the started pivot to its end. If the pivot succeeds, it finishes the forward-only zone. A failure or an unknown outcome in that zone stops the run, and the rest stays pending. | no code name |
 | Retry policy | How many attempts a call gets and how long to wait between them. One policy type serves every action and compensation. | `sagas.RetryPolicy`, in `Step.Retry` |
 | Idempotency key | A key that is unique for each execution and step. It is the same on every attempt and on the compensation. The step sends it to the outside service. | `sagas.IdempotencyKey(ctx)`, `CallInfo.IdempotencyKey()` |
 | Attempt | One call of an action or of a compensation. | `CallInfo.Attempt` |
