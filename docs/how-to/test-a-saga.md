@@ -137,7 +137,7 @@ The pivot is the step at the point of no return. It applies whole or not at all,
 An attempt is one call of an action, of a compensation or of the pivot. `sagastest.Pivot` makes the outcome of the first pivot attempt unknown: the pivot call runs, and then the helper returns a timeout. To the library, the reply looks lost. Then the result depends on the attempts of the pivot:
 
 - If the pivot has two or more attempts, the run must complete. A clean run is a run with no fault. The final state of the run must equal the state of a clean run, by `reflect.DeepEqual`. The `Retry` field of the pivot step sets the number of attempts, three by default. The [retry section](middleware-recipes.md#how-do-i-use-one-retry-setting-on-several-steps) of the middleware page shows the field.
-- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. A pending step is a step that a person still must finish or undo. Only the pivot is pending, and no compensation runs.
+- If the pivot has one attempt, the run must end `sagas.ErrIncomplete`. A pending step is a step that a person still must finish, undo or look into. Here only the unknown pivot is pending, and no compensation runs. The [glossary](../glossary.md) gives every case of a pending step.
 
 `sagastest.Pivot` then runs each forward-only step twice in one run, each step in a fresh case. Each such run must complete. So each step must be idempotent: a second call has the same effect as the first.
 

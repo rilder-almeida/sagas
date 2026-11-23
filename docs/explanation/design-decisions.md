@@ -164,7 +164,7 @@ Each event has a sequence number and a writer token. The writer token is a rando
 
 ### Events build the result
 
-The saga-started event, the first journal event of a run, carries every step name and its zone. A blocked compensation and a halted compensation each have their own event. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
+The saga-started event, the first journal event of a run, carries every step name, its zone, and whether the step has a compensation. Each `StepZone` holds these facts, the last one in its `Compensable` field. A blocked compensation and a halted compensation each have their own event. The library builds the `RunError` only from the events that it appended, so the journal alone holds what a reader needs to rebuild the outcome. The rejected design also reads the saga definition. Then the journal stops being the source of the outcome. The library also resends the exact event of a failed append before it writes anything new. This repairs the case where the first write landed and its reply was lost.
 
 ### The run error can owe more than the journal
 

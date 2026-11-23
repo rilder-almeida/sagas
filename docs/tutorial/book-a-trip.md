@@ -305,7 +305,7 @@ func execute(stdout, stderr io.Writer) int {
 }
 ```
 
-If each step succeeded or the library skipped it, and the library recorded the end, `Run` returns nil. If the run began and ended any other way, `Run` returns a `*sagas.RunError`. Its `Kind` names how the run ended. Its `Pending` lists the steps that a person still must finish or undo. Its `Steps` holds one error for each action or compensation that did not succeed, in order. A run that did not begin returns its own error, such as `sagas.ErrInvalidRun`.
+If each step succeeded or the library skipped it, and the library recorded the end, `Run` returns nil. If the run began and ended any other way, `Run` returns a `*sagas.RunError`. Its `Kind` names how the run ended. Its `Pending` lists the pending steps, the steps that a person still must finish, undo or look into. Its `Steps` holds one error for each action or compensation that did not succeed, in order. The [glossary](../glossary.md) gives every case of a pending step. A run that did not begin returns its own error, such as `sagas.ErrInvalidRun`.
 
 Make a file `main.go`:
 
@@ -331,7 +331,7 @@ trip-42: completed
 trip-43: compensated, pending: []
 ```
 
-The first trip completed. The second trip went to Porto, where the hotel step failed with `errNoRooms`. The library then ran the compensations of the started steps in reverse order: first the hotel, then the flight. The run ended compensated, which means that every compensation succeeded. No step is pending.
+The first trip completed. The second trip went to Porto, where the hotel step failed with `errNoRooms`. The library then ran the compensations of the started steps in reverse order: first the hotel, then the flight. The run ended compensated, which means that every compensation succeeded. In this trip, no step is pending.
 
 ## Step 6: break a step on purpose
 

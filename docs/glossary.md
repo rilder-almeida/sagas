@@ -40,3 +40,4 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Compensated | Backward recovery ran, and every compensation succeeded. | `ErrCompensated` |
 | Compensation failed | A compensation did not succeed. A person must finish the undo. | `ErrCompensationFailed` |
 | Incomplete | The saga passed the pivot and stopped before the end, or the outcome of the pivot stayed unknown. A person must finish it. The library never undoes it. | `ErrIncomplete` |
+| Pending | A step that a person must still finish, undo or look into after a run. One case is a step whose outcome stayed unknown, unless the step is in the compensable zone and has no compensation. Another case is a step whose compensation failed, or whose compensation a failed compensation stopped. After the pivot succeeded, a third case is a forward-only step that failed or did not start. | `RunError.Pending` |
