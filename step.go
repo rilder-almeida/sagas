@@ -12,7 +12,7 @@ import (
 // Run reports it. An empty Name takes the type name in kebab case. Declare step methods on the step type. New cannot
 // see one lost to a same-name field or to an embedded field that also embeds a provider of it.
 type Step struct {
-	// Set Name for a durable journal so a rename keeps it.
+	// Set Name for a durable journal, so a rename of the step type keeps the step name that the journal holds.
 	Name        string
 	Description string
 	// Retry governs the action and the compensation, so under NoRetry the compensation gets one attempt. More
