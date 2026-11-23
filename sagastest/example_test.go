@@ -182,7 +182,16 @@ func ExampleCompensations() {
 type journalAcceptsGaps struct{ *sagas.MemoryJournal }
 
 func (j journalAcceptsGaps) Append(ctx context.Context, e *sagas.Event) error {
-	if e != nil && e.Seq > len(j.Events(e.Execution))+1 {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored, err := j.Events(ctx, e.Execution)
+	if err != nil && !errors.Is(err, sagas.ErrNoEvents) {
+		return err
+	}
+
+	if e.Seq > len(stored)+1 {
 		return nil
 	}
 

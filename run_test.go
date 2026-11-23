@@ -163,13 +163,15 @@ func recordOf(events []Event) runRecord {
 	return r
 }
 
-func (j *scriptJournal) results() []runRecord {
+func (j *scriptJournal) results(tb testing.TB) []runRecord {
+	tb.Helper()
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
 	out := make([]runRecord, 0, len(j.executions))
 	for _, execution := range j.executions {
-		out = append(out, recordOf(j.Events(execution)))
+		out = append(out, recordOf(storedEvents(tb, j.MemoryJournal, execution)))
 	}
 
 	return out
@@ -298,7 +300,7 @@ func Test_Saga_Run_executionID(t *testing.T) {
 				assert.Equal(t, tt.wantExecutes, step.executes.Load())
 
 				var kinds []EventKind
-				for _, e := range journal.Events(tt.id) {
+				for _, e := range storedEvents(t, journal.MemoryJournal, tt.id) {
 					kinds = append(kinds, e.Kind)
 				}
 
@@ -629,7 +631,7 @@ func requireAppendErr(t *testing.T, err error, wantErrs, wantNoErrs []error) {
 func assertAppended(t *testing.T, j *scriptJournal, wantStored, calls int) {
 	t.Helper()
 
-	events := j.Events("exec-1")
+	events := storedEvents(t, j.MemoryJournal, "exec-1")
 	require.Len(t, events, wantStored)
 	require.Len(t, j.ctxs, calls)
 
@@ -871,7 +873,7 @@ func Test_Saga_Run(t *testing.T) {
 				require.NoError(t, err)
 
 				runs := execute(s, &tt)
-				results := journal.results()
+				results := journal.results(t)
 				require.Len(t, results, len(runs))
 
 				for i := range runs {
@@ -919,7 +921,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	assert.Equal(t, journalPending(res, tt), pendingOf(res.events))
 	assert.Equal(t, tt.wantState, got.state)
 	assertSteps(t, res, tt.wantSteps)
-	assertEvents(t, res, tt, journal.Events(res.Execution))
+	assertEvents(t, res, tt, storedEvents(t, journal.MemoryJournal, res.Execution))
 
 	assertFailures(t, tt, got, res)
 }

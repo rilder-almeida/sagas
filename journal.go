@@ -16,21 +16,30 @@ var (
 	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}
 	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
 	ErrConcurrentWriter = &KindError{name: "concurrent_writer", message: "sagas: concurrent writer"}
+	// ErrNoEvents is returned by EventReader.Events when the journal holds no event for the execution.
+	ErrNoEvents = &KindError{name: "no_events", message: "sagas: no events"}
 )
 
 var errInvalidEvent = errors.New("sagas: invalid event")
 
-// Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of e,
-// never e or its slices, only when its Seq is its execution's last Seq plus one; an equal resend from the same Writer
-// (slices by content, Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected,
-// wrapping ErrExecutionExists at Seq 1 and ErrConcurrentWriter later; a nil e or a Seq below 1 is an invalid event.
-// Append must honor ctx: once ctx is done it stores nothing and returns an error, so a late outcome can go unrecorded.
+// Journal records events append only and never delivers work, removes or marks an event. Append stores a copy of
+// every field of e when its Seq is its execution's last Seq plus one; an equal resend from the same Writer (slices
+// by content, Time by Time.Equal) returns nil and writes nothing. Any other Seq of 1 or more is rejected, wrapping
+// ErrExecutionExists at Seq 1 and ErrConcurrentWriter later; a nil e, a Seq below 1 or a Version not EventVersion
+// is invalid. Once ctx is done, Append stores nothing and returns an error. Rerun sagastest.Journal on each upgrade.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
 
-// EventVersion is the format of the events this release writes, stored in Event.Version. Journal.Append treats an
-// event with any other Version as invalid, and a reader checks Version before it reads the other fields.
+// EventReader reads a Journal: an execution's events in Seq order, or an error wrapping ErrNoEvents if it holds none.
+type EventReader interface {
+	Events(ctx context.Context, execution string) ([]Event, error)
+}
+
+var _ EventReader = (*MemoryJournal)(nil)
+
+// EventVersion is the format of the events this release writes, stored in Event.Version, which a reader checks
+// first. Version 1 events hold no state values, so a version 1 execution cannot be resumed.
 const EventVersion = 1
 
 // Event is one record of an execution, numbered by Seq from 1 and tagged with the Writer token of its run.
@@ -152,12 +161,21 @@ func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
 	return fmt.Errorf("%w: execution %q seq %d", rejection, e.Execution, e.Seq)
 }
 
-// Events returns a copy of an execution's events in Seq order.
-func (j *MemoryJournal) Events(execution string) []Event {
+// Events implements EventReader.
+func (j *MemoryJournal) Events(ctx context.Context, execution string) ([]Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	return copyEvents(j.streams[execution])
+	stream := j.streams[execution]
+	if len(stream) == 0 {
+		return nil, fmt.Errorf("%w: execution %q", ErrNoEvents, execution)
+	}
+
+	return copyEvents(stream), nil
 }
 
 func copyEvents(events []Event) []Event {

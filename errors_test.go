@@ -67,6 +67,7 @@ func kindErrorRows() []kindRow {
 			"[Success] When: the kind is ErrConcurrentWriter ; Should: return its message",
 			ErrConcurrentWriter, "sagas: concurrent writer",
 		},
+		{"[Success] When: the kind is ErrNoEvents ; Should: return its message", ErrNoEvents, "sagas: no events"},
 		{
 			"[Success] When: the kind is ErrInvalidState ; Should: return its message",
 			ErrInvalidState,
@@ -142,6 +143,7 @@ func Test_KindError_Name(t *testing.T) {
 			"[Success] When: the kind is ErrConcurrentWriter ; Should: return its label",
 			ErrConcurrentWriter, "concurrent_writer",
 		},
+		{"[Success] When: the kind is ErrNoEvents ; Should: return its label", ErrNoEvents, "no_events"},
 		{"[Success] When: the kind is ErrInvalidState ; Should: return its label", ErrInvalidState, "invalid_state"},
 		{"[Success] When: the kind is ErrConflict ; Should: return its label", ErrConflict, "conflict"},
 		{"[Success] When: the kind is ErrCompensated ; Should: return its label", ErrCompensated, "compensated"},
