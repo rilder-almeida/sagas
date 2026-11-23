@@ -214,6 +214,8 @@ func (e *email) Execute(ctx context.Context, t *trip) error {
 }
 ```
 
+The email comes after the pivot, so a refused email does not undo the flight, the hotel or the charge. A refused email ends the run incomplete, and the `email` step is pending. A person must finish it.
+
 ## Step 4: put the steps in order
 
 A flow is the order of the steps. `sagas.Sequence` makes a flow that runs its steps one after another. Add a type that holds the services and the flow, and a function that makes two trips:

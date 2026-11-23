@@ -89,7 +89,7 @@ A `Setup` is a function that builds one `sagastest.Case`. A case is one test tha
    }
    ```
 
-   The two errors of the trip tests are sentinel errors, fixed values that `errors.Is` finds:
+   The code above uses two sentinel errors, fixed values that `errors.Is` finds:
 
    ```go
    var (

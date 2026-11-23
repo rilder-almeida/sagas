@@ -172,7 +172,7 @@ type flight struct {
 
 func (f *flight) Execute(ctx context.Context, t *trip) error {
 	err := f.airline.Book(ctx, sagas.IdempotencyKey(ctx), t.City)
-	if errors.Is(err, errCanceled) {
+	if errors.Is(err, errNoRooms) || errors.Is(err, errCanceled) {
 		return sagas.Permanent(err)
 	}
 
@@ -302,7 +302,11 @@ trip-42: completed
 trip-43: compensated, pending: []
 ```
 
-The hotel in Porto has no rooms, so the second trip fails at the hotel step. The hotel step wraps that error in `sagas.Permanent`. A [permanent error](docs/glossary.md) stops the retries at once, so the library does not ask again for a room in a full city. The charge step treats a charge over the card limit the same way. The flight and the hotel also mark `errCanceled` permanent, because a key that `bookings` canceled stays canceled on each later attempt. The library then runs the compensations of the hotel and the flight. The airline cancels the flight. The hotels never booked the key and answer "not found", and the hotel compensation treats that answer as success. The run ends compensated. No step is pending, so nobody has to finish anything by hand.
+The hotel in Porto has no rooms, so the second trip fails at the hotel step. The hotel step wraps that error in `sagas.Permanent`. A [permanent error](docs/glossary.md) stops the retries at once, so the library does not ask again for a room in a full city.
+
+The library then runs the compensations of the hotel and the flight. The airline cancels the flight. The hotels never booked the key and answer "not found", and the hotel compensation treats that answer as success. The run ends compensated. No step is pending, so nobody has to finish anything by hand.
+
+The output does not show the other refusals. The flight and the hotel both mark a full city and a canceled key permanent. A full city stays full, and a key that `bookings` canceled stays canceled on each later attempt. The charge step treats a charge over the card limit the same way.
 
 `sagas.Sequence` puts the steps in order and returns a `Flow`. `sagas.New` checks the flow and returns a saga that you run many times. An execution is one run of the saga over one state value. The `ExecutionID` method gives each execution a business name, so a repeated request keeps its name. `Run` returns nil for a completed run and a `*sagas.RunError` for any other end of a run that began. An error that stops the run before it begins, such as `ErrInvalidRun`, returns as it is.
 
