@@ -8,10 +8,6 @@ This file lists the notable changes of each release. The format follows [Keep a 
 
 This release rewrites the library. The API breaks with every earlier tag. Code that uses an earlier tag does not compile against this release.
 
-### Removed
-
-- The old API: `Action`, `Notifier` and `Observer`, with `ExecutionPlan`, `Retrier`, `Classifier` and their constructors. The old `Saga` and `Step` interfaces also go, and new types of the same names replace them.
-
 ### Added
 
 - `sagas.New` builds a saga from a name, a `Flow` and functional options. It checks the flow before the first run.
@@ -29,6 +25,21 @@ This release rewrites the library. The API breaks with every earlier tag. Code t
 - `sagas.Inspect` runs the checks of `New` on a flow and reports each step.
 - The `sagastest` package: contract helpers, fault injection and a call recorder for your own saga.
 - The documents under `docs/`: a glossary, a tutorial, two how-to guides and two explanation pages.
+
+### Removed
+
+- Every exported identifier of the old API, as tag `v.0.0.11a` has it:
+  - `Action`, `ActionFn` and `NewAction`
+  - `BackoffConstant`, `BackoffExponential` and `BackoffLimitedExponential`
+  - `Classifier`, `NewClassifier`, `NewClassifierWhitelist` and `NewClassifierBlacklist`
+  - `EnderFn`, `ExecutionPlan` and `NewExecutionPlan`
+  - `Event`, `Identifier` and `NewIdentifier`
+  - `Notification`, `NewNotification`, `Notifier` and `NewNotifier`
+  - `Observer`, `NewObserver`, `Retrier` and `NewRetrier`
+  - `Saga`, `NewSaga`, `Step` and `NewStep`
+  - `State`, with `Idle`, `Running` and `Completed`
+  - `Status`, with `Undefined`, `Failed` and `Successed`
+- `Saga`, `Step`, `Event` and `Status` return as new types with a different meaning. Old code that uses one of these names can still compile, so read each use again. `Event` was an interface and is now a struct. `Status` was an `int` and is now a `string`.
 
 [Unreleased]: https://github.com/rilder-almeida/sagas/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/rilder-almeida/sagas/releases/tag/v0.1.0
