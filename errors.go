@@ -64,7 +64,7 @@ func (e *Error) Error() string {
 
 	msg := fmt.Sprintf("sagas: %s %q did not run", what, e.Step)
 	if e.Attempts > 0 {
-		msg = fmt.Sprintf("sagas: %s %q failed after %d attempts", what, e.Step, e.Attempts)
+		msg = fmt.Sprintf("sagas: %s %q did not succeed after %d attempts", what, e.Step, e.Attempts)
 	}
 
 	if e.Err != nil {
