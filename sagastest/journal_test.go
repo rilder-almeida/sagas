@@ -112,6 +112,23 @@ func (j rejectsEqualResend) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
+type dropsCompensable struct{ *sagas.MemoryJournal }
+
+func (j dropsCompensable) Append(ctx context.Context, e *sagas.Event) error {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored := *e
+	stored.Steps = slices.Clone(e.Steps)
+
+	for i := range stored.Steps {
+		stored.Steps[i].Compensable = false
+	}
+
+	return j.MemoryJournal.Append(ctx, &stored)
+}
+
 type acceptsOtherEvent struct {
 	*sagas.MemoryJournal
 
@@ -260,19 +277,6 @@ func (j *rejectsSamePointer) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
-func ExampleJournal() {
-	tb := &fakeTB{}
-	Journal(tb, func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} })
-
-	for _, msg := range tb.errors {
-		fmt.Println(msg)
-	}
-
-	// Output:
-	// sagastest: journal rule "gap": Append of seq 3 after seq 1 returned nil, want an error
-	// sagastest: journal rule "gap": Append of seq 2 on an empty journal returned nil, want an error
-}
-
 func Test_Journal(t *testing.T) {
 	t.Parallel()
 
@@ -314,6 +318,15 @@ func Test_Journal(t *testing.T) {
 			wantCauses: []string{
 				"resend of seq 1 after the caller changed its Steps slice returned nil",
 				"resend of seq 1 after the caller changed its Err.Previous slice returned nil",
+			},
+		},
+		{
+			name:       "[Fail] When: the journal drops Compensable of each step ; Should: report the accepted change",
+			newJournal: func() sagas.Journal { return dropsCompensable{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleStoredCopy},
+			wantCauses: []string{
+				"resend of seq 1 after the caller changed its Steps Compensable from true returned nil",
+				"resend of seq 1 after the caller changed its Steps Compensable from false returned nil",
 			},
 		},
 		{

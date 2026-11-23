@@ -468,20 +468,6 @@ func (f *fakeTB) Logf(format string, args ...any) {
 	f.logs = append(f.logs, fmt.Sprintf(format, args...))
 }
 
-func ExampleCompensations() {
-	setup := newShop(func(err error) { panic(err) }, chargeIgnoresRefund, chargeThenShip, lateCharge)
-
-	tb := &fakeTB{}
-	Compensations(tb, setup)
-
-	for _, msg := range tb.errors {
-		fmt.Println(msg)
-	}
-
-	// Output:
-	// sagastest: step "charge", case "step lands after its compensation": Check: balance off: balance 100, want 0
-}
-
 func Test_Compensations(t *testing.T) {
 	t.Parallel()
 

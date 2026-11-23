@@ -1,48 +1,47 @@
 package sagas
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
 
 // Mermaid returns the saga as a Mermaid flowchart. Node ids are s plus the index of the step in the flow, the
-// pivot is a hexagon, a step with Enabled ends in "(if)", and forward-only steps join the forwardOnly class.
+// pivot is a hexagon, a step with Enabled ends in "(if Enabled)", and forward-only steps join the forwardOnly class.
 func (s *Saga[S]) Mermaid() string {
-	var b strings.Builder
+	lines := []string{"flowchart TD"}
 
-	b.WriteString("flowchart TD\n")
+	nodeID := func(i int) string { return "s" + strconv.Itoa(i) }
 
 	var forwardOnly []string
 
 	for i := range s.reports {
 		r := &s.reports[i]
-		label := r.Name
+		id := nodeID(i)
 
 		switch {
 		case r.Pivot:
-			fmt.Fprintf(&b, "    s%d{{\"%s\"}}\n", i, label)
+			lines = append(lines, "    "+id+"{{\""+r.Name+"\"}}")
 		case r.Enabled:
-			fmt.Fprintf(&b, "    s%d[\"%s (if)\"]\n", i, label)
+			lines = append(lines, "    "+id+"[\""+r.Name+" (if Enabled)\"]")
 		default:
-			fmt.Fprintf(&b, "    s%d[\"%s\"]\n", i, label)
+			lines = append(lines, "    "+id+"[\""+r.Name+"\"]")
 		}
 
 		if s.steps[i].zone == ZoneForwardOnly {
-			forwardOnly = append(forwardOnly, "s"+strconv.Itoa(i))
+			forwardOnly = append(forwardOnly, id)
 		}
 	}
 
 	for i := range s.steps {
 		for _, p := range s.steps[i].parents {
-			fmt.Fprintf(&b, "    s%d --> s%d\n", p, i)
+			lines = append(lines, "    "+nodeID(p)+" --> "+nodeID(i))
 		}
 	}
 
 	if len(forwardOnly) > 0 {
-		b.WriteString("    classDef forwardOnly stroke-dasharray: 5 5\n")
-		fmt.Fprintf(&b, "    class %s forwardOnly\n", strings.Join(forwardOnly, ","))
+		lines = append(lines, "    classDef forwardOnly stroke-dasharray: 5 5",
+			"    class "+strings.Join(forwardOnly, ",")+" forwardOnly")
 	}
 
-	return b.String()
+	return strings.Join(lines, "\n") + "\n"
 }

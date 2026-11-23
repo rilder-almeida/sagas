@@ -67,7 +67,7 @@ func pendingOf(events []Event) []string {
 	var pending []string
 
 	for i, z := range zones {
-		if owed(steps[i].Status, z.Zone, pivot) {
+		if owed(steps[i].Status, z, pivot) {
 			pending = append(pending, steps[i].Name)
 		}
 	}
@@ -75,12 +75,14 @@ func pendingOf(events []Event) []string {
 	return pending
 }
 
-func owed(status stepStatus, zone Zone, pivot stepStatus) bool {
+func owed(status stepStatus, step StepZone, pivot stepStatus) bool {
 	switch status {
-	case stepUnknown, stepCompensationFailed, stepBlocked, stepHalted:
+	case stepUnknown:
+		return step.Zone != ZoneCompensable || step.Compensable
+	case stepCompensationFailed, stepBlocked, stepHalted:
 		return true
 	case stepFailed, stepNotStarted:
-		return zone == ZoneForwardOnly && pivot == stepSucceeded
+		return step.Zone == ZoneForwardOnly && pivot == stepSucceeded
 	case stepSucceeded, stepSkipped, stepCompensated:
 		return false
 	}

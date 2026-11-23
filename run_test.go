@@ -1436,7 +1436,9 @@ func finishedAfterCompensationFailedRow() runRow {
 
 func pivotZones(forward ...string) []StepZone {
 	zones := make([]StepZone, 0, len(forward)+2)
-	zones = append(zones, StepZone{Name: "a", Zone: ZoneCompensable}, StepZone{Name: "p", Zone: ZonePivot})
+	zones = append(zones,
+		StepZone{Name: "a", Zone: ZoneCompensable, Compensable: true}, StepZone{Name: "p", Zone: ZonePivot},
+	)
 
 	for _, name := range forward {
 		zones = append(zones, StepZone{Name: name, Zone: ZoneForwardOnly})
@@ -1922,7 +1924,7 @@ func pivotStoredFailureRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
-		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 

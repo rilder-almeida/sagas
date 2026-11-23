@@ -226,7 +226,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 
 	zoned := make([]StepZone, len(s.steps))
 	for i := range s.steps {
-		zoned[i] = StepZone{Name: s.steps[i].name, Zone: s.steps[i].zone}
+		zoned[i] = s.steps[i].stepZone()
 	}
 
 	if startErr := r.append(grace, &Event{Kind: EventSagaStarted, Steps: zoned}); startErr != nil {
@@ -314,7 +314,7 @@ func (r *runner[S]) pending() []string {
 	var pending []string
 
 	for i, status := range statuses {
-		if owed(status, r.saga.steps[i].zone, pivot) {
+		if owed(status, r.saga.steps[i].stepZone(), pivot) {
 			pending = append(pending, r.saga.steps[i].name)
 		}
 	}

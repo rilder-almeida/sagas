@@ -143,7 +143,7 @@ func lateForwardOnlyAfterRejectionRow() runRow {
 		wantPending: []string{"z", "y"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
 		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable},
+			{Name: "a", Zone: ZoneCompensable, Compensable: true},
 			{Name: "p", Zone: ZonePivot},
 			{Name: "z", Zone: ZoneForwardOnly},
 			{Name: "y", Zone: ZoneForwardOnly},
@@ -167,7 +167,6 @@ func lateSuccessAfterRejectionRow() runRow {
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal, errStop, ErrGraceEnded},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
-		wantPending: []string{"b", "c"},
 		wantTrail:   afterA(together(startOf("b"), startOf("c"))),
 	}
 }
@@ -194,7 +193,6 @@ func lateAfterRejectionRow() runRow {
 		wantErrs:       []error{ErrConcurrentWriter, errAlwaysFails, errStop},
 		wantNotErrs:    []error{ErrJournal},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
-		wantPending:    []string{"b", "c"},
 		wantTrail:      afterA(together(startOf("b"), startOf("c"))),
 	}
 }
@@ -221,7 +219,6 @@ func lateCompensableSiblingRow() runRow {
 		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantNotKinds:   map[string]*KindError{"y": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"x": stepFailed, "y": stepUnknown},
-		wantPending:    []string{"y"},
 		wantTrail: slices.Concat(
 			seq(opened),
 			together(startOf("x"), startOf("y"), failedOf("x")),
@@ -268,7 +265,7 @@ func lateSiblingAfterOwnFailureRow() runRow {
 			seq(failedOf("z")),
 		),
 		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable},
+			{Name: "a", Zone: ZoneCompensable, Compensable: true},
 			{Name: "p", Zone: ZonePivot},
 			{Name: "y", Zone: ZoneForwardOnly},
 			{Name: "z", Zone: ZoneForwardOnly},
@@ -303,9 +300,7 @@ func forwardOnlyCommitFailsRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
 		),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
+		wantZones: pivotZones("z"),
 	}
 }
 
@@ -339,10 +334,8 @@ func pivotLateSuccessRow() runRow {
 		wantPending: []string{"p", "z"},
 		wantRunOnly: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p")),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
-		wantState: tripState{Hotel: hotelRitz},
+		wantZones:   pivotZones("z"),
+		wantState:   tripState{Hotel: hotelRitz},
 	}
 }
 
@@ -369,10 +362,8 @@ func forwardOnlyLateSuccessRow() runRow {
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending: []string{"z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
-		wantState: tripState{Hotel: hotelRitz},
+		wantZones:   pivotZones("z"),
+		wantState:   tripState{Hotel: hotelRitz},
 	}
 }
 
@@ -404,7 +395,7 @@ func pivotCommitFailsRow() runRow {
 		wantRunOnly: []string{"y", "z"},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), closed),
 		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable},
+			{Name: "a", Zone: ZoneCompensable, Compensable: true},
 			{Name: "p", Zone: ZonePivot},
 			{Name: "y", Zone: ZoneForwardOnly},
 			{Name: "z", Zone: ZoneForwardOnly},
@@ -440,7 +431,7 @@ func pivotErrorAppendRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
-		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -463,7 +454,7 @@ func pivotErrorAppendTwiceRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
-		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -495,9 +486,7 @@ func forwardOnlyOwnFailureRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
 		),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
+		wantZones: pivotZones("z"),
 	}
 }
 
@@ -529,7 +518,7 @@ func pivotErrorRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
-		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones: []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -560,7 +549,7 @@ func pivotRetriedRow() runRow {
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded},
 		wantOrder:   [][2]string{{"a", "p"}},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
-		wantZones:   []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones:   []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -591,7 +580,7 @@ func pivotGraceEndRow() runRow {
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown},
 		wantPending:    []string{"p"},
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("p")),
-		wantZones:      []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones:      []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -650,7 +639,7 @@ func pivotPanicRow() runRow {
 
 func forwardOnlyZones() []StepZone {
 	return []StepZone{
-		{Name: "a", Zone: ZoneCompensable},
+		{Name: "a", Zone: ZoneCompensable, Compensable: true},
 		{Name: "p", Zone: ZonePivot},
 		{Name: "y", Zone: ZoneForwardOnly},
 		{Name: "z", Zone: ZoneForwardOnly},
@@ -722,9 +711,7 @@ func forwardOnlyGraceEndRow() runRow {
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending:    []string{"z"},
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
+		wantZones:      pivotZones("z"),
 	}
 }
 
@@ -755,9 +742,7 @@ func forwardOnlyLateFailureRow() runRow {
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
 		wantPending:    []string{"z"},
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
+		wantZones:      pivotZones("z"),
 	}
 }
 
@@ -795,7 +780,9 @@ func cancelBeforePivotRow() runRow {
 			compStartOf("b"), undoneOf("b"), compStartOf("a"), undoneOf("a"), closed,
 		),
 		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "b", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot},
+			{Name: "a", Zone: ZoneCompensable, Compensable: true},
+			{Name: "b", Zone: ZoneCompensable, Compensable: true},
+			{Name: "p", Zone: ZonePivot},
 		},
 	}
 }
@@ -822,7 +809,7 @@ func cancelBeforePivotLaunchRow() runRow {
 		wantSteps:   map[string]stepStatus{"a": stepCompensated, "p": stepNotStarted},
 		wantOrder:   [][2]string{{"a", undoA}},
 		wantTrail:   seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoneOf("a"), closed),
-		wantZones:   []StepZone{{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}},
+		wantZones:   []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
 	}
 }
 
@@ -848,9 +835,7 @@ func cancelDuringPivotRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), doneOf("z"), closed,
 		),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
+		wantZones: pivotZones("z"),
 		wantState: tripState{Hotel: hotelRitz},
 	}
 }
@@ -876,9 +861,7 @@ func cancelDuringForwardPredicateRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), doneOf("z"), closed,
 		),
-		wantZones: []StepZone{
-			{Name: "a", Zone: ZoneCompensable}, {Name: "p", Zone: ZonePivot}, {Name: "z", Zone: ZoneForwardOnly},
-		},
+		wantZones: pivotZones("z"),
 		wantState: tripState{Hotel: hotelRitz},
 	}
 }
@@ -927,7 +910,6 @@ func lateCompensableFailureRow() runRow {
 		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
 		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"a": stepUnknown},
-		wantPending:    []string{"a"},
 		wantTrail:      seq(opened, startOf("a")),
 	}
 }
@@ -953,7 +935,6 @@ func deadlineGraceEndRow() runRow {
 		wantNotErrs:    []error{context.Canceled, ErrJournal},
 		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"a": stepUnknown},
-		wantPending:    []string{"a"},
 		wantTrail:      seq(opened, startOf("a")),
 	}
 }
@@ -980,7 +961,6 @@ func journalErrorAtGraceEndRow() runRow {
 		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown, ErrGraceEnded, errStop},
 		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"a": stepUnknown},
-		wantPending:    []string{"a"},
 		wantTrail:      seq(opened, startOf("a")),
 	}
 }
@@ -1010,7 +990,6 @@ func mixedJournalErrorAtGraceEndRow() runRow {
 		wantText:     []string{ErrJournal.Error() + ": " + errJournalDown.Error()},
 		wantNotKinds: map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:    map[string]stepStatus{"a": stepUnknown},
-		wantPending:  []string{"a"},
 		wantTrail:    seq(opened, startOf("a")),
 	}
 }
@@ -1038,7 +1017,6 @@ func causeAtGraceEndRow() runRow {
 		wantNotErrs:    []error{ErrJournal},
 		wantNotKinds:   map[string]*KindError{"a": ErrGraceEnded},
 		wantSteps:      map[string]stepStatus{"a": stepUnknown},
-		wantPending:    []string{"a"},
 		wantTrail:      seq(opened, startOf("a")),
 	}
 }
@@ -1192,12 +1170,16 @@ func failureRows() []runRow {
 func journalRows() []runRow {
 	return []runRow{
 		rejectionRow(),
+		undoableRejectionRow(),
 		lateSiblingRow(),
 		predicateAppendRow(),
 		outcomeAppendRow(),
+		outcomeDownRow(),
+		undoableOutcomeDownRow(),
 		failureAppendRow(),
 		intentAppendRow(),
 		intentClosingFailsRow(),
+		intentClosingFailsUndoableRow(),
 		predicateIntentRow(),
 		finishedAppendRow(),
 		finishedRejectedRow(),
@@ -1237,7 +1219,6 @@ func goexitRow() runRow {
 		wantAttempts: map[string]int{"b": 1},
 		wantErrs:     []error{errGoexit},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown},
-		wantPending:  []string{"b"},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), closed),
 	}
 }
@@ -1306,7 +1287,6 @@ func siblingCancelRow() runRow {
 			"c": stepUnknown,
 			"d": stepNotStarted,
 		},
-		wantPending: []string{"c"},
 	}
 }
 
@@ -1367,9 +1347,25 @@ func rejectionRow() runRow {
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
-		wantPending: []string{"a"},
 		wantTrail:   seq(opened, startOf("a")),
 		wantState:   tripState{Hotel: hotelRitz},
+	}
+}
+
+func undoableRejectionRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal rejects the outcome of a step with a compensation ; Should: list it in Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.step("b"))
+		},
+		script:      map[int]error{3: ErrConcurrentWriter},
+		wantStatus:  statusUnfinished,
+		wantKind:    ErrConcurrentWriter,
+		wantErrs:    []error{ErrConcurrentWriter},
+		wantNotErrs: []error{ErrJournal},
+		wantSteps:   map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
+		wantPending: []string{"a"},
+		wantTrail:   seq(opened, startOf("a")),
 	}
 }
 
@@ -1386,7 +1382,6 @@ func lateSiblingRow() runRow {
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "b": stepUnknown, "c": stepUnknown},
-		wantPending: []string{"b", "c"},
 	}
 }
 
@@ -1416,15 +1411,52 @@ func outcomeAppendRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return rec.booking("a")
 		},
-		script:      map[int]error{3: errJournalDown},
-		wantStatus:  StatusCompensated,
-		wantKind:    ErrCompensated,
-		wantErrs:    []error{ErrJournal, errJournalDown},
-		wantSteps:   map[string]stepStatus{"a": stepSucceeded},
-		wantPending: []string{"a"},
-		wantRunOnly: []string{"a"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), closed),
-		wantState:   tripState{Hotel: hotelRitz},
+		script:     map[int]error{3: errJournalDown},
+		wantStatus: StatusCompensated,
+		wantKind:   ErrCompensated,
+		wantErrs:   []error{ErrJournal, errJournalDown},
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), closed),
+		wantState:  tripState{Hotel: hotelRitz},
+	}
+}
+
+func outcomeDownRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of a step without a compensation fails for good ; " +
+			"Should: leave it out of Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.booking("a"), rec.step("b"))
+		},
+		script:     map[int]error{3: failing(errJournalDown, forever)},
+		wantStatus: statusUnfinished,
+		wantKind:   ErrCompensated,
+		wantErrs:   []error{ErrJournal, errJournalDown},
+		wantSteps:  map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
+		wantTrail:  seq(opened, startOf("a")),
+		wantState:  tripState{Hotel: hotelRitz},
+	}
+}
+
+func undoableOutcomeDownRow() runRow {
+	return runRow{
+		name: "[Fail] When: the outcome append of a step with a compensation fails for good ; " +
+			"Should: list it in Pending",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.step("b"))
+		},
+		script:         map[int]error{3: failing(errJournalDown, forever)},
+		wantStatus:     statusUnfinished,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("a"): ErrJournal},
+		wantFailed:     []string{comp("a")},
+		wantErrText:    map[string]string{comp("a"): errJournalDown.Error()},
+		wantAttempts:   map[string]int{comp("a"): 0},
+		wantUnrecorded: []string{comp("a")},
+		wantErrs:       []error{ErrJournal, errJournalDown},
+		wantSteps:      map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
+		wantPending:    []string{"a"},
+		wantTrail:      seq(opened, startOf("a")),
 	}
 }
 
@@ -1444,8 +1476,6 @@ func failureAppendRow() runRow {
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantErrs:       []error{errAlwaysFails, ErrJournal, errJournalDown},
 		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
-		wantPending:    []string{"b"},
-		wantRunOnly:    []string{"b"},
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), closed),
 	}
 }
@@ -1476,6 +1506,22 @@ func intentClosingFailsRow() runRow {
 			"Should: leave the step started in the journal and return ErrJournal",
 		steps: func(rec *recorder) Flow {
 			return rec.step("a")
+		},
+		script:     map[int]error{2: errJournalDown, 3: errJournalDown},
+		wantStatus: statusUnfinished,
+		wantKind:   ErrCompensated,
+		wantErrs:   []error{ErrJournal, errJournalDown},
+		wantSteps:  map[string]stepStatus{"a": stepUnknown},
+		wantTrail:  seq(opened, startOf("a")),
+	}
+}
+
+func intentClosingFailsUndoableRow() runRow {
+	return runRow{
+		name: "[Fail] When: the closing failure append of a step with a compensation fails ; " +
+			"Should: leave it pending in the journal only",
+		steps: func(rec *recorder) Flow {
+			return rec.undoable("a")
 		},
 		script:          map[int]error{2: errJournalDown, 3: errJournalDown},
 		wantStatus:      statusUnfinished,

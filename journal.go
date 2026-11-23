@@ -53,10 +53,11 @@ type EventError struct {
 	Previous []string
 }
 
-// StepZone names a step and the zone it runs in.
+// StepZone names a step and the zone it runs in. Compensable is true when the step has a compensation.
 type StepZone struct {
-	Name string
-	Zone Zone
+	Name        string
+	Zone        Zone
+	Compensable bool
 }
 
 // EventKind says what an Event records. The empty string means not set and is never a real event.

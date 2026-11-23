@@ -121,7 +121,6 @@ linters:
       - vendor$
       - third_party$
       - testutils$
-      - examples$
 
   settings:
     cyclop:
@@ -231,4 +230,3 @@ formatters:
     paths:
       - third_party$
       - builtin$
-      - examples$
