@@ -8,9 +8,9 @@ import (
 
 // Step holds a step's name and settings: a pointer to a type that embeds Step and has Execute or Pivot, and optionally
 // Compensate, Enabled and Wrap, all safe for concurrent use and idempotent. Execute, Pivot, Compensate and Wrap honor
-// their context; a call that returns after the grace period may miss the journal, but Run reports it. An empty Name
-// takes the type name; set Name for a durable journal so a rename keeps it. New cannot see a method lost to an embedded
-// field that also embeds a provider of it, or to a field of the same name: declare step methods on the step type.
+// their context. A call that returns after the grace period may miss the journal, but Run reports it. An empty Name
+// takes the type name in kebab case. Set Name for a durable journal so a rename keeps it. New cannot see a method lost
+// to a same-name field or to an embedded field that also embeds a provider of it. Declare methods on the step type.
 type Step struct {
 	Name        string
 	Description string

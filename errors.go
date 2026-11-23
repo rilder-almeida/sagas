@@ -127,8 +127,8 @@ type RunError struct {
 	Kind  *KindError
 	Steps []*Error
 	// Pending holds, in step order, each unknown step that has a compensation or runs outside the compensable zone,
-	// each step whose compensation failed, was blocked or was halted, and, after a succeeded pivot, each forward-only
-	// step that failed or did not start.
+	// unless its compensation succeeded, each step whose compensation failed, was blocked or was halted, and, after a
+	// succeeded pivot, each forward-only step that failed or did not start.
 	Pending []string
 	causes  []error
 }
