@@ -129,6 +129,19 @@ func (j dropsCompensable) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, &stored)
 }
 
+type ignoresVersion struct{ *sagas.MemoryJournal }
+
+func (j ignoresVersion) Append(ctx context.Context, e *sagas.Event) error {
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	stored := *e
+	stored.Version = sagas.EventVersion
+
+	return j.MemoryJournal.Append(ctx, &stored)
+}
+
 type acceptsOtherEvent struct {
 	*sagas.MemoryJournal
 
@@ -327,6 +340,16 @@ func Test_Journal(t *testing.T) {
 			wantCauses: []string{
 				"resend of seq 1 after the caller changed its Steps Compensable from true returned nil",
 				"resend of seq 1 after the caller changed its Steps Compensable from false returned nil",
+			},
+		},
+		{
+			name:       "[Fail] When: the journal ignores Version ; Should: report the unknown versions it accepted",
+			newJournal: func() sagas.Journal { return ignoresVersion{sagas.NewMemoryJournal()} },
+			wantRules:  []string{ruleUnknownVersion, ruleStoredCopy},
+			wantCauses: []string{
+				"Append of an event with version 0 returned nil",
+				"Append of an event with version 2 returned nil",
+				"resend of seq 1 after the caller changed its Version returned nil",
 			},
 		},
 		{

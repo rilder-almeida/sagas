@@ -29,12 +29,17 @@ type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
 
+// EventVersion is the format of the events this release writes, stored in Event.Version. Journal.Append treats an
+// event with any other Version as invalid, and a reader checks Version before it reads the other fields.
+const EventVersion = 1
+
 // Event is one record of an execution, numbered by Seq from 1 and tagged with the Writer token of its run.
 type Event struct {
 	Saga      string
 	Execution string
 	Writer    string
 	Seq       int
+	Version   int
 	Kind      EventKind
 	Step      string
 	Attempt   int
@@ -115,6 +120,10 @@ func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
 		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
 	}
 
+	if e.Version != EventVersion {
+		return fmt.Errorf("%w: execution %q seq %d version %d", errInvalidEvent, e.Execution, e.Seq, e.Version)
+	}
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -179,5 +188,5 @@ func sameError(a, b *EventError) bool {
 
 func sameScalars(a, b *Event) bool {
 	return a.Saga == b.Saga && a.Execution == b.Execution && a.Writer == b.Writer && a.Seq == b.Seq &&
-		a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Status == b.Status
+		a.Version == b.Version && a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Status == b.Status
 }

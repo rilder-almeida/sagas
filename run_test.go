@@ -639,6 +639,7 @@ func assertAppended(t *testing.T, j *scriptJournal, wantStored, calls int) {
 		assert.Equal(t, "trip", e.Saga)
 		assert.Equal(t, "exec-1", e.Execution)
 		assert.Equal(t, "writer-1", e.Writer)
+		assert.Equal(t, EventVersion, e.Version)
 		assert.Equal(t, EventStepSucceeded, e.Kind)
 		assert.Equal(t, []string{"Hotel"}, e.Changed)
 		assert.False(t, e.Time.IsZero())
@@ -1046,6 +1047,7 @@ func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 
 	for i := range events {
 		assert.Equal(t, i+1, events[i].Seq)
+		assert.Equal(t, EventVersion, events[i].Version)
 		assert.Equal(t, res.Execution, events[i].Execution)
 
 		if events[i].Kind == EventStepStarted {

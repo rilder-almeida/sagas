@@ -33,6 +33,7 @@ const (
 	ruleInvalidEvent   = "invalid event"
 	ruleTimeZone       = "time zone resend"
 	ruleExactResend    = "exact resend"
+	ruleUnknownVersion = "unknown version"
 )
 
 // Journal proves the journal contract against any sagas.Journal. Each call of newJournal must return a fresh empty
@@ -54,7 +55,8 @@ func Journal(tb testing.TB, newJournal func() sagas.Journal) {
 
 func journalEvent(seq int) *sagas.Event {
 	return &sagas.Event{
-		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Kind: sagas.EventStepStarted,
+		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Version: sagas.EventVersion,
+		Kind: sagas.EventStepStarted,
 		Step: "step", Attempt: 1,
 		Err:     sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
 		Changed: []string{"changed"},
@@ -179,6 +181,7 @@ type mutation struct {
 func copyMutations() []mutation {
 	return []mutation{
 		{"scalar field", func(e *sagas.Event) { e.Step = mutated }},
+		{"Version", func(e *sagas.Event) { e.Version = sagas.EventVersion + 1 }},
 		{"Changed slice", func(e *sagas.Event) { e.Changed[0] = mutated }},
 		{"Steps slice", func(e *sagas.Event) { e.Steps[0].Name = mutated }},
 		{"Steps Compensable from true", func(e *sagas.Event) { e.Steps[0].Compensable = false }},
@@ -279,6 +282,13 @@ func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {
 
 	wantError(tb, ruleInvalidEvent, "Append of a nil event", j.Append(tb.Context(), nil))
 	wantError(tb, ruleInvalidEvent, "Append of an event with seq 0", j.Append(tb.Context(), journalEvent(0)))
+
+	for _, version := range []int{0, sagas.EventVersion + 1} {
+		e := journalEvent(1)
+		e.Version = version
+		what := fmt.Sprintf("Append of an event with version %d", version)
+		wantError(tb, ruleUnknownVersion, what, j.Append(tb.Context(), e))
+	}
 }
 
 func resendRules(tb testing.TB, newJournal func() sagas.Journal) {

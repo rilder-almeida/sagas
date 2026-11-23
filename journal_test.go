@@ -19,6 +19,7 @@ func journalEvent(execution string, seq int) Event {
 		Execution: execution,
 		Writer:    "w1",
 		Seq:       seq,
+		Version:   EventVersion,
 		Kind:      EventStepSucceeded,
 		Step:      "reserve",
 		Attempt:   1,
@@ -55,6 +56,7 @@ func scribbleEvent(e *Event) {
 
 	e.Step = scribbled
 	e.Seq = 99
+	e.Version = 99
 
 	for k := range e.Changed {
 		e.Changed[k] = scribbled
@@ -151,6 +153,29 @@ func Test_MemoryJournal_Append(t *testing.T) {
 			event:   new(journalEvent("a", -1)),
 			wantErr: errInvalidEvent,
 			wantMsg: `sagas: invalid event: execution "a" seq -1`,
+			want:    map[string][]Event{"a": {journalEvent("a", 1)}},
+		},
+		{
+			name:    "[Fail] When: Version 0 on an empty execution ; Should: return errInvalidEvent and write nothing",
+			event:   withEvent(new(journalEvent("a", 1)), func(e *Event) { e.Version = 0 }),
+			wantErr: errInvalidEvent,
+			wantMsg: `sagas: invalid event: execution "a" seq 1 version 0`,
+			want:    map[string][]Event{"a": {}},
+		},
+		{
+			name:    "[Fail] When: a newer Version at the next Seq ; Should: return errInvalidEvent and write nothing",
+			prior:   []Event{journalEvent("a", 1)},
+			event:   withEvent(new(journalEvent("a", 2)), func(e *Event) { e.Version = EventVersion + 1 }),
+			wantErr: errInvalidEvent,
+			wantMsg: `sagas: invalid event: execution "a" seq 2 version 2`,
+			want:    map[string][]Event{"a": {journalEvent("a", 1)}},
+		},
+		{
+			name:    "[Fail] When: a resend of Seq 1 with a newer Version ; Should: errInvalidEvent, not a rejection",
+			prior:   []Event{journalEvent("a", 1)},
+			event:   withEvent(new(journalEvent("a", 1)), func(e *Event) { e.Version = EventVersion + 1 }),
+			wantErr: errInvalidEvent,
+			wantMsg: `sagas: invalid event: execution "a" seq 1 version 2`,
 			want:    map[string][]Event{"a": {journalEvent("a", 1)}},
 		},
 		{

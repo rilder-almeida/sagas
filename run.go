@@ -89,6 +89,7 @@ func (r *runner[S]) stamp(e *Event) Event {
 	stored.Execution = r.execution
 	stored.Writer = r.writer
 	stored.Seq = r.seq + 1
+	stored.Version = EventVersion
 	stored.Time = time.Now()
 	cloneSlices(&stored)
 
