@@ -85,7 +85,6 @@ type order struct {
 	StockID   string
 	InvoiceID string
 	PackID    string
-	LabelID   string
 }
 
 func (o *order) ExecutionID() string { return o.ID }
@@ -95,13 +94,12 @@ func (o *order) ExecutionID() string { return o.ID }
 type failureGate struct {
 	*sagas.MemoryJournal
 
-	armed bool
-	once  sync.Once
-	open  chan struct{}
+	once sync.Once
+	open chan struct{}
 }
 
-func newFailureGate(armed bool) *failureGate {
-	return &failureGate{MemoryJournal: sagas.NewMemoryJournal(), armed: armed, open: make(chan struct{})}
+func newFailureGate() *failureGate {
+	return &failureGate{MemoryJournal: sagas.NewMemoryJournal(), open: make(chan struct{})}
 }
 
 func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
@@ -109,7 +107,8 @@ func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
 		return err
 	}
 
-	if e.Kind == sagas.EventCompensationFailed && e.Step == "invoice" {
+	ended := e.Kind == sagas.EventCompensationFailed || e.Kind == sagas.EventCompensationSucceeded
+	if ended && e.Step == "invoice" {
 		g.once.Do(func() { close(g.open) })
 	}
 
@@ -117,7 +116,7 @@ func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
 }
 
 func (g *failureGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
-	if g.armed && info.Step == "tag" && info.Phase == sagas.PhaseCompensate {
+	if info.Step == "tag" && info.Phase == sagas.PhaseCompensate {
 		select {
 		case <-g.open:
 		case <-ctx.Done():
@@ -276,19 +275,19 @@ type services struct {
 	gate   *failureGate
 }
 
-func newServices(fault string) *services {
+func newServices() *services {
 	return &services{
 		stock:  newStore("STK"),
 		ledger: newStore("INV"),
 		dock:   newStore("PCK"),
 		labels: newStore("LBL"),
 		undone: &undone{},
-		gate:   newFailureGate(fault == faultInvoiceUndo),
+		gate:   newFailureGate(),
 	}
 }
 
-func (s *services) options() []sagas.Option {
-	return []sagas.Option{sagas.WithJournal(s.gate), sagas.WithMiddleware(s.gate)}
+func (s *services) build(grace time.Duration, policy sagas.CompensationFailurePolicy) (*sagas.Saga[order], error) {
+	return newSaga(s, grace, policy, sagas.WithJournal(s.gate), sagas.WithMiddleware(s.gate))
 }
 
 // --8<-- [start:saga]
@@ -305,7 +304,7 @@ func newSaga(
 				&tag{labels: s.labels, undone: s.undone},
 			),
 		),
-	), append(opts, sagas.WithRecoveryTimeout(grace))...)
+	), slices.Concat(opts, []sagas.Option{sagas.WithRecoveryTimeout(grace)})...)
 }
 
 // --8<-- [end:saga]
@@ -344,9 +343,9 @@ func policyRuns() []scenario {
 
 func run(w io.Writer) error {
 	for _, sc := range slices.Concat(graceRuns(), policyRuns()) {
-		svc := newServices(sc.fault)
+		svc := newServices()
 
-		saga, err := newSaga(svc, sc.grace, sc.policy, svc.options()...)
+		saga, err := svc.build(sc.grace, sc.policy)
 		if err != nil {
 			return err
 		}

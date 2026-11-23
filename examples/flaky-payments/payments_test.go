@@ -361,3 +361,49 @@ func Test_rateLimit_Wrap(t *testing.T) {
 		})
 	}
 }
+
+func Test_outcomeOf(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		card        string
+		cancelled   bool
+		wantOutcome string
+	}{
+		{
+			name:        "[Success] When: a step fails ; Should: name the kind of its error",
+			card:        cardRefused,
+			wantOutcome: "failed",
+		},
+		{
+			name:        "[Fail] When: the caller context ended before the step started ; Should: name no outcome",
+			card:        cardFlaky,
+			cancelled:   true,
+			wantOutcome: "none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			saga, err := newSaga(newServices())
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			if tt.cancelled {
+				cancel()
+			}
+
+			runErr := saga.Run(ctx, &order{ID: "pay-1", Card: tt.card})
+
+			var failed *sagas.RunError
+
+			require.ErrorAs(t, runErr, &failed)
+			assert.Equal(t, tt.wantOutcome, outcomeOf(failed))
+		})
+	}
+}

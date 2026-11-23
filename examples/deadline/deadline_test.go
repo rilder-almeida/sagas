@@ -208,9 +208,9 @@ func Test_newSaga(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := newServices(tt.fault)
+			svc := newServices()
 
-			saga, err := newSaga(svc, tt.grace, tt.policy, svc.options()...)
+			saga, err := svc.build(tt.grace, tt.policy)
 			require.NoError(t, err)
 
 			ctx, cancel := context.WithTimeout(t.Context(), callerTimeout)

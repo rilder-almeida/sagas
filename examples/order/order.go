@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 
 	"github.com/rilder-almeida/sagas"
@@ -254,8 +255,9 @@ func newServices() *services {
 	}
 }
 
-func (s *services) options(mw ...sagas.Middleware) []sagas.Option {
-	return []sagas.Option{sagas.WithJournal(s.gate), sagas.WithMiddleware(append([]sagas.Middleware{s.gate}, mw...)...)}
+func (s *services) build(annotate bool, mw ...sagas.Middleware) (*sagas.Saga[order], error) {
+	return newSaga(s, annotate,
+		sagas.WithJournal(s.gate), sagas.WithMiddleware(slices.Concat([]sagas.Middleware{s.gate}, mw)...))
 }
 
 // --8<-- [start:saga]
@@ -288,7 +290,7 @@ func run(w io.Writer) error {
 	for i := range orders {
 		svc := newServices()
 
-		saga, err := newSaga(svc, orders[i].annotate, svc.options()...)
+		saga, err := svc.build(orders[i].annotate)
 		if err != nil {
 			return err
 		}

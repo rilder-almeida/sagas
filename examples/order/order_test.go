@@ -183,7 +183,7 @@ func Test_newSaga(t *testing.T) {
 			svc := newServices()
 			rec := sagastest.NewRecorder()
 
-			saga, err := newSaga(svc, tt.annotate, svc.options(rec.Middleware())...)
+			saga, err := svc.build(tt.annotate, rec.Middleware())
 			require.NoError(t, err)
 
 			o := order{ID: "ord-9", Item: "lamp", Amount: tt.amount}
