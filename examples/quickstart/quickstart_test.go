@@ -187,23 +187,25 @@ func Test_newSaga(t *testing.T) {
 	}
 }
 
-func Test_store_remove(t *testing.T) {
+func Test_store_removeIfPresent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		key   string
-		stock string
+		name        string
+		removeKey   string
+		storedKey   string
+		wantRemoved bool
 	}{
 		{
-			name:  "[Success] When: the key was stored ; Should: remove it",
-			key:   "k3",
-			stock: "k3",
+			name:        "[Success] When: the key was stored ; Should: remove it",
+			removeKey:   "k3",
+			storedKey:   "k3",
+			wantRemoved: true,
 		},
 		{
-			name:  "[Success] When: the key never applied ; Should: succeed without error",
-			key:   "k2",
-			stock: "k1",
+			name:      "[Success] When: the key never applied ; Should: succeed and keep the other keys",
+			removeKey: "k2",
+			storedKey: "k1",
 		},
 	}
 
@@ -212,14 +214,14 @@ func Test_store_remove(t *testing.T) {
 			t.Parallel()
 
 			s := newStore("ACC")
-			stored, err := s.put(t.Context(), tt.stock, "v")
+			stored, err := s.put(t.Context(), tt.storedKey, "v")
 			require.NoError(t, err)
 
-			require.NoError(t, s.remove(t.Context(), tt.key))
+			require.NoError(t, s.removeIfPresent(t.Context(), tt.removeKey))
 
-			again, err := s.put(t.Context(), tt.stock, "v")
+			again, err := s.put(t.Context(), tt.storedKey, "v")
 			require.NoError(t, err)
-			assert.Equal(t, tt.key != tt.stock, again == stored)
+			assert.Equal(t, !tt.wantRemoved, again == stored)
 		})
 	}
 }

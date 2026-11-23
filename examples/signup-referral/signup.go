@@ -55,7 +55,7 @@ func (s *store) put(ctx context.Context, key, value string) (string, error) {
 	return id, nil
 }
 
-func (s *store) remove(ctx context.Context, key string) error {
+func (s *store) removeIfPresent(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -133,37 +133,7 @@ func (r *register) Execute(ctx context.Context, a *account) error {
 func (r *register) Compensate(ctx context.Context, _ *account) error {
 	r.undone.add("register")
 
-	return r.accounts.remove(ctx, sagas.IdempotencyKey(ctx))
-}
-
-type referral struct {
-	sagas.Step
-
-	referrals *store
-	undone    *undone
-}
-
-// --8<-- [start:enabled]
-
-func (*referral) Enabled(a *account) bool { return a.Referral != "" }
-
-// --8<-- [end:enabled]
-
-func (r *referral) Execute(ctx context.Context, a *account) error {
-	id, err := r.referrals.put(ctx, sagas.IdempotencyKey(ctx), a.Referral)
-	if err != nil {
-		return err
-	}
-
-	a.ReferralID = id
-
-	return nil
-}
-
-func (r *referral) Compensate(ctx context.Context, _ *account) error {
-	r.undone.add("referral")
-
-	return r.referrals.remove(ctx, sagas.IdempotencyKey(ctx))
+	return r.accounts.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type provision struct {
@@ -191,7 +161,7 @@ func (p *provision) Execute(ctx context.Context, a *account) error {
 func (p *provision) Compensate(ctx context.Context, _ *account) error {
 	p.undone.add("provision")
 
-	return p.servers.remove(ctx, sagas.IdempotencyKey(ctx))
+	return p.servers.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type charge struct {
@@ -229,6 +199,36 @@ func (w *welcome) Execute(ctx context.Context, a *account) error {
 }
 
 // --8<-- [end:steps]
+
+// --8<-- [start:referral]
+
+type referral struct {
+	sagas.Step
+
+	referrals *store
+	undone    *undone
+}
+
+func (*referral) Enabled(a *account) bool { return a.Referral != "" }
+
+func (r *referral) Execute(ctx context.Context, a *account) error {
+	id, err := r.referrals.put(ctx, sagas.IdempotencyKey(ctx), a.Referral)
+	if err != nil {
+		return err
+	}
+
+	a.ReferralID = id
+
+	return nil
+}
+
+func (r *referral) Compensate(ctx context.Context, _ *account) error {
+	r.undone.add("referral")
+
+	return r.referrals.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
+}
+
+// --8<-- [end:referral]
 
 type services struct {
 	accounts  *store

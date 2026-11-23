@@ -55,7 +55,7 @@ func (s *store) put(ctx context.Context, key, value string) (string, error) {
 	return id, nil
 }
 
-func (s *store) remove(ctx context.Context, key string) error {
+func (s *store) removeIfPresent(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (r *register) Execute(ctx context.Context, a *account) error {
 }
 
 func (r *register) Compensate(ctx context.Context, _ *account) error {
-	return r.accounts.remove(ctx, sagas.IdempotencyKey(ctx))
+	return r.accounts.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type provision struct {
@@ -131,7 +131,7 @@ func (p *provision) Execute(ctx context.Context, a *account) error {
 }
 
 func (p *provision) Compensate(ctx context.Context, _ *account) error {
-	return p.servers.remove(ctx, sagas.IdempotencyKey(ctx))
+	return p.servers.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type charge struct {
