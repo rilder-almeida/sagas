@@ -91,18 +91,18 @@ func (o *order) ExecutionID() string { return o.ID }
 
 // --8<-- [end:state]
 
-type failureGate struct {
+type undoGate struct {
 	*sagas.MemoryJournal
 
 	once sync.Once
 	open chan struct{}
 }
 
-func newFailureGate() *failureGate {
-	return &failureGate{MemoryJournal: sagas.NewMemoryJournal(), open: make(chan struct{})}
+func newUndoGate() *undoGate {
+	return &undoGate{MemoryJournal: sagas.NewMemoryJournal(), open: make(chan struct{})}
 }
 
-func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
+func (g *undoGate) Append(ctx context.Context, e *sagas.Event) error {
 	if err := g.MemoryJournal.Append(ctx, e); err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func (g *failureGate) Append(ctx context.Context, e *sagas.Event) error {
 	return nil
 }
 
-func (g *failureGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
+func (g *undoGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
 	if info.Step == "tag" && info.Phase == sagas.PhaseCompensate {
 		select {
 		case <-g.open:
@@ -272,7 +272,7 @@ type services struct {
 	dock   *store
 	labels *store
 	undone *undone
-	gate   *failureGate
+	gate   *undoGate
 }
 
 func newServices() *services {
@@ -282,7 +282,7 @@ func newServices() *services {
 		dock:   newStore("PCK"),
 		labels: newStore("LBL"),
 		undone: &undone{},
-		gate:   newFailureGate(),
+		gate:   newUndoGate(),
 	}
 }
 
