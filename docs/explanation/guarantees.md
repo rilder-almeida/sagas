@@ -134,7 +134,7 @@ These rules describe how a run ends. They matter most for a caller cancel or a j
 
 ### The grace period
 
-While the caller's context is alive, the saga runs, bounded by the attempts and by the `AttemptTimeout` of each step. When the caller's context ends, the library starts no new step of the compensable zone and no new pivot. The forward-only zone goes on until the grace period ends. The grace period then gives recovery at most `RecoveryTimeout` from that moment. The default is five minutes.
+While the caller's context is alive, the saga runs, bounded by the attempts and by the `AttemptTimeout` of each step. When the caller's context ends, the library starts no new step of the compensable zone and no new pivot. The forward-only zone goes on until the grace period ends. The grace period lasts `RecoveryTimeout` from the end of the caller's context. The default is five minutes.
 
 If the caller's context never ends, no extra clock runs. A caller that wants a bound on the whole run sets a deadline on its own context. A hung compensation waits until that context ends, and then the grace period starts.
 
