@@ -4,7 +4,7 @@ This file lists the notable changes of each release. The format follows [Keep a 
 
 ## [Unreleased]
 
-This release rewrites the library. The API breaks with every earlier tag. Code that uses an earlier tag does not compile against this release.
+This release rewrites the library. The API breaks with every earlier tag. Most code that uses an earlier tag does not compile against this release.
 
 ### Added
 

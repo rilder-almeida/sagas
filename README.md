@@ -214,7 +214,12 @@ type charge struct {
 }
 
 func (c *charge) Pivot(ctx context.Context, t *trip) error {
-	return c.checkout.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
+	err := c.checkout.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
+	if errors.Is(err, errOverLimit) {
+		return sagas.Permanent(err)
+	}
+
+	return err
 }
 
 type email struct {
@@ -292,7 +297,7 @@ trip-42: completed
 trip-43: compensated, pending: []
 ```
 
-The hotel in Porto has no rooms, so the second trip fails at the hotel step. The hotel step wraps that error in `sagas.Permanent`. A [permanent error](docs/glossary.md) stops the retries at once, so the library does not ask again for a room in a full city. The library then runs the compensations of the hotel and the flight. The airline cancels the flight. The hotels never booked the key and answer "not found", and the hotel compensation treats that answer as success. The run ends compensated. No step is pending, so nobody has to finish anything by hand.
+The hotel in Porto has no rooms, so the second trip fails at the hotel step. The hotel step wraps that error in `sagas.Permanent`. A [permanent error](docs/glossary.md) stops the retries at once, so the library does not ask again for a room in a full city. The charge step treats a charge over the card limit the same way. The library then runs the compensations of the hotel and the flight. The airline cancels the flight. The hotels never booked the key and answer "not found", and the hotel compensation treats that answer as success. The run ends compensated. No step is pending, so nobody has to finish anything by hand.
 
 `sagas.Sequence` puts the steps in order and returns a `Flow`. `sagas.New` checks the flow and returns a saga that you run many times. An execution is one run of the saga over one state value. The `ExecutionID` method gives each execution a business name, so a repeated request keeps its name. `Run` returns nil for a completed run and a `*sagas.RunError` for any other end of a run that began. An error that stops the run before it begins, such as `ErrInvalidRun`, returns as it is.
 
@@ -346,6 +351,10 @@ Every action and every compensation honors its context and is idempotent. An ide
 ```go
 func (c *charge) Pivot(ctx context.Context, t *trip) error {
 	id, err := c.payments.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
+	if errors.Is(err, errOverLimit) {
+		return sagas.Permanent(err)
+	}
+
 	if err != nil {
 		return err
 	}
