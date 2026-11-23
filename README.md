@@ -20,7 +20,12 @@ This program books two trips. Each trip has four steps: a flight, a hotel, a cha
 - `Compensate` is the compensation. It undoes the action in business terms.
 - `Pivot` marks the pivot, the step at the point of no return. After the pivot succeeds, the saga only moves forward.
 
-Each step calls a `service`, a small in-memory stand-in for the airline, the hotels, the bank and the mail. The step sends `sagas.IdempotencyKey(ctx)` with each call. This idempotency key is the same on each call of the step and on the call of its compensation. The service books once for each key. It refuses a key that it already canceled. It answers "not found" to a cancel of a key that it never booked.
+Two small in-memory types stand in for the outside services:
+
+- `bookings` stands in for the airline and for the hotels. `Book` books a city, and `Cancel` cancels a booking.
+- `checkout` stands in for the bank and for the mail. `Charge` charges an amount on the card, and `Send` sends the email about the trip.
+
+Each step sends `sagas.IdempotencyKey(ctx)` with each call. This idempotency key is the same on each call of the step and on the call of its compensation. Both types do the work of a key only once, so a repeated call changes nothing. `Cancel` answers "not found" for a key that `bookings` never booked. `Book` refuses a key that `bookings` already canceled. Thus an action that arrives after its compensation changes nothing (see [Handle the three compensation cases](#handle-the-three-compensation-cases)).
 
 The [glossary](docs/glossary.md) defines every term of the library. Put this code in `main.go` of a new module:
 
@@ -37,69 +42,124 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-var (
-	errNoRooms  = errors.New("no rooms")
-	errNotFound = errors.New("no booking for this key")
-	errCanceled = errors.New("booking key already canceled")
+const (
+	cardLimit  = 1000
+	lisbonFare = 800
+	portoFare  = 600
 )
 
-type service struct {
+var (
+	errNoRooms   = errors.New("no rooms")
+	errNotFound  = errors.New("no booking for this key")
+	errCanceled  = errors.New("booking key already canceled")
+	errOverLimit = errors.New("charge over the card limit")
+)
+
+type bookings struct {
 	mu       sync.Mutex
 	full     map[string]bool
 	booked   map[string]bool
 	canceled map[string]bool
 }
 
-func newService(full ...string) *service {
-	s := &service{full: map[string]bool{}, booked: map[string]bool{}, canceled: map[string]bool{}}
+func newBookings(full ...string) *bookings {
+	b := &bookings{full: map[string]bool{}, booked: map[string]bool{}, canceled: map[string]bool{}}
 	for _, city := range full {
-		s.full[city] = true
+		b.full[city] = true
 	}
 
-	return s
+	return b
 }
 
-func (s *service) Book(ctx context.Context, key, city string) error {
+func (b *bookings) Book(ctx context.Context, key, city string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	switch {
-	case s.canceled[key]:
+	case b.canceled[key]:
 		return fmt.Errorf("%w: %s", errCanceled, key)
-	case s.full[city]:
+	case b.full[city]:
 		return fmt.Errorf("%w in %s", errNoRooms, city)
 	}
 
-	s.booked[key] = true
+	b.booked[key] = true
 
 	return nil
 }
 
-func (s *service) Cancel(ctx context.Context, key string) error {
+func (b *bookings) Cancel(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-	s.canceled[key] = true
-	if !s.booked[key] {
+	b.canceled[key] = true
+	if !b.booked[key] {
 		return fmt.Errorf("%w: %s", errNotFound, key)
 	}
 
-	delete(s.booked, key)
+	delete(b.booked, key)
+
+	return nil
+}
+
+type checkout struct {
+	mu      sync.Mutex
+	charged map[string]int
+	sent    map[string]string
+}
+
+func newCheckout() *checkout {
+	return &checkout{charged: map[string]int{}, sent: map[string]string{}}
+}
+
+func (c *checkout) Charge(ctx context.Context, key string, amount int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, done := c.charged[key]; done {
+		return nil
+	}
+
+	if amount > cardLimit {
+		return fmt.Errorf("%w: %d above %d", errOverLimit, amount, cardLimit)
+	}
+
+	c.charged[key] = amount
+
+	return nil
+}
+
+func (c *checkout) Send(ctx context.Context, key, address string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, done := c.sent[key]; !done {
+		c.sent[key] = address
+	}
 
 	return nil
 }
 
 type trip struct {
-	ID   string
-	City string
+	ID     string
+	City   string
+	Amount int
+	Email  string
 }
 
 func (t *trip) ExecutionID() string { return t.ID }
@@ -107,7 +167,7 @@ func (t *trip) ExecutionID() string { return t.ID }
 type flight struct {
 	sagas.Step
 
-	airline *service
+	airline *bookings
 }
 
 func (f *flight) Execute(ctx context.Context, t *trip) error {
@@ -126,7 +186,7 @@ func (f *flight) Compensate(ctx context.Context, _ *trip) error {
 type hotel struct {
 	sagas.Step
 
-	hotels *service
+	hotels *bookings
 }
 
 func (h *hotel) Execute(ctx context.Context, t *trip) error {
@@ -150,21 +210,21 @@ func (h *hotel) Compensate(ctx context.Context, _ *trip) error {
 type charge struct {
 	sagas.Step
 
-	bank *service
+	checkout *checkout
 }
 
 func (c *charge) Pivot(ctx context.Context, t *trip) error {
-	return c.bank.Book(ctx, sagas.IdempotencyKey(ctx), t.City)
+	return c.checkout.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
 }
 
 type email struct {
 	sagas.Step
 
-	mail *service
+	checkout *checkout
 }
 
 func (e *email) Execute(ctx context.Context, t *trip) error {
-	return e.mail.Book(ctx, sagas.IdempotencyKey(ctx), t.City)
+	return e.checkout.Send(ctx, sagas.IdempotencyKey(ctx), t.Email)
 }
 
 func main() {
@@ -174,11 +234,12 @@ func main() {
 }
 
 func run() error {
+	desk := newCheckout()
 	flow := sagas.Sequence(
-		&flight{airline: newService()},
-		&hotel{hotels: newService("Porto")},
-		&charge{bank: newService()},
-		&email{mail: newService()},
+		&flight{airline: newBookings()},
+		&hotel{hotels: newBookings("Porto")},
+		&charge{checkout: desk},
+		&email{checkout: desk},
 	)
 
 	saga, err := sagas.New[trip]("trip", flow)
@@ -186,7 +247,12 @@ func run() error {
 		return err
 	}
 
-	for _, t := range []*trip{{ID: "trip-42", City: "Lisbon"}, {ID: "trip-43", City: "Porto"}} {
+	trips := []*trip{
+		{ID: "trip-42", City: "Lisbon", Amount: lisbonFare, Email: "ana@example.com"},
+		{ID: "trip-43", City: "Porto", Amount: portoFare, Email: "bia@example.com"},
+	}
+
+	for _, t := range trips {
 		if reportErr := report(t.ID, saga.Run(context.Background(), t)); reportErr != nil {
 			return reportErr
 		}
@@ -263,7 +329,7 @@ These rules describe how a run ends. The [guarantees page](docs/explanation/guar
 - The caller's context bounds the recovery. Recovery is the work that follows a failure, an unknown outcome, a cancel or a failed journal write. When the caller's context ends, the grace period starts. The grace period is the time that recovery gets after that end. `sagas.WithRecoveryTimeout(d)`, passed to `New`, sets its length. The default is five minutes.
 - A call that returns after the grace period ends can miss the journal. It still shows in the error of `Run`.
 - `RunError.Steps` holds one `*sagas.Error` for each action or compensation that did not succeed, in order. One step can appear twice: once for its action and once for its compensation.
-- `RunError.Pending` lists the steps that a person must still finish, undo or look into. The journal is the durable source. `Pending` can owe more than the journal, never less. One case departs from this, and here the journal owes more. After a failed journal write, the library sends the same event again. This resend can record the intent of a step that never ran. The library then writes a failure for that step. If that write fails too, the journal lists the step as unknown. If the step has a compensation, the journal also lists it as pending, so a later compensation runs on nothing. The first compensation case below covers it.
+- `RunError.Pending` lists the steps that a person must still finish, undo or look into. The journal is the durable source. `Pending` can owe more than the journal, never less. One case departs from this, and here the journal owes more. After a failed journal write, the library sends the same event again. This resend can record the intent of a step that never ran. The library then writes a failure for that step. If that write fails too, the journal lists the step as unknown. The journal then lists the step as pending, unless the step is in the compensable zone and has no compensation. Thus an unknown pivot is pending in the journal too. Here the error of `Run` is the accurate source, because the journal shows a step that never ran. A later compensation of such a step runs on nothing, and the first compensation case below covers it. Before you retry an unknown pivot from the journal, read the error of `Run`.
 - After `ErrConcurrentWriter`, another `Run` call owns the execution. `Pending` then informs you, and it is not a list of work to do.
 - A step's own error can carry `context.Canceled`. To learn whether your caller canceled, test your own `ctx.Err()` or `errors.Is(err, sagas.ErrGraceEnded)`.
 - `context.Canceled` is one value. The library cannot tell a journal's own internal cancel apart from the end of the grace period.
