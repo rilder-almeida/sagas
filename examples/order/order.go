@@ -14,12 +14,7 @@ import (
 const (
 	exitFailure      = 1
 	exitWriteFailure = 2
-	fraudLimit       = 1000
-	smallAmount      = 80
-	hugeAmount       = 5000
 )
-
-var errFlagged = errors.New("order flagged as fraud")
 
 // --8<-- [start:store]
 
@@ -120,6 +115,8 @@ func (g *commitGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.C
 	return call(ctx)
 }
 
+// --8<-- [start:undone]
+
 type undone struct {
 	mu    sync.Mutex
 	names []string
@@ -152,6 +149,8 @@ func (u *undone) take() []string {
 	return names
 }
 
+// --8<-- [end:undone]
+
 // --8<-- [start:parallel]
 
 type reserve struct {
@@ -176,6 +175,10 @@ func (r *reserve) Execute(ctx context.Context, o *order) error {
 func (r *reserve) Compensate(ctx context.Context, _ *order) error {
 	return r.undone.release(ctx, r.warehouse, "reserve")
 }
+
+const fraudLimit = 1000
+
+var errFlagged = errors.New("order flagged as fraud")
 
 type fraudCheck struct {
 	sagas.Step
@@ -276,6 +279,11 @@ func newSaga(s *services, annotate bool, opts ...sagas.Option) (*sagas.Saga[orde
 // --8<-- [end:saga]
 
 // --8<-- [start:run]
+
+const (
+	smallAmount = 80
+	hugeAmount  = 5000
+)
 
 func run(w io.Writer) error {
 	orders := []struct {

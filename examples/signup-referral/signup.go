@@ -88,6 +88,8 @@ func (a *account) ExecutionID() string { return a.ID }
 
 // --8<-- [end:state]
 
+// --8<-- [start:undone]
+
 type undone struct {
 	mu    sync.Mutex
 	names []string
@@ -100,6 +102,16 @@ func (u *undone) add(name string) {
 	u.names = append(u.names, name)
 }
 
+func (u *undone) release(ctx context.Context, s *store, name string) error {
+	if err := s.removeIfPresent(ctx, sagas.IdempotencyKey(ctx)); err != nil {
+		return err
+	}
+
+	u.add(name)
+
+	return nil
+}
+
 func (u *undone) take() []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -109,6 +121,8 @@ func (u *undone) take() []string {
 
 	return names
 }
+
+// --8<-- [end:undone]
 
 // --8<-- [start:steps]
 
@@ -131,9 +145,7 @@ func (r *register) Execute(ctx context.Context, a *account) error {
 }
 
 func (r *register) Compensate(ctx context.Context, _ *account) error {
-	r.undone.add("register")
-
-	return r.accounts.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
+	return r.undone.release(ctx, r.accounts, "register")
 }
 
 type provision struct {
@@ -159,9 +171,7 @@ func (p *provision) Execute(ctx context.Context, a *account) error {
 }
 
 func (p *provision) Compensate(ctx context.Context, _ *account) error {
-	p.undone.add("provision")
-
-	return p.servers.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
+	return p.undone.release(ctx, p.servers, "provision")
 }
 
 type charge struct {
@@ -223,12 +233,12 @@ func (r *referral) Execute(ctx context.Context, a *account) error {
 }
 
 func (r *referral) Compensate(ctx context.Context, _ *account) error {
-	r.undone.add("referral")
-
-	return r.referrals.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
+	return r.undone.release(ctx, r.referrals, "referral")
 }
 
 // --8<-- [end:referral]
+
+// --8<-- [start:saga]
 
 type services struct {
 	accounts  *store
@@ -249,8 +259,6 @@ func newServices() *services {
 		undone:    &undone{},
 	}
 }
-
-// --8<-- [start:saga]
 
 func newSaga(s *services) (*sagas.Saga[account], error) {
 	return sagas.New[account]("signup", sagas.Sequence(

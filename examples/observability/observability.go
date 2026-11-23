@@ -15,12 +15,7 @@ import (
 const (
 	exitFailure      = 1
 	exitWriteFailure = 2
-
-	attempts   = 2
-	retryDelay = time.Millisecond
 )
-
-var errBusy = errors.New("provider busy")
 
 // --8<-- [start:state]
 
@@ -35,6 +30,8 @@ func (o *order) ExecutionID() string { return o.ID }
 // --8<-- [end:state]
 
 // --8<-- [start:provider]
+
+var errBusy = errors.New("provider busy")
 
 type provider struct {
 	mu   sync.Mutex
@@ -118,6 +115,11 @@ func (k keyLog) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) 
 // --8<-- [end:keylog]
 
 // --8<-- [start:saga]
+
+const (
+	attempts   = 2
+	retryDelay = time.Millisecond
+)
 
 func newSaga(logger *slog.Logger) (*sagas.Saga[order], error) {
 	retry := sagas.RetryPolicy{Attempts: attempts, Initial: retryDelay, NoJitter: true}

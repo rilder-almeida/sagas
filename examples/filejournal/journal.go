@@ -21,15 +21,6 @@ import (
 const (
 	exitFailure      = 1
 	exitWriteFailure = 2
-	fileMode         = 0o600
-	fileExtension    = ".jsonl"
-)
-
-var (
-	errInvalidEvent   = errors.New("invalid event")
-	errUnknownVersion = errors.New("unknown event version")
-	errCutLine        = errors.New("last line is cut")
-	errBadLine        = errors.New("line is not an event")
 )
 
 // --8<-- [start:state]
@@ -91,6 +82,8 @@ func openFileJournal(dir string) (*fileJournal, error) {
 
 func (j *fileJournal) Close() error { return j.root.Close() }
 
+const fileExtension = ".jsonl"
+
 func journalFile(execution string) string { return url.PathEscape(execution) + fileExtension }
 
 // --8<-- [end:journal]
@@ -128,6 +121,8 @@ func (j *fileJournal) Append(ctx context.Context, e *sagas.Event) error {
 	}
 }
 
+var errInvalidEvent = errors.New("invalid event")
+
 func validate(e *sagas.Event) error {
 	switch {
 	case e == nil:
@@ -148,6 +143,8 @@ func createEvent(root *os.Root, e *sagas.Event) error {
 
 	return syncDir(root)
 }
+
+const fileMode = 0o600
 
 func writeEvent(root *os.Root, e *sagas.Event) error {
 	line, err := json.Marshal(e)
@@ -234,6 +231,12 @@ func (j *fileJournal) Events(ctx context.Context, execution string) ([]sagas.Eve
 
 	return events, nil
 }
+
+var (
+	errUnknownVersion = errors.New("unknown event version")
+	errCutLine        = errors.New("last line is cut")
+	errBadLine        = errors.New("line is not an event")
+)
 
 func readEvents(root *os.Root, execution string) ([]sagas.Event, error) {
 	data, err := root.ReadFile(journalFile(execution))

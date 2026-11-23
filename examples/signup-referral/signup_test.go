@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"io/fs"
 	"os"
@@ -202,6 +203,89 @@ func Test_newSaga(t *testing.T) {
 			require.NoError(t, putErr)
 			assert.Equal(t, tt.wantCredited, id == a.ReferralID)
 			assert.Equal(t, tt.wantUndone, ran)
+		})
+	}
+}
+
+const (
+	stepRegister  = "register"
+	stepProvision = "provision"
+	stepReferral  = "referral"
+)
+
+func compensationOf(step string, svc *services) func(context.Context, *account) error {
+	switch step {
+	case stepRegister:
+		return (&register{accounts: svc.accounts, undone: svc.undone}).Compensate
+	case stepProvision:
+		return (&provision{servers: svc.servers, undone: svc.undone}).Compensate
+	default:
+		return (&referral{referrals: svc.referrals, undone: svc.undone}).Compensate
+	}
+}
+
+func Test_undone_release(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		step       string
+		canceled   bool
+		wantUndone []string
+		wantErr    error
+	}{
+		{
+			name:       "[Success] When: the register removal succeeds ; Should: record register",
+			step:       stepRegister,
+			wantUndone: []string{stepRegister},
+		},
+		{
+			name:     "[Fail] When: the register removal fails ; Should: return the error and record nothing",
+			step:     stepRegister,
+			canceled: true,
+			wantErr:  context.Canceled,
+		},
+		{
+			name:       "[Success] When: the provision removal succeeds ; Should: record provision",
+			step:       stepProvision,
+			wantUndone: []string{stepProvision},
+		},
+		{
+			name:     "[Fail] When: the provision removal fails ; Should: return the error and record nothing",
+			step:     stepProvision,
+			canceled: true,
+			wantErr:  context.Canceled,
+		},
+		{
+			name:       "[Success] When: the referral removal succeeds ; Should: record referral",
+			step:       stepReferral,
+			wantUndone: []string{stepReferral},
+		},
+		{
+			name:     "[Fail] When: the referral removal fails ; Should: return the error and record nothing",
+			step:     stepReferral,
+			canceled: true,
+			wantErr:  context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := newServices()
+			ctx, cancel := context.WithCancel(t.Context())
+
+			if tt.canceled {
+				cancel()
+			}
+
+			defer cancel()
+
+			err := compensationOf(tt.step, svc)(ctx, &account{})
+
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantUndone, svc.undone.take())
 		})
 	}
 }

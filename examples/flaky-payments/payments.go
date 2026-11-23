@@ -14,23 +14,6 @@ import (
 const (
 	exitFailure      = 1
 	exitWriteFailure = 2
-
-	cardFlaky   = "visa"
-	cardRefused = "refused"
-	cardSilent  = "silent"
-
-	flakyCalls      = 2
-	attempts        = 3
-	attemptTimeout  = 50 * time.Millisecond
-	retryDelay      = time.Millisecond
-	slotInterval    = 2 * time.Millisecond
-	breakerLimit    = 4
-	breakerCooldown = time.Minute
-)
-
-var (
-	errBusy     = errors.New("provider busy")
-	errDeclined = errors.New("card declined")
 )
 
 // --8<-- [start:store]
@@ -92,6 +75,21 @@ func (o *order) ExecutionID() string { return o.ID }
 
 // --8<-- [end:state]
 
+// --8<-- [start:provider]
+
+const (
+	cardFlaky   = "visa"
+	cardRefused = "refused"
+	cardSilent  = "silent"
+
+	flakyCalls = 2
+)
+
+var (
+	errBusy     = errors.New("provider busy")
+	errDeclined = errors.New("card declined")
+)
+
 type usage struct {
 	calls   int
 	refunds int
@@ -146,6 +144,8 @@ func (p *provider) take() usage {
 
 	return used
 }
+
+// --8<-- [end:provider]
 
 // --8<-- [start:steps]
 
@@ -260,21 +260,13 @@ func (p *pay) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) er
 
 // --8<-- [end:breaker]
 
-type services struct {
-	provider *provider
-	breaker  *breaker
-	limit    *rateLimit
-}
-
-func newServices() *services {
-	return &services{
-		provider: newProvider(),
-		breaker:  &breaker{limit: breakerLimit, cooldown: breakerCooldown},
-		limit:    &rateLimit{every: slotInterval},
-	}
-}
-
 // --8<-- [start:retry]
+
+const (
+	attempts       = 3
+	attemptTimeout = 50 * time.Millisecond
+	retryDelay     = time.Millisecond
+)
 
 func newPay(s *services) *pay {
 	return &pay{
@@ -288,6 +280,26 @@ func newPay(s *services) *pay {
 // --8<-- [end:retry]
 
 // --8<-- [start:saga]
+
+const (
+	slotInterval    = 2 * time.Millisecond
+	breakerLimit    = 4
+	breakerCooldown = time.Minute
+)
+
+type services struct {
+	provider *provider
+	breaker  *breaker
+	limit    *rateLimit
+}
+
+func newServices() *services {
+	return &services{
+		provider: newProvider(),
+		breaker:  &breaker{limit: breakerLimit, cooldown: breakerCooldown},
+		limit:    &rateLimit{every: slotInterval},
+	}
+}
 
 func newSaga(s *services) (*sagas.Saga[order], error) {
 	return sagas.New[order]("payment", sagas.Sequence(newPay(s)), sagas.WithMiddleware(s.limit))

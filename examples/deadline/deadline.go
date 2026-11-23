@@ -15,19 +15,6 @@ import (
 const (
 	exitFailure      = 1
 	exitWriteFailure = 2
-
-	callerTimeout = 100 * time.Millisecond
-	longGrace     = 5 * time.Second
-	shortGrace    = 100 * time.Millisecond
-	giveUpAfter   = time.Minute
-
-	faultSlowUndo    = "slow-undo"
-	faultInvoiceUndo = "invoice-undo"
-)
-
-var (
-	errRefused = errors.New("invoice service refused the undo")
-	errGaveUp  = errors.New("label service gave up waiting")
 )
 
 // --8<-- [start:store]
@@ -127,6 +114,8 @@ func (g *undoGate) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Cal
 	return call(ctx)
 }
 
+// --8<-- [start:undone]
+
 type undone struct {
 	mu    sync.Mutex
 	names []string
@@ -159,6 +148,8 @@ func (u *undone) release(ctx context.Context, s *store, name string) error {
 	return nil
 }
 
+// --8<-- [end:undone]
+
 // --8<-- [start:steps]
 
 type reserve struct {
@@ -182,6 +173,10 @@ func (r *reserve) Execute(ctx context.Context, o *order) error {
 func (r *reserve) Compensate(ctx context.Context, _ *order) error {
 	return r.undone.release(ctx, r.stock, "reserve")
 }
+
+const faultInvoiceUndo = "invoice-undo"
+
+var errRefused = errors.New("invoice service refused the undo")
 
 type invoice struct {
 	sagas.Step
@@ -230,6 +225,13 @@ func (p *pack) Execute(ctx context.Context, o *order) error {
 func (p *pack) Compensate(ctx context.Context, _ *order) error {
 	return p.undone.release(ctx, p.dock, "pack")
 }
+
+const (
+	faultSlowUndo = "slow-undo"
+	giveUpAfter   = time.Minute
+)
+
+var errGaveUp = errors.New("label service gave up waiting")
 
 type tag struct {
 	sagas.Step
@@ -309,6 +311,8 @@ func newSaga(
 
 // --8<-- [end:saga]
 
+// --8<-- [start:scenario]
+
 type scenario struct {
 	name   string
 	grace  time.Duration
@@ -316,7 +320,14 @@ type scenario struct {
 	fault  string
 }
 
+// --8<-- [end:scenario]
+
 // --8<-- [start:grace]
+
+const (
+	longGrace  = 5 * time.Second
+	shortGrace = 100 * time.Millisecond
+)
 
 func graceRuns() []scenario {
 	return []scenario{
@@ -340,6 +351,8 @@ func policyRuns() []scenario {
 // --8<-- [end:policies]
 
 // --8<-- [start:run]
+
+const callerTimeout = 100 * time.Millisecond
 
 func run(w io.Writer) error {
 	for _, sc := range slices.Concat(graceRuns(), policyRuns()) {

@@ -15,13 +15,7 @@ const (
 	exitFailure      = 1
 	exitWriteFailure = 2
 
-	carrierOpen   = "open"
-	carrierClosed = "closed"
-)
-
-var (
-	errCarrierClosed  = errors.New("carrier is closed")
-	errUnknownVersion = errors.New("unknown event version")
+	carrierOpen = "open"
 )
 
 // --8<-- [start:state]
@@ -56,6 +50,10 @@ func (charge) Pivot(ctx context.Context, o *order) error {
 
 	return ctx.Err()
 }
+
+const carrierClosed = "closed"
+
+var errCarrierClosed = errors.New("carrier is closed")
 
 type ship struct{ sagas.Step }
 
@@ -151,6 +149,8 @@ func currentEvents(ctx context.Context, journal sagas.EventReader, execution str
 
 	return events, nil
 }
+
+var errUnknownVersion = errors.New("unknown event version")
 
 func checkVersions(execution string, events []sagas.Event) error {
 	for i := range events {
