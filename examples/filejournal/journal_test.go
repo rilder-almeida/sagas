@@ -477,6 +477,7 @@ const (
 	limitEnv     = "FILEJOURNAL_LIMIT"
 	exeEnv       = "FILEJOURNAL_EXE"
 	fullEvents   = 20
+	raceAttempts = 500
 	cancelWait   = 50 * time.Millisecond
 	dirNoRead    = 0o300
 	dirReadWrite = 0o700
@@ -620,6 +621,75 @@ func Test_fileJournal_Append_doneWhileWaiting(t *testing.T) {
 
 			_, err := j.Events(t.Context(), runID)
 			assert.Equal(t, tt.wantStored, err == nil)
+		})
+	}
+}
+
+func appendTwice(t *testing.T, writers [2]string) (*fileJournal, bool) {
+	t.Helper()
+
+	dir := t.TempDir()
+	journals := [2]*fileJournal{newTestJournal(t, dir), newTestJournal(t, dir)}
+
+	var wg sync.WaitGroup
+
+	var errs [2]error
+
+	start := make(chan struct{})
+
+	for i := range journals {
+		wg.Go(func() {
+			e := testEvent(1, "a")
+			e.Writer = writers[i]
+
+			<-start
+
+			errs[i] = journals[i].Append(t.Context(), e)
+		})
+	}
+
+	close(start)
+	wg.Wait()
+
+	return journals[0], errs[0] == nil && errs[1] == nil
+}
+
+func Test_fileJournal_Append_twoValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		writers  [2]string
+		attempts int
+		wantErr  error
+	}{
+		{
+			name:     "[Fail] When: two journal values race for Seq 1 ; Should: accept both and fail on read",
+			writers:  [2]string{"writer-a", "writer-b"},
+			attempts: raceAttempts,
+			wantErr:  errBadLine,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for range tt.attempts {
+				first, bothAccepted := appendTwice(t, tt.writers)
+				if !bothAccepted {
+					continue
+				}
+
+				events, err := first.Events(t.Context(), runID)
+
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, events)
+
+				return
+			}
+
+			t.Fatal("no attempt let both journal values accept Seq 1")
 		})
 	}
 }
