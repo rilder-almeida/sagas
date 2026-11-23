@@ -422,7 +422,7 @@ flowchart TD
 
 ## Compatibility
 
-The library keeps its public API compatible from `v0.1.0` on. These rules say what each kind of release can change:
+These rules say what each kind of release can change, starting at `v0.1.0`. Before `v1.0.0`, a minor release can break the API, and the changelog lists each break. The last paragraph of this section says what changes at `v1.0.0`. The rules are:
 
 - A patch release, such as `v0.1.1`, never breaks the Go API, a stored format or a documented behavior.
 - A minor release before `v1.0.0`, such as `v0.2.0`, can break. Each break gets an entry under `### Breaking` in the [changelog](CHANGELOG.md). The entry names the old form, the new form and the steps to move from one to the other.
@@ -436,7 +436,7 @@ The library keeps its public API compatible from `v0.1.0` on. These rules say wh
   - The rules that encode the state.
 - The text of `Mermaid`, of each `Error()` message and of extra log fields is not part of the contract. Do not parse it.
 
-`v1.0.0` comes at the end of the second part of the work, which adds durable journals, resume and messaging. From then on, a break needs a new module path that ends in `/v2`.
+`v1.0.0` comes after a later set of releases that adds durable journals, resume and messaging. From `v1.0.0` on, a break needs a new module path that ends in `/v2`.
 
 ## Documentation
 

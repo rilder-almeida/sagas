@@ -143,7 +143,7 @@ An attempt is one call of an action, of a compensation or of the pivot. `sagaste
 
 ## How do I prove my journal?
 
-The journal is the append-only record of what an execution intends and did. The library writes each intent before the call. You pass your own journal to `sagas.New` with `sagas.WithJournal`. `sagastest.Journal` runs the rules that every journal must obey. Your journal implements two interfaces: `sagas.Journal`, which stores events, and `sagas.EventReader`, which reads them back. The contract reads each event back and compares every field with the event that it sent. If the journal holds no event for an execution, `Events` must return an error that wraps `sagas.ErrNoEvents`.
+The journal is the append-only record of what an execution intends and did. The library writes each intent before the call. You pass your own journal to `sagas.New` with `sagas.WithJournal`. `sagastest.Journal` runs the rules that every journal must obey. Your journal implements two interfaces: `sagas.Journal`, which stores events, and `sagas.EventReader`, which reads them back. The contract reads each event back and compares every field with the event that it sent. If the journal holds no event for an execution, `Events` must return an error that wraps `sagas.ErrNoEvents`. If the context is done, `Events` must return an error that wraps the error of the context.
 
 1. Call `sagastest.Journal` in a test with a function that returns a fresh, empty journal on each call. Replace `sagas.NewMemoryJournal` with the constructor of your journal:
 
