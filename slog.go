@@ -7,7 +7,7 @@ import (
 )
 
 // Slog is middleware that logs each attempt to Logger, or to slog.Default() when Logger is nil: saga, execution,
-// step, phase, attempt, duration, and the error when the attempt fails, at info on success and warn on error. It
+// step, phase, attempt, duration, and the error when the attempt returns one, at info on success and warn on error. It
 // never logs the state.
 type Slog struct {
 	Logger *slog.Logger

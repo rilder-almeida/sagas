@@ -31,7 +31,7 @@ const (
 	CompensationBlock CompensationFailurePolicy = "block"
 	// CompensationContinue goes on with the compensations that remain.
 	CompensationContinue CompensationFailurePolicy = "continue"
-	// CompensationHalt stops the whole saga at the failed compensation.
+	// CompensationHalt stops, at the failed compensation, every compensation that has not started.
 	CompensationHalt CompensationFailurePolicy = "halt"
 )
 

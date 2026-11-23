@@ -120,7 +120,7 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
-// RunError reports a run that began and did not complete cleanly. Steps holds one *Error for each action or
+// RunError reports a run that began and did not complete. Steps holds one *Error for each action or
 // compensation that did not succeed, a failure or an unknown outcome, in order, so one step can appear twice.
 // errors.Is matches Kind and walks every error of Unwrap; read the kind itself with errors.As and its Kind field.
 type RunError struct {

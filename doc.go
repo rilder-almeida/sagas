@@ -1,3 +1,6 @@
-// Package sagas runs a saga: steps that either all complete or, before the pivot, get undone by compensations.
-// Start with the quick start of the README; the docs directory holds the tutorial, how-to guides and explanation.
+// Package sagas runs sagas, business operations split into steps. Read the [README], [tutorial] and [glossary].
+//
+// [README]: https://github.com/rilder-almeida/sagas#readme
+// [tutorial]: https://github.com/rilder-almeida/sagas/blob/main/docs/tutorial/book-a-trip.md
+// [glossary]: https://github.com/rilder-almeida/sagas/blob/main/docs/glossary.md
 package sagas
