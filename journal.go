@@ -23,10 +23,9 @@ var (
 var errInvalidEvent = errors.New("sagas: invalid event")
 
 // Journal only appends events and never delivers work, removes or marks one. A nil e, a Seq below 1 or a Version not
-// EventVersion is invalid. Append stores a deep copy of every field of e, never e or its slices, when e.Seq is its
-// execution's last Seq plus one; an equal resend from the same Writer (slices by content, Time by Time.Equal) returns
-// nil and writes nothing. Any other Seq is rejected, wrapping ErrExecutionExists at Seq 1 and ErrConcurrentWriter
-// later. Once ctx is done, Append stores nothing and returns an error. Rerun sagastest.Journal on each upgrade.
+// EventVersion is invalid. If e.Seq is next in its execution, Append stores a deep copy of every field of e. An equal
+// resend from the same Writer, slices by content and Time by Time.Equal, stores nothing and returns nil. Append rejects
+// any other Seq. Once ctx is done, it stores nothing and returns an error. Rerun sagastest.Journal on each upgrade.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
@@ -38,11 +37,13 @@ type EventReader interface {
 
 var _ EventReader = (*MemoryJournal)(nil)
 
-// EventVersion is the format of the events this release writes, stored in Event.Version, which a reader checks
-// first. Version 1 events hold no state values, so a version 1 execution cannot be resumed.
+// EventVersion is this release's event format. Version 1 holds no state values, so its executions cannot be resumed.
 const EventVersion = 1
 
-// Event is one record of an execution, numbered by Seq from 1 and tagged with the Writer token of its run.
+// Event is one journal record: Saga, the Execution ID, the run's Writer token, Seq from 1, Kind and Time. A reader
+// checks Version, the writing release's format, against EventVersion first. Steps lists all steps on saga-started. Step
+// names the step of a step or compensation event. Attempt counts its attempts. Changed names the fields that a success
+// committed. Err is set on a failed, unknown or compensation-failed event. Status is the run's end on saga-finished.
 type Event struct {
 	Saga      string
 	Execution string
@@ -59,7 +60,7 @@ type Event struct {
 	Time      time.Time
 }
 
-// EventError is the text form of an Error as a journal stores it. The zero value means no error.
+// EventError is an Error as text: its Kind name, its Err as Message, its Cause and Previous. Zero means no error.
 type EventError struct {
 	Kind     string
 	Message  string
@@ -67,7 +68,7 @@ type EventError struct {
 	Previous []string
 }
 
-// StepZone names a step and the zone it runs in. Compensable is true when the step has a compensation.
+// StepZone is one entry of Event.Steps: a step's Name, its Zone, and Compensable, true when it has a compensation.
 type StepZone struct {
 	Name        string
 	Zone        Zone
@@ -93,8 +94,7 @@ const (
 	EventSagaFinished          EventKind = "saga-finished"
 )
 
-// Zone says whether a step can be compensated: before the pivot, the pivot itself, or after it. The empty string
-// means not set and is never a real zone.
+// Zone says where a step runs: before the pivot, as the pivot or after it. The empty string is unset, never a zone.
 type Zone string
 
 // Zone values.

@@ -9,6 +9,9 @@
   instead of guessing, and record the numbers when a change touches a hot path.
 - Tests prove each rule through the real code path of each row. No test doubles of our own
   code; a test may use a real standard-library implementation, such as `slog.NewJSONHandler`.
+- An include anchor (`// --8<-- [start:name]` and `// --8<-- [end:name]`) marks a snippet that a docs page
+  shows alone. Every name the snippet uses is defined in that snippet, in another snippet of the same program,
+  in the standard library or in package `sagas`. Anchor pairs never nest, and no test-only code sits inside one.
 
 ## API style
 

@@ -120,15 +120,15 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
-// RunError reports a run that began and did not complete cleanly. Steps holds one *Error for each action or
+// RunError reports a run that began and did not complete. Steps holds one *Error for each action or
 // compensation that did not succeed, a failure or an unknown outcome, in order, so one step can appear twice.
 // errors.Is matches Kind and walks every error of Unwrap; read the kind itself with errors.As and its Kind field.
 type RunError struct {
 	Kind  *KindError
 	Steps []*Error
-	// Pending holds, in step order, each unknown step that has a compensation or runs outside the compensable zone,
-	// each step whose compensation failed, was blocked or was halted, and, after a succeeded pivot, each forward-only
-	// step that failed or did not start.
+	// Pending holds, in step order, each unknown step, unless it is in the compensable zone and its compensation is
+	// missing or succeeded. It also holds each step whose compensation failed, was blocked or was halted. After a
+	// succeeded pivot, it holds each forward-only step that failed or did not start.
 	Pending []string
 	causes  []error
 }

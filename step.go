@@ -6,12 +6,13 @@ import (
 	"time"
 )
 
-// Step holds a step's name and settings: a pointer to a type that embeds Step and has Execute or Pivot, and optionally
-// Compensate, Enabled and Wrap, all safe for concurrent use and idempotent. Execute, Pivot, Compensate and Wrap honor
-// their context; a call that returns after the grace period may miss the journal, but Run reports it. An empty Name
-// takes the type name; set Name for a durable journal so a rename keeps it. New cannot see a method lost to an embedded
-// field that also embeds a provider of it, or to a field of the same name: declare step methods on the step type.
+// Step holds a step's name and settings. A step is a pointer to a type that embeds Step and has Execute or Pivot, and
+// optionally Compensate, Enabled and Wrap. All of these methods must be safe for concurrent use and idempotent.
+// Execute, Pivot, Compensate and Wrap must honor their context. A call that returns after the grace period can miss the
+// journal, but Run reports it. An empty Name takes the type name in kebab case. Declare step methods on the step type.
+// New cannot see one lost to a same-name field or to an embedded field that also embeds a provider of it.
 type Step struct {
+	// Set Name for a durable journal, so a rename of the step type keeps the step name that the journal holds.
 	Name        string
 	Description string
 	// Retry governs the action and the compensation, so under NoRetry the compensation gets one attempt. More
@@ -31,7 +32,7 @@ const (
 	CompensationBlock CompensationFailurePolicy = "block"
 	// CompensationContinue goes on with the compensations that remain.
 	CompensationContinue CompensationFailurePolicy = "continue"
-	// CompensationHalt stops the whole saga at the failed compensation.
+	// CompensationHalt makes a failed compensation of this step stop every compensation that did not start.
 	CompensationHalt CompensationFailurePolicy = "halt"
 )
 

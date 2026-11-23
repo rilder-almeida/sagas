@@ -7,6 +7,8 @@ import (
 	"sync"
 )
 
+// --8<-- [start:fakes]
+
 const cardLimit = 1000
 
 var (
@@ -49,13 +51,6 @@ func (a *airline) Book(ctx context.Context, key, route string) (string, error) {
 	a.active[id] = true
 
 	return id, nil
-}
-
-func (a *airline) Held() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	return len(a.active)
 }
 
 func (a *airline) Cancel(ctx context.Context, key string) error {
@@ -117,20 +112,6 @@ func (h *hotels) Book(ctx context.Context, key, city string, nights int) (string
 	h.cities[id] = city
 
 	return id, nil
-}
-
-func (h *hotels) Free(city string) int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return h.free[city]
-}
-
-func (h *hotels) Taken() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return len(h.cities)
 }
 
 func (h *hotels) Cancel(ctx context.Context, key string) error {
@@ -212,4 +193,27 @@ func (m *mailer) Send(ctx context.Context, key, address string) (string, error) 
 	m.byKey[key] = id
 
 	return id, nil
+}
+
+// --8<-- [end:fakes]
+
+func (a *airline) Held() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return len(a.active)
+}
+
+func (h *hotels) Free(city string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.free[city]
+}
+
+func (h *hotels) Taken() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return len(h.cities)
 }

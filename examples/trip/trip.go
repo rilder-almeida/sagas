@@ -12,12 +12,9 @@ import (
 const (
 	exitFailure      = 1
 	exitWriteFailure = 2
-	lisbonRooms      = 2
-	lisbonNights     = 3
-	portoNights      = 2
-	lisbonAmount     = 800
-	portoAmount      = 600
 )
+
+// --8<-- [start:state]
 
 type trip struct {
 	ID       string
@@ -33,6 +30,10 @@ type trip struct {
 }
 
 func (t *trip) ExecutionID() string { return t.ID }
+
+// --8<-- [end:state]
+
+// --8<-- [start:steps]
 
 type flight struct {
 	sagas.Step
@@ -136,6 +137,12 @@ func (e *email) Execute(ctx context.Context, t *trip) error {
 	return nil
 }
 
+// --8<-- [end:steps]
+
+// --8<-- [start:saga]
+
+const lisbonRooms = 2
+
 type services struct {
 	airline  *airline
 	hotels   *hotels
@@ -161,6 +168,17 @@ func newServices() *services {
 
 	return s
 }
+
+// --8<-- [end:saga]
+
+// --8<-- [start:run]
+
+const (
+	lisbonNights = 3
+	portoNights  = 2
+	lisbonAmount = 800
+	portoAmount  = 600
+)
 
 func newTrips() []trip {
 	return []trip{
@@ -216,6 +234,8 @@ func report(w io.Writer, id string, runErr error) error {
 		return runErr
 	}
 }
+
+// --8<-- [end:run]
 
 func execute(stdout, stderr io.Writer) int {
 	err := run(stdout)
