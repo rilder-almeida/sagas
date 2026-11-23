@@ -98,21 +98,27 @@ func journalFile(execution string) string { return url.PathEscape(execution) + f
 // --8<-- [start:append]
 
 func (j *fileJournal) Append(ctx context.Context, e *sagas.Event) error {
-	if err := validate(ctx, e); err != nil {
+	if err := validate(e); err != nil {
 		return err
 	}
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	stored, err := j.read(e.Execution)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	stored, err := readEvents(j.root, e.Execution)
 	if err != nil {
 		return err
 	}
 
 	switch {
+	case e.Seq == 1 && len(stored) == 0:
+		return createEvent(j.root, e)
 	case e.Seq == len(stored)+1:
-		return j.write(e)
+		return writeEvent(j.root, e)
 	case e.Seq <= len(stored) && sameEvent(&stored[e.Seq-1], e):
 		return nil
 	case e.Seq == 1:
@@ -120,6 +126,89 @@ func (j *fileJournal) Append(ctx context.Context, e *sagas.Event) error {
 	default:
 		return fmt.Errorf("%w: execution %q seq %d", sagas.ErrConcurrentWriter, e.Execution, e.Seq)
 	}
+}
+
+func validate(e *sagas.Event) error {
+	switch {
+	case e == nil:
+		return fmt.Errorf("%w: nil event", errInvalidEvent)
+	case e.Seq < 1:
+		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
+	case e.Version != sagas.EventVersion:
+		return fmt.Errorf("%w: execution %q seq %d version %d", errInvalidEvent, e.Execution, e.Seq, e.Version)
+	default:
+		return nil
+	}
+}
+
+func createEvent(root *os.Root, e *sagas.Event) error {
+	if err := writeEvent(root, e); err != nil {
+		return err
+	}
+
+	return syncDir(root)
+}
+
+func writeEvent(root *os.Root, e *sagas.Event) error {
+	line, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+
+	f, err := root.OpenFile(journalFile(e.Execution), os.O_APPEND|os.O_CREATE|os.O_WRONLY, fileMode)
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(appendLine(f, append(line, '\n')), f.Close())
+}
+
+func appendLine(f *os.File, line []byte) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	if _, err = f.Write(line); err == nil {
+		err = f.Sync()
+	}
+
+	if err != nil {
+		return errors.Join(err, f.Truncate(info.Size()))
+	}
+
+	return nil
+}
+
+func syncDir(root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(dir.Sync(), dir.Close())
+}
+
+func sameEvent(a, b *sagas.Event) bool {
+	return reflect.DeepEqual(canonical(a), canonical(b))
+}
+
+func canonical(src *sagas.Event) sagas.Event {
+	e := *src
+	e.Time = e.Time.UTC()
+	e.Changed = nilIfEmpty(e.Changed)
+	e.Steps = nilIfEmpty(e.Steps)
+	e.Err.Previous = nilIfEmpty(e.Err.Previous)
+
+	return e
+}
+
+func nilIfEmpty[T any](s []T) []T {
+	if len(s) == 0 {
+		return nil
+	}
+
+	return s
 }
 
 // --8<-- [end:append]
@@ -134,7 +223,7 @@ func (j *fileJournal) Events(ctx context.Context, execution string) ([]sagas.Eve
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	events, err := j.read(execution)
+	events, err := readEvents(j.root, execution)
 	if err != nil {
 		return nil, err
 	}
@@ -146,43 +235,8 @@ func (j *fileJournal) Events(ctx context.Context, execution string) ([]sagas.Eve
 	return events, nil
 }
 
-// --8<-- [end:events]
-
-func validate(ctx context.Context, e *sagas.Event) error {
-	switch {
-	case ctx.Err() != nil:
-		return ctx.Err()
-	case e == nil:
-		return fmt.Errorf("%w: nil event", errInvalidEvent)
-	case e.Seq < 1:
-		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
-	case e.Version != sagas.EventVersion:
-		return fmt.Errorf("%w: execution %q seq %d version %d", errInvalidEvent, e.Execution, e.Seq, e.Version)
-	default:
-		return nil
-	}
-}
-
-func (j *fileJournal) write(e *sagas.Event) error {
-	line, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-
-	f, err := j.root.OpenFile(journalFile(e.Execution), os.O_APPEND|os.O_CREATE|os.O_WRONLY, fileMode)
-	if err != nil {
-		return err
-	}
-
-	if _, err = f.Write(append(line, '\n')); err == nil {
-		err = f.Sync()
-	}
-
-	return errors.Join(err, f.Close())
-}
-
-func (j *fileJournal) read(execution string) ([]sagas.Event, error) {
-	data, err := j.root.ReadFile(journalFile(execution))
+func readEvents(root *os.Root, execution string) ([]sagas.Event, error) {
+	data, err := root.ReadFile(journalFile(execution))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -209,33 +263,18 @@ func (j *fileJournal) read(execution string) ([]sagas.Event, error) {
 				errUnknownVersion, execution, len(events)+1, e.Version)
 		}
 
+		if e.Execution != execution || e.Seq != len(events)+1 {
+			return nil, fmt.Errorf("%w: execution %q line %d holds execution %q seq %d",
+				errBadLine, execution, len(events)+1, e.Execution, e.Seq)
+		}
+
 		events = append(events, e)
 	}
 
 	return events, nil
 }
 
-func sameEvent(a, b *sagas.Event) bool {
-	return reflect.DeepEqual(canonical(a), canonical(b))
-}
-
-func canonical(src *sagas.Event) sagas.Event {
-	e := *src
-	e.Time = e.Time.UTC()
-	e.Changed = nilIfEmpty(e.Changed)
-	e.Steps = nilIfEmpty(e.Steps)
-	e.Err.Previous = nilIfEmpty(e.Err.Previous)
-
-	return e
-}
-
-func nilIfEmpty[T any](s []T) []T {
-	if len(s) == 0 {
-		return nil
-	}
-
-	return s
-}
+// --8<-- [end:events]
 
 // --8<-- [start:saga]
 

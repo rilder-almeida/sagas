@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -170,20 +174,16 @@ func Test_fileJournal_Append_contract(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		newDir func(tb testing.TB) string
+		name string
 	}{
-		{
-			name:   "[Success] When: each journal has an empty directory ; Should: keep every rule of sagas.Journal",
-			newDir: func(tb testing.TB) string { tb.Helper(); return tb.TempDir() },
-		},
+		{name: "[Success] When: each journal has an empty directory ; Should: keep every rule of sagas.Journal"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			sagastest.Journal(t, func() sagas.Journal { return newTestJournal(t, tt.newDir(t)) })
+			sagastest.Journal(t, func() sagas.Journal { return newTestJournal(t, t.TempDir()) })
 		})
 	}
 }
@@ -246,6 +246,21 @@ func Test_fileJournal_Events(t *testing.T) {
 			wantErr: errCutLine,
 		},
 		{
+			name:    "[Fail] When: two lines have the same Seq ; Should: return errBadLine and no events",
+			seed:    []sagas.Event{*testEvent(1, "a"), *testEvent(1, "b")},
+			read:    runID,
+			wantErr: errBadLine,
+		},
+		{
+			name: "[Fail] When: a line belongs to another execution ; Should: return errBadLine and no events",
+			seed: []sagas.Event{
+				*testEvent(1, "a"),
+				{Execution: "other-run", Seq: 2, Version: sagas.EventVersion},
+			},
+			read:    runID,
+			wantErr: errBadLine,
+		},
+		{
 			name:    "[Fail] When: a whole line is not JSON ; Should: return errBadLine and no events",
 			seed:    []sagas.Event{*testEvent(1, "a")},
 			tail:    "not json\n",
@@ -269,7 +284,7 @@ func Test_fileJournal_Events(t *testing.T) {
 	}
 }
 
-func Test_fileJournal_Append_reopen(t *testing.T) {
+func Test_fileJournal_Append(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -451,6 +466,160 @@ func Test_openFileJournal(t *testing.T) {
 			if err == nil {
 				require.NoError(t, j.Close())
 			}
+		})
+	}
+}
+
+const (
+	childScript = `ulimit -f "$FILEJOURNAL_LIMIT" && ` +
+		`exec "$FILEJOURNAL_EXE" -test.run=Test_fileJournal_Append_failedWrite -test.v`
+	childEnv     = "FILEJOURNAL_CHILD"
+	limitEnv     = "FILEJOURNAL_LIMIT"
+	exeEnv       = "FILEJOURNAL_EXE"
+	fullEvents   = 20
+	cancelWait   = 50 * time.Millisecond
+	dirNoRead    = 0o300
+	dirReadWrite = 0o700
+)
+
+func appendUntilFull(t *testing.T) {
+	t.Helper()
+
+	ctx := t.Context()
+	j := newTestJournal(t, t.TempDir())
+
+	var failed error
+
+	stored := 0
+
+	for seq := 1; seq <= fullEvents && failed == nil; seq++ {
+		failed = j.Append(ctx, testEvent(seq, "x"))
+		if failed == nil {
+			stored = seq
+		}
+	}
+
+	require.Error(t, failed)
+
+	events, err := j.Events(ctx, runID)
+	require.NoError(t, err)
+	assert.Len(t, events, stored)
+}
+
+func Test_fileJournal_Append_failedWrite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		limitBlocks int
+	}{
+		{
+			name:        "[Fail] When: a write passes the size limit ; Should: leave the file as it was and readable",
+			limitBlocks: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if os.Getenv(childEnv) != "" {
+				appendUntilFull(t)
+
+				return
+			}
+
+			env := append(os.Environ(),
+				childEnv+"=1", exeEnv+"="+os.Args[0], limitEnv+"="+strconv.Itoa(tt.limitBlocks))
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", childScript)
+			cmd.Env = env
+
+			out, err := cmd.CombinedOutput()
+
+			require.NoError(t, err, string(out))
+			assert.Contains(t, string(out), "--- PASS: Test_fileJournal_Append_failedWrite/")
+		})
+	}
+}
+
+func Test_fileJournal_Append_dirSync(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    os.FileMode
+		wantErr error
+	}{
+		{
+			name: "[Success] When: the directory can be opened ; Should: store the first event and sync the directory",
+			mode: dirReadWrite,
+		},
+		{
+			name:    "[Fail] When: the directory cannot be opened for sync ; Should: return the open error",
+			mode:    dirNoRead,
+			wantErr: fs.ErrPermission,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if os.Geteuid() == 0 {
+				t.Skip("root ignores directory permissions")
+			}
+
+			dir := t.TempDir()
+			j := newTestJournal(t, dir)
+
+			require.NoError(t, os.Chmod(dir, tt.mode))
+			t.Cleanup(func() { assert.NoError(t, os.Chmod(dir, dirReadWrite)) })
+
+			require.ErrorIs(t, j.Append(t.Context(), testEvent(1, "a")), tt.wantErr)
+		})
+	}
+}
+
+func Test_fileJournal_Append_doneWhileWaiting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		wait       time.Duration
+		wantErr    error
+		wantStored bool
+	}{
+		{
+			name:    "[Fail] When: the context ends while Append waits for the lock ; Should: store nothing",
+			wait:    cancelWait,
+			wantErr: context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			j := newTestJournal(t, t.TempDir())
+			ctx, cancel := context.WithCancel(t.Context())
+
+			var wg sync.WaitGroup
+
+			var appendErr error
+
+			j.mu.Lock()
+
+			wg.Go(func() { appendErr = j.Append(ctx, testEvent(1, "a")) })
+
+			time.Sleep(tt.wait)
+			cancel()
+			j.mu.Unlock()
+			wg.Wait()
+
+			require.ErrorIs(t, appendErr, tt.wantErr)
+
+			_, err := j.Events(t.Context(), runID)
+			assert.Equal(t, tt.wantStored, err == nil)
 		})
 	}
 }
