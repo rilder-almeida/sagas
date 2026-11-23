@@ -34,6 +34,26 @@ func (o *order) ExecutionID() string { return o.ID }
 
 // --8<-- [end:state]
 
+type provider struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func newProvider() *provider { return &provider{seen: map[string]bool{}} }
+
+func (p *provider) charge(key string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.seen[key] {
+		p.seen[key] = true
+
+		return errBusy
+	}
+
+	return nil
+}
+
 // --8<-- [start:steps]
 
 type reserve struct{ sagas.Step }
@@ -47,21 +67,16 @@ func (reserve) Execute(ctx context.Context, o *order) error {
 type charge struct {
 	sagas.Step
 
-	mu    sync.Mutex
-	calls int
+	provider *provider
 }
 
 func (c *charge) Execute(ctx context.Context, o *order) error {
-	c.mu.Lock()
-	c.calls++
-	first := c.calls == 1
-	c.mu.Unlock()
-
-	if first {
-		return errBusy
+	key := sagas.IdempotencyKey(ctx)
+	if err := c.provider.charge(key); err != nil {
+		return err
 	}
 
-	o.ChargeID = sagas.IdempotencyKey(ctx)
+	o.ChargeID = key
 
 	return ctx.Err()
 }
@@ -102,12 +117,14 @@ func (k keyLog) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) 
 
 func newSaga(logger *slog.Logger) (*sagas.Saga[order], error) {
 	retry := sagas.RetryPolicy{Attempts: attempts, Initial: retryDelay, NoJitter: true}
-	flow := sagas.Sequence(&reserve{}, &charge{Retry: retry})
+	flow := sagas.Sequence(&reserve{}, &charge{Retry: retry, provider: newProvider()})
 
 	return sagas.New[order]("order", flow, sagas.WithMiddleware(keyLog{logger: logger}))
 }
 
 // --8<-- [end:saga]
+
+// --8<-- [start:run]
 
 type watchedWriter struct {
 	w io.Writer
@@ -133,8 +150,6 @@ func (w *watchedWriter) failure() error {
 
 	return w.err
 }
-
-// --8<-- [start:run]
 
 func run(w io.Writer) error {
 	out := &watchedWriter{w: w}
