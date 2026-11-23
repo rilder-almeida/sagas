@@ -15,7 +15,10 @@ import (
 
 const tripID = "trip-42"
 
-var errNoRooms = errors.New("no rooms")
+var (
+	errNoRooms = errors.New("no rooms")
+	errGaveUp  = errors.New("gave up")
+)
 
 type trip struct {
 	ID                           string
@@ -128,7 +131,7 @@ func Example() {
 }
 
 func ExampleNew() {
-	_, err := sagas.New[trip]("trip", sagas.Sequence(&flight{}, &flight{}))
+	_, err := sagas.New[trip]("trip", sagas.Sequence(&flight{Name: "book"}, &flight{Name: "book"}))
 	if _, werr := fmt.Println(err); werr != nil {
 		panic(werr)
 	}
@@ -143,7 +146,7 @@ func ExampleNew() {
 	}
 
 	// Output:
-	// sagas: duplicate step: step "flight": declared more than once; set Name on each step of type *sagas_test.flight
+	// sagas: duplicate step: step "book": declared more than once
 	// true
 }
 
@@ -358,9 +361,12 @@ func (a *abandon) Compensate(ctx context.Context, _ *trip) error {
 		return nil
 	}
 
-	<-ctx.Done()
-
-	return ctx.Err()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(time.Minute):
+		return sagas.Permanent(errGaveUp)
+	}
 }
 
 func ExampleWithRecoveryTimeout() {
