@@ -436,6 +436,11 @@ func Test_CheckEvent(t *testing.T) {
 			event: withEvent(new(journalEvent("a", 1)), func(e *Event) { e.Version = "v0.1.0" }), wantErr: true,
 			wantText: []string{"v0.1.0", EventVersion},
 		},
+		{
+			name:  "[Fail] When: Version v1.0.0 ; Should: return ErrInvalidEvent naming both versions",
+			event: withEvent(new(journalEvent("a", 1)), func(e *Event) { e.Version = "v1.0.0" }), wantErr: true,
+			wantText: []string{"v1.0.0", EventVersion},
+		},
 	}
 
 	for _, tt := range tests {

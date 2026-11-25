@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"regexp"
@@ -1219,6 +1220,11 @@ func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 		if slices.Contains([]stepStatus{stepSucceeded, stepUnknown}, step.Status) {
 			assert.True(t, started[step.Name], "step %s is %s but has no started event", step.Name, step.Status)
 		}
+	}
+
+	checked := slices.Concat(slices.Collect(maps.Keys(tt.wantChanged)), slices.Collect(maps.Keys(tt.wantEventAttempts)))
+	for _, key := range checked {
+		assert.Contains(t, trail, key, "no stored event %s to check", key)
 	}
 
 	assert.Regexp(t, hexID, res.Execution)

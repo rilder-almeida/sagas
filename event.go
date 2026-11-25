@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// EventVersion is the semantic version of the package that writes an event.
+// EventVersion is the semantic version of the package that writes an event. A version is compatible with it when it
+// has the same 0.minor before v1.0.0, and the same major from v1.0.0 on.
 const EventVersion = "v0.2.0"
 
 // Event is one journal record of an execution. Writer is the token of the run that wrote it, and Seq counts from 1.
@@ -30,8 +31,8 @@ type Event struct {
 	Time      time.Time
 }
 
-// EventError is an Error as text. Kind is the name of the error kind, and Previous holds the texts of the earlier
-// errors. The zero value means no error.
+// EventError is an Error as text. Kind is the name of the error kind, Message is the text of Err, and Previous holds
+// the texts of the earlier errors. The zero value means no error.
 type EventError struct {
 	Kind     string
 	Message  string
@@ -49,7 +50,8 @@ type StepZone struct {
 // EventKind says what an Event records. The empty string means not set and is never a real event.
 type EventKind string
 
-// EventKind values.
+// EventKind values. saga-finished ends a completed or compensated run. saga-suspended ends a run that waits for
+// repair, with the status compensation-failed or incomplete.
 const (
 	EventSagaStarted           EventKind = "saga-started"
 	EventStepStarted           EventKind = "step-started"
@@ -100,7 +102,7 @@ func parseVersion(v string) ([3]int, bool) {
 	}
 
 	for i, part := range parts {
-		if strings.TrimLeft(part, "0123456789") != "" {
+		if strings.TrimLeft(part, "0123456789") != "" || len(part) > 1 && part[0] == '0' {
 			return out, false
 		}
 

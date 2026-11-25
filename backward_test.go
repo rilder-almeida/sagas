@@ -93,10 +93,10 @@ func backwardRows() []runRow {
 		predicateSiblingRow(),
 		blockRow(),
 		continueRow(),
-		haltRow(),
+		blockAllRow(),
 		blockAcrossRow(),
-		blockThenHaltRow(),
-		haltAtOnceRow(),
+		blockThenBlockAllRow(),
+		blockAllAtOnceRow(),
 		undoPanicRow(),
 		undoOwnFieldRow(),
 		undoIntentRow(),
@@ -118,10 +118,10 @@ func backwardRows() []runRow {
 		lateCancelCompletesRow(),
 		graceLateSuccessRow(),
 		graceBlockedRow(),
-		graceHaltRow(),
+		graceBlockAllRow(),
 		graceTurnAfterReadRow(),
-		graceHaltAfterReadRow(),
-		haltBeforeGraceEndRow(),
+		graceBlockAllAfterReadRow(),
+		blockAllBeforeGraceEndRow(),
 		policyCopyRow(Continue, Block, stepCompensated),
 		policyCopyRow(Block, Continue, stepBlocked),
 		ownOutputRow(),
@@ -625,7 +625,7 @@ func continueRow() runRow {
 	return row
 }
 
-func haltRow() runRow {
+func blockAllRow() runRow {
 	return policyRow(
 		"[Fail] When: a compensation with BlockAll fails ; Should: block the earlier compensation",
 		BlockAll, stepBlocked, []string{blockedOf("a"), suspended}, []string{"a", "b"},
@@ -663,9 +663,9 @@ func blockAcrossRow() runRow {
 	}
 }
 
-func blockThenHaltRow() runRow {
+func blockThenBlockAllRow() runRow {
 	return runRow{
-		name: "[Fail] When: a compensation waits on a Block failure, then a later BlockAll failure ; Should: halt it",
+		name: "[Fail] When: a compensation waits on a Block failure, then a later BlockAll failure ; Should: block it",
 		steps: func(rec *recorder) Flow {
 			late := func(context.Context, tripState) error {
 				time.Sleep(pause)
@@ -699,10 +699,10 @@ func blockThenHaltRow() runRow {
 	}
 }
 
-func haltAtOnceRow() runRow {
+func blockAllAtOnceRow() runRow {
 	return runRow{
 		name: "[Fail] When: a BlockAll failure happens while another compensation still runs ; " +
-			"Should: halt the waiting compensation at once",
+			"Should: block the waiting compensation at once",
 		wantCompensated: []string{"b"},
 		steps: func(rec *recorder) Flow {
 			slow := func(context.Context, tripState) error {
@@ -1344,7 +1344,7 @@ func graceBlockedRow() runRow {
 	}
 }
 
-func graceHaltRow() runRow {
+func graceBlockAllRow() runRow {
 	return runRow{
 		name: "[Fail] When: the grace period fails a waiting compensation with BlockAll ; " +
 			"Should: apply BlockAll to the compensations before it",
@@ -1416,10 +1416,10 @@ func graceTurnAfterReadRow() runRow {
 	}
 }
 
-func graceHaltAfterReadRow() runRow {
+func graceBlockAllAfterReadRow() runRow {
 	return runRow{
 		name: "[Fail] When: a BlockAll failure is read after the grace end ; " +
-			"Should: halt the waiting compensation and match the caller cause and context.Canceled",
+			"Should: block the waiting compensation and match the caller cause and context.Canceled",
 		wantCompensated: []string{"d"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
@@ -1452,9 +1452,9 @@ func graceHaltAfterReadRow() runRow {
 	}
 }
 
-func haltBeforeGraceEndRow() runRow {
+func blockAllBeforeGraceEndRow() runRow {
 	return runRow{
-		name: "[Fail] When: a BlockAll failure halts a compensation after a caller cancel and before the grace end ; " +
+		name: "[Fail] When: a BlockAll failure blocks a compensation after a caller cancel, before the grace end ; " +
 			"Should: not match the caller cause",
 		steps: func(rec *recorder) Flow {
 			slowFail := func(context.Context, tripState) error {
@@ -1531,7 +1531,8 @@ func Test_decide(t *testing.T) {
 			want:         compBlocked,
 		},
 		{
-			name:         "[Fail] When: a BlockAll failure happened and one it waits on is blocked ; Should: halt it",
+			name: "[Fail] When: a BlockAll failure happened and one it waits on is blocked ; " +
+				"Should: block it under BlockAll",
 			blockedAll:   true,
 			blockedBelow: true,
 			want:         compBlockedAll,
@@ -1680,7 +1681,7 @@ func levelWaitRow() runRow {
 func serialLevelRow() runRow {
 	return runRow{
 		name: "[Success] When: a serial run of a BlockAll saga reaches a level-1 step before a level-0 one ; " +
-			"Should: run the level-0 compensations one at a time first and halt the level-1 step",
+			"Should: run the level-0 compensations one at a time first and block the level-1 step",
 		wantCompensated: []string{"z"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(

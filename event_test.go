@@ -23,6 +23,9 @@ func Test_compatibleVersion(t *testing.T) {
 		{name: "[Fail] When: the patch is missing ; Should: refuse it", version: "v0.2", want: false},
 		{name: "[Fail] When: the v prefix is missing ; Should: refuse it", version: "0.2.0", want: false},
 		{name: "[Fail] When: a pre-release suffix follows ; Should: refuse it", version: "v0.2.0-rc.1", want: false},
+		{name: "[Fail] When: the minor has a leading zero ; Should: refuse it", version: "v0.02.0", want: false},
+		{name: "[Fail] When: the major has a leading zero ; Should: refuse it", version: "v00.2.0", want: false},
+		{name: "[Fail] When: the patch has a leading zero ; Should: refuse it", version: "v0.2.00", want: false},
 	}
 
 	for _, tt := range tests {

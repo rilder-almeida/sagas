@@ -24,8 +24,8 @@ var ErrInvalidEvent = &KindError{name: "invalid-event", message: "sagas: invalid
 
 // Journal stores the events of each execution and only appends them. Append stores the next Seq of an execution as a
 // deep copy of the event and refuses any other Seq. An equal resend by SameEvent stores nothing and returns nil. An
-// event survives a crash of the process once Append returns nil. CheckEvent gives the rules of a valid event. Once ctx
-// is done, Append stores nothing and returns an error. sagastest.Journal proves this contract.
+// event survives a crash of the process once Append returns nil. Append refuses an event that CheckEvent refuses. Once
+// ctx is done, Append stores nothing and returns an error. sagastest.Journal proves this contract.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }

@@ -485,7 +485,7 @@ func journalRows() []journalRow {
 			name:       "[Fail] When: the journal stores Version empty ; Should: report the stored events that differ",
 			newJournal: func() sagas.Journal { return zeroesVersion{sagas.NewMemoryJournal()} },
 			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
-			wantCauses: []string{"Version:", `Events of execution "execution" returned event 1 as`},
+			wantCauses: []string{"Version: Kind:", `Events of execution "execution" returned event 1 as`},
 		},
 		{
 			name:       "[Fail] When: the journal drops Err.Cause ; Should: report the stored events that differ",
