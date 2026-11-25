@@ -1174,7 +1174,7 @@ func assertCause(t *testing.T, got error, want []error, text string) {
 	}
 }
 
-func assertPipelineErr(t *testing.T, tt *pipelineRow, got *outcome[pipeState]) {
+func assertPipelineErr(t *testing.T, tt *pipelineRow, got *outcome) {
 	t.Helper()
 
 	assert.Same(t, tt.wantLabel, got.label)

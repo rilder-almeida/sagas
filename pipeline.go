@@ -51,7 +51,7 @@ const (
 	outcomeUnknown outcomeKind = "unknown"
 )
 
-type outcome[S any] struct {
+type outcome struct {
 	kind     outcomeKind
 	attempts int
 	err      error
@@ -61,7 +61,7 @@ type outcome[S any] struct {
 	output   encodedOutput
 }
 
-type callFunc[S any] func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S]
+type callFunc[S any] func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome
 
 type callSpec struct {
 	saga       string
@@ -112,7 +112,7 @@ type callResult struct {
 	err error
 }
 
-type attemptProgress[S any] struct {
+type attemptProgress struct {
 	started bool
 	running bool
 	label   *KindError
@@ -123,7 +123,7 @@ type attemptState[S any] struct {
 	base     snapshot[S]
 	mu       sync.Mutex
 	closed   bool
-	progress attemptProgress[S]
+	progress attemptProgress
 }
 
 func (a *attemptState[S]) start() *KindError {
@@ -159,7 +159,7 @@ func (a *attemptState[S]) refuse(label *KindError) {
 	a.progress.label = label
 }
 
-func (a *attemptState[S]) close() attemptProgress[S] {
+func (a *attemptState[S]) close() attemptProgress {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -260,7 +260,7 @@ func requireRan[S any](at *attemptState[S], meta *callMeta, out *encodedOutput) 
 	}
 }
 
-func noteCallError[S any](meta *callMeta, err error, progress *attemptProgress[S]) {
+func noteCallError(meta *callMeta, err error, progress *attemptProgress) {
 	if progress.last.err != nil && !errors.Is(err, progress.last.err) {
 		meta.replace(progress.last.err)
 
@@ -330,7 +330,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) (encodedOut
 			context.DeadlineExceeded)
 	}
 
-	return func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S] {
+	return func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome {
 		var output encodedOutput
 
 		info := CallInfo{Saga: spec.saga, Execution: meta.execution, Step: spec.step, Phase: spec.phase}
@@ -349,7 +349,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) (encodedOut
 
 		err := withRetry(spec.retry, meta).Wrap(ctx, info, attempt)
 
-		out := outcome[S]{kind: classify(err), attempts: meta.attempt}
+		out := outcome{kind: classify(err), attempts: meta.attempt}
 		if err == nil {
 			out.output = output
 

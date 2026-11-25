@@ -117,7 +117,7 @@ linters:
         linters:
           - mnd
           - funlen
-      # The state reaches a step by value (ADR-0188), so a step signature cannot take a pointer.
+      # The state reaches a step by value, so a step signature cannot take a pointer.
       - path: (^examples/|example_test\.go$)
         linters:
           - gocritic

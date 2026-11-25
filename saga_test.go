@@ -60,7 +60,7 @@ func twoSecondCall(ctx context.Context, _ tripState) error {
 	}
 }
 
-func callOnce(tb testing.TB, call callFunc[tripState]) outcome[tripState] {
+func callOnce(tb testing.TB, call callFunc[tripState]) outcome {
 	tb.Helper()
 
 	return call(context.Background(), &callMeta{execution: infoExecution}, baseOf(tb, tripState{}))

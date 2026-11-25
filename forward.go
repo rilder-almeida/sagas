@@ -52,8 +52,7 @@ type verdict struct {
 
 type settled[S any] struct {
 	step   int
-	out    outcome[S]
-	base   snapshot[S]
+	out    outcome
 	late   bool
 	graced bool
 }
@@ -240,7 +239,7 @@ func vet[S any](ctx context.Context, pred func(context.Context, S) bool, reports
 
 func (r *runner[S]) act(ctx context.Context, j job[S], call callFunc[S], send func(settled[S])) {
 	meta := &callMeta{execution: r.execution}
-	done := settled[S]{step: j.step, base: j.base, out: outcome[S]{kind: outcomeUnknown, err: errGoexit}}
+	done := settled[S]{step: j.step, out: outcome{kind: outcomeUnknown, err: errGoexit}}
 	returned := false
 
 	defer func() {
@@ -285,14 +284,14 @@ func (r *runner[S]) answer(stepCtx, grace context.Context, v verdict, reply chan
 		reply <- false
 
 		if v.err != nil {
-			r.note(i, outcome[S]{kind: outcomeFailure, err: v.err, label: v.label})
+			r.note(i, &outcome{kind: outcomeFailure, err: v.err, label: v.label})
 		}
 
 		r.runs[i].status = runNotStarted
 	case v.err != nil:
 		reply <- false
 
-		r.refuse(grace, i, outcome[S]{kind: outcomeFailure, err: v.err, label: v.label})
+		r.refuse(grace, i, &outcome{kind: outcomeFailure, err: v.err, label: v.label})
 	case !v.run:
 		reply <- false
 
@@ -343,7 +342,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 			kind, r.runs[i].applied = outcomeUnknown, true
 		}
 
-		r.fail(grace, i, outcome[S]{kind: kind, attempts: f.out.attempts, err: err, label: res.label})
+		r.fail(grace, i, &outcome{kind: kind, attempts: f.out.attempts, err: err, label: res.label})
 
 		return
 	}
@@ -356,7 +355,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	}
 }
 
-func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
+func (r *runner[S]) fail(ctx context.Context, i int, out *outcome) {
 	e := r.note(i, out)
 
 	switch {
@@ -368,12 +367,12 @@ func (r *runner[S]) fail(ctx context.Context, i int, out outcome[S]) {
 	}
 }
 
-func (r *runner[S]) refuse(ctx context.Context, i int, out outcome[S]) {
+func (r *runner[S]) refuse(ctx context.Context, i int, out *outcome) {
 	e := r.note(i, out)
 	r.record(ctx, &e)
 }
 
-func (r *runner[S]) note(i int, out outcome[S]) Event {
+func (r *runner[S]) note(i int, out *outcome) Event {
 	name := r.saga.steps[i].name
 
 	failure := &Error{

@@ -54,7 +54,6 @@ type Saga[S any] struct {
 
 type stepNode[S any] struct {
 	name         string
-	field        int
 	replaces     bool
 	pred         func(context.Context, S) bool
 	policy       FailurePolicy
@@ -103,7 +102,7 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	for i := range in.reports {
 		rep := &in.reports[i]
 		n := stepNode[S]{
-			name: rep.Name, field: in.fields[i], policy: rep.FailurePolicy, parents: in.graph.parents[i],
+			name: rep.Name, policy: rep.FailurePolicy, parents: in.graph.parents[i],
 			pred: in.methods[i].enabled, replaces: in.methods[i].replaces,
 		}
 

@@ -35,12 +35,6 @@ func typeLabel(t reflect.Type) string {
 	return t.String()
 }
 
-func checkState(t reflect.Type) error {
-	_, err := examineState(t)
-
-	return err
-}
-
 func examineState(t reflect.Type) (int, error) {
 	name := typeLabel(t)
 

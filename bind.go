@@ -40,7 +40,8 @@ type Pivot[S, R any] struct {
 	Name string
 	// Description is free text that Inspect reports.
 	Description string
-	// RetryPolicy is the retry policy of the pivot action, bounded by the caller's context.
+	// RetryPolicy is the retry policy of the pivot action, bounded by WithRecoveryTimeout after the caller's context
+	// ends.
 	RetryPolicy RetryPolicy
 	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
 	AttemptTimeout time.Duration

@@ -437,7 +437,7 @@ func tagStateRows() []stateRow {
 	}
 }
 
-func Test_checkState(t *testing.T) {
+func Test_examineState(t *testing.T) {
 	t.Parallel()
 
 	tests := append(tagStateRows(), []stateRow{
@@ -693,7 +693,7 @@ func Test_checkState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := checkState(tt.typ)
+			_, err := examineState(tt.typ)
 			assertStateErr(t, len(tt.wantInMsg) > 0, err)
 
 			msg := errText(err)
@@ -841,7 +841,7 @@ func Test_definesEncoding(t *testing.T) {
 	}
 }
 
-func Test_checkState_roundTrip(t *testing.T) {
+func Test_examineState_roundTrip(t *testing.T) {
 	t.Parallel()
 
 	seats := 3
@@ -906,7 +906,8 @@ func Test_checkState_roundTrip(t *testing.T) {
 			t.Parallel()
 
 			typ := reflect.TypeOf(tt.value)
-			require.NoError(t, checkState(typ))
+			_, stateErr := examineState(typ)
+			require.NoError(t, stateErr)
 
 			data, err := encodeField("State", tt.value)
 			require.NoError(t, err)
@@ -1252,7 +1253,8 @@ func withState(change func(*testState)) testState {
 func Test_newStore(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	tests := []struct {
 		name    string
@@ -1321,7 +1323,8 @@ func newCopyFixture() copyFixture {
 func Test_copyState(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[copyFixture]()))
+	_, stateErr := examineState(reflect.TypeFor[copyFixture]())
+	require.NoError(t, stateErr)
 
 	st := newTestStore(t, newCopyFixture(), loneStep())
 
@@ -1400,7 +1403,8 @@ func Test_copyState(t *testing.T) {
 func Test_copyState_malformedSnapshot(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[copyFixture]()))
+	_, stateErr := examineState(reflect.TypeFor[copyFixture]())
+	require.NoError(t, stateErr)
 
 	st := newTestStore(t, newCopyFixture(), loneStep())
 
@@ -1459,7 +1463,8 @@ func diamondOutputs() []recorded {
 func Test_store_base(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	tests := []struct {
 		name    string
@@ -1523,7 +1528,8 @@ func Test_store_base(t *testing.T) {
 func Test_store_record(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	loop := &linkState{}
 	loop.Next = loop
@@ -1636,7 +1642,8 @@ func Test_store_record(t *testing.T) {
 func Test_store_writeBack(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	tests := []struct {
 		name    string
@@ -1691,7 +1698,8 @@ func Test_store_writeBack(t *testing.T) {
 func Test_store_compensationBase(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	tests := []struct {
 		name    string
@@ -1752,7 +1760,8 @@ func Test_store_compensationBase(t *testing.T) {
 func Test_store_restore(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	tests := []struct {
 		name        string
@@ -1826,7 +1835,8 @@ func Test_store_restore(t *testing.T) {
 func Test_store_replace(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+	_, stateErr := examineState(reflect.TypeFor[testState]())
+	require.NoError(t, stateErr)
 
 	tests := []struct {
 		name        string
@@ -1933,7 +1943,8 @@ func BenchmarkStore_commit(b *testing.B) {
 func benchRecord[S any](b *testing.B, initial S, field int, change func(*S) any) {
 	b.Helper()
 
-	require.NoError(b, checkState(reflect.TypeFor[S]()))
+	_, stateErr := examineState(reflect.TypeFor[S]())
+	require.NoError(b, stateErr)
 
 	st := newTestStore(b, initial, storeShape{field: []int{field}, parents: [][]int{nil}})
 

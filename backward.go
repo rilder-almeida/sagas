@@ -130,7 +130,7 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 		b.tainted[i] = true
 	case compRun:
 		if graceEnded(grace) {
-			r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: ErrGraceEnded, label: ErrGraceEnded})
+			r.lost(grace, b, i, &outcome{kind: outcomeFailure, err: ErrGraceEnded, label: ErrGraceEnded})
 
 			return
 		}
@@ -153,7 +153,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 			return
 		}
 
-		r.lost(grace, b, i, outcome[S]{kind: outcomeFailure, err: err, label: appendLabel(err)})
+		r.lost(grace, b, i, &outcome{kind: outcomeFailure, err: err, label: appendLabel(err)})
 
 		return
 	}
@@ -193,7 +193,7 @@ func (r *runner[S]) restore(grace context.Context, b *rollback[S], f *settled[S]
 	r.lost(grace, b, f.step, r.lateResult(f))
 }
 
-func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome[S], bool) {
+func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome, bool) {
 	name := r.saga.steps[f.step].name
 	attempts := f.out.attempts
 
@@ -209,47 +209,49 @@ func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome[S]
 	}
 
 	if err != nil {
-		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: res.label}, false
+		return outcome{kind: outcomeFailure, attempts: attempts, err: err, label: res.label}, false
 	}
 
 	done := Event{Kind: EventCompensationSucceeded, Step: name, Attempt: attempts, Changed: res.changed}
 	if err = r.persist(grace, &done); err != nil {
-		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: appendLabel(err)}, false
+		return outcome{kind: outcomeFailure, attempts: attempts, err: err, label: appendLabel(err)}, false
 	}
 
 	return f.out, true
 }
 
-func (r *runner[S]) lateResult(f *settled[S]) outcome[S] {
+func (r *runner[S]) lateResult(f *settled[S]) *outcome {
 	if !f.late || f.out.kind == outcomeSuccess {
-		return f.out
+		return &f.out
 	}
 
 	r.graceHit = true
 
 	if f.graced {
-		return withGraceEnd(f.out)
+		out := withGraceEnd(&f.out)
+
+		return &out
 	}
 
-	return f.out
+	return &f.out
 }
 
 func (r *runner[S]) decidedUnrun(grace context.Context) {
 	r.graceHit = r.graceHit || graceEnded(grace)
 }
 
-func withGraceEnd[S any](out outcome[S]) outcome[S] {
+func withGraceEnd(out *outcome) outcome {
+	ended := *out
+
 	own := errors.Join(append([]error{out.err, out.cause}, out.previous...)...)
-	if errors.Is(own, ErrGraceEnded) {
-		return out
+	if !errors.Is(own, ErrGraceEnded) {
+		ended.err = errors.Join(out.err, ErrGraceEnded)
 	}
 
-	out.err = errors.Join(out.err, ErrGraceEnded)
-
-	return out
+	return ended
 }
 
-func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outcome[S]) {
+func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out *outcome) {
 	name := r.saga.steps[i].name
 	own := r.unsent != nil && r.unsent.Kind == EventCompensationSucceeded && r.unsent.Step == name
 
