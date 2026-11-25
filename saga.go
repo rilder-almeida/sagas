@@ -12,9 +12,9 @@ import (
 
 var (
 	// ErrInvalidStep is returned by New for a step or saga option that breaks a rule of the definition.
-	ErrInvalidStep = &KindError{name: "invalid_step", message: "sagas: invalid step"}
+	ErrInvalidStep = &KindError{name: "invalid-step", message: "sagas: invalid step"}
 	// ErrDuplicateStep is returned by New when two steps share a name.
-	ErrDuplicateStep = &KindError{name: "duplicate_step", message: "sagas: duplicate step"}
+	ErrDuplicateStep = &KindError{name: "duplicate-step", message: "sagas: duplicate step"}
 	// ErrCycle is returned by New when the steps depend on each other in a loop.
 	ErrCycle = &KindError{name: "cycle", message: "sagas: cycle"}
 )

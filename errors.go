@@ -23,7 +23,7 @@ func (k *KindError) Error() string {
 	return k.message
 }
 
-// Name returns the snake_case label of the kind, as the journal stores it.
+// Name returns the kebab-case label of the kind, as the journal stores it.
 func (k *KindError) Name() string {
 	if k == nil {
 		return ""
@@ -34,7 +34,7 @@ func (k *KindError) Name() string {
 
 var (
 	// ErrGraceEnded is the cause of the recovery context when the grace period ends.
-	ErrGraceEnded = &KindError{name: "grace_ended", message: "sagas: recovery grace period ended"}
+	ErrGraceEnded = &KindError{name: "grace-ended", message: "sagas: recovery grace period ended"}
 	// ErrFailed labels the error of a step whose call failed.
 	ErrFailed = &KindError{name: "failed", message: "sagas: step failed"}
 	// ErrUnknown labels the error of a step whose outcome is unknown.

@@ -13,7 +13,7 @@ import (
 
 // ErrInvalidState is returned when the state type breaks a state rule or a state value cannot round-trip through its
 // JSON encoding.
-var ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
+var ErrInvalidState = &KindError{name: "invalid-state", message: "sagas: invalid state"}
 
 type offense struct {
 	path string

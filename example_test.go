@@ -358,7 +358,7 @@ func ExampleWithRecoveryTimeout() {
 	// Output:
 	// trip-42: compensated, failed: [abandon], pending: []
 	// grace ended: false
-	// trip-42: compensation_failed, failed: [abandon abandon], pending: [flight abandon]
+	// trip-42: compensation-failed, failed: [abandon abandon], pending: [flight abandon]
 	// grace ended: true
 }
 

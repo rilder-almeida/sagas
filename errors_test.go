@@ -131,40 +131,44 @@ func Test_KindError_Name(t *testing.T) {
 		kind *KindError
 		want string
 	}{
-		{"[Success] When: the kind is ErrInvalidStep ; Should: return its label", ErrInvalidStep, "invalid_step"},
-		{"[Success] When: the kind is ErrDuplicateStep ; Should: return its label", ErrDuplicateStep, "duplicate_step"},
+		{"[Success] When: the kind is ErrInvalidStep ; Should: return its label", ErrInvalidStep, "invalid-step"},
+		{"[Success] When: the kind is ErrDuplicateStep ; Should: return its label", ErrDuplicateStep, "duplicate-step"},
 		{"[Success] When: the kind is ErrCycle ; Should: return its label", ErrCycle, "cycle"},
 		{"[Success] When: the kind is ErrJournal ; Should: return its label", ErrJournal, "journal"},
 		{
 			"[Success] When: the kind is ErrExecutionExists ; Should: return its label",
-			ErrExecutionExists, "execution_exists",
+			ErrExecutionExists, "execution-exists",
 		},
 		{
 			"[Success] When: the kind is ErrConcurrentWriter ; Should: return its label",
-			ErrConcurrentWriter, "concurrent_writer",
+			ErrConcurrentWriter, "concurrent-writer",
 		},
-		{"[Success] When: the kind is ErrNoEvents ; Should: return its label", ErrNoEvents, "no_events"},
-		{"[Success] When: the kind is ErrInvalidState ; Should: return its label", ErrInvalidState, "invalid_state"},
+		{"[Success] When: the kind is ErrNoEvents ; Should: return its label", ErrNoEvents, "no-events"},
+		{"[Success] When: the kind is ErrInvalidState ; Should: return its label", ErrInvalidState, "invalid-state"},
 		{"[Success] When: the kind is ErrCompensated ; Should: return its label", ErrCompensated, "compensated"},
 		{
 			"[Success] When: the kind is ErrCompensationFailed ; Should: return its label",
-			ErrCompensationFailed, "compensation_failed",
+			ErrCompensationFailed, "compensation-failed",
 		},
 		{"[Success] When: the kind is ErrIncomplete ; Should: return its label", ErrIncomplete, "incomplete"},
-		{"[Success] When: the kind is ErrInvalidRun ; Should: return its label", ErrInvalidRun, "invalid_run"},
-		{"[Success] When: the kind is ErrCallNotRun ; Should: return its label", ErrCallNotRun, "call_not_run"},
+		{"[Success] When: the kind is ErrInvalidRun ; Should: return its label", ErrInvalidRun, "invalid-run"},
+		{"[Success] When: the kind is ErrCallNotRun ; Should: return its label", ErrCallNotRun, "call-not-run"},
 		{
 			"[Success] When: the kind is ErrCallUnfinished ; Should: return its label",
-			ErrCallUnfinished, "call_unfinished",
+			ErrCallUnfinished, "call-unfinished",
 		},
 		{
 			"[Success] When: the kind is ErrCallConcurrent ; Should: return its label",
-			ErrCallConcurrent, "call_concurrent",
+			ErrCallConcurrent, "call-concurrent",
 		},
-		{"[Success] When: the kind is ErrGraceEnded ; Should: return its label", ErrGraceEnded, "grace_ended"},
+		{"[Success] When: the kind is ErrGraceEnded ; Should: return its label", ErrGraceEnded, "grace-ended"},
 		{"[Success] When: the kind is ErrFailed ; Should: return its label", ErrFailed, nameFailed},
 		{"[Success] When: the kind is ErrUnknown ; Should: return its label", ErrUnknown, nameUnknown},
 		{"[Success] When: the kind is ErrPanic ; Should: return its label", ErrPanic, "panic"},
+		{
+			"[Success] When: the kind is ErrInvalidEvent ; Should: return its label",
+			ErrInvalidEvent, "invalid-event",
+		},
 		{"[Fail] When: the kind is nil ; Should: return an empty label", nil, ""},
 	}
 
@@ -401,7 +405,7 @@ func Test_eventErrorOf(t *testing.T) {
 		{
 			name: "[Success] When: only Err is set ; Should: leave the cause and the history empty",
 			err:  &Error{Kind: ErrInvalidState, Err: errAlwaysFails},
-			want: EventError{Kind: "invalid_state", Message: errAlwaysFails.Error()},
+			want: EventError{Kind: "invalid-state", Message: errAlwaysFails.Error()},
 		},
 		{
 			name: "[Success] When: the Kind is nil ; Should: store an empty label",

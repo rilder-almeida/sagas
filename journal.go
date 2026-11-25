@@ -12,11 +12,11 @@ var (
 	// error of the context of the caller after the grace period ends.
 	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
 	// ErrExecutionExists is returned when the journal rejects the first event because it already holds events for it.
-	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}
+	ErrExecutionExists = &KindError{name: "execution-exists", message: "sagas: execution exists"}
 	// ErrConcurrentWriter is returned when the journal rejects a later event because another writer appended first.
-	ErrConcurrentWriter = &KindError{name: "concurrent_writer", message: "sagas: concurrent writer"}
+	ErrConcurrentWriter = &KindError{name: "concurrent-writer", message: "sagas: concurrent writer"}
 	// ErrNoEvents is returned by EventReader.Events when the journal holds no event for the execution.
-	ErrNoEvents = &KindError{name: "no_events", message: "sagas: no events"}
+	ErrNoEvents = &KindError{name: "no-events", message: "sagas: no events"}
 )
 
 // ErrInvalidEvent reports an event that CheckEvent refuses.

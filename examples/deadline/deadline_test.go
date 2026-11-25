@@ -71,10 +71,10 @@ func Test_run(t *testing.T) {
 			name:      "[Success] When: the writer accepts all writes ; Should: print the five runs",
 			newWriter: bufferWriter,
 			wantOutput: "grace-long: compensated, pending: [], undone: [invoice pack reserve tag]\n" +
-				"grace-short: compensation_failed, pending: [reserve pack tag], undone: [invoice], grace ended\n" +
-				"block: compensation_failed, pending: [reserve invoice], undone: [pack tag]\n" +
-				"continue: compensation_failed, pending: [invoice], undone: [pack reserve tag]\n" +
-				"halt: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n",
+				"grace-short: compensation-failed, pending: [reserve pack tag], undone: [invoice], grace ended\n" +
+				"block: compensation-failed, pending: [reserve invoice], undone: [pack tag]\n" +
+				"continue: compensation-failed, pending: [invoice], undone: [pack reserve tag]\n" +
+				"halt: compensation-failed, pending: [reserve invoice pack], undone: [tag]\n",
 		},
 		{
 			name:      "[Fail] When: the writer fails ; Should: return the write error and write nothing",
@@ -176,7 +176,7 @@ func Test_newSaga(t *testing.T) {
 			name:         "[Fail] When: a compensation outlasts the grace ; Should: end with ErrGraceEnded",
 			grace:        shortGrace,
 			fault:        faultSlowUndo,
-			wantReport:   "t-1: compensation_failed, pending: [reserve pack tag], undone: [invoice], grace ended\n",
+			wantReport:   "t-1: compensation-failed, pending: [reserve pack tag], undone: [invoice], grace ended\n",
 			wantHeld:     []string{packStep, reserveStep, tagStep},
 			wantGraceEnd: true,
 		},
@@ -185,7 +185,7 @@ func Test_newSaga(t *testing.T) {
 			grace:      longGrace,
 			policy:     sagas.Block,
 			fault:      faultInvoiceUndo,
-			wantReport: "t-1: compensation_failed, pending: [reserve invoice], undone: [pack tag]\n",
+			wantReport: "t-1: compensation-failed, pending: [reserve invoice], undone: [pack tag]\n",
 			wantHeld:   []string{invoiceStep, reserveStep},
 		},
 		{
@@ -193,7 +193,7 @@ func Test_newSaga(t *testing.T) {
 			grace:      longGrace,
 			policy:     sagas.Continue,
 			fault:      faultInvoiceUndo,
-			wantReport: "t-1: compensation_failed, pending: [invoice], undone: [pack reserve tag]\n",
+			wantReport: "t-1: compensation-failed, pending: [invoice], undone: [pack reserve tag]\n",
 			wantHeld:   []string{invoiceStep},
 		},
 		{
@@ -201,7 +201,7 @@ func Test_newSaga(t *testing.T) {
 			grace:      longGrace,
 			policy:     sagas.BlockAll,
 			fault:      faultInvoiceUndo,
-			wantReport: "t-1: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n",
+			wantReport: "t-1: compensation-failed, pending: [reserve invoice pack], undone: [tag]\n",
 			wantHeld:   []string{invoiceStep, packStep, reserveStep},
 		},
 	}
@@ -271,7 +271,7 @@ func Test_newSaga_blockAllRepeat(t *testing.T) {
 			scenario: "halt",
 			runs:     100,
 			timeout:  2 * time.Second,
-			want:     []string{"halt: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n"},
+			want:     []string{"halt: compensation-failed, pending: [reserve invoice pack], undone: [tag]\n"},
 		},
 	}
 

@@ -11,16 +11,16 @@ import (
 )
 
 // ErrCallNotRun is the error of a call that middleware returned from without running the action or compensation.
-var ErrCallNotRun = &KindError{name: "call_not_run", message: "sagas: middleware returned without running the call"}
+var ErrCallNotRun = &KindError{name: "call-not-run", message: "sagas: middleware returned without running the call"}
 
 // ErrCallUnfinished is the error of a call that middleware returned from while the call was still running.
 var ErrCallUnfinished = &KindError{
-	name: "call_unfinished", message: "sagas: middleware returned before the call finished",
+	name: "call-unfinished", message: "sagas: middleware returned before the call finished",
 }
 
 // ErrCallConcurrent is the error of a call that middleware started while another call of the attempt was running.
 var ErrCallConcurrent = &KindError{
-	name: "call_concurrent", message: "sagas: middleware ran the call again while it was running",
+	name: "call-concurrent", message: "sagas: middleware ran the call again while it was running",
 }
 
 // PanicError is the error a panic in a call becomes. It holds the panic value and the stack.

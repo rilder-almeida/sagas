@@ -15,7 +15,7 @@ import (
 )
 
 // ErrInvalidRun is returned by Run for an execution ID that breaks a rule of the run input.
-var ErrInvalidRun = &KindError{name: "invalid_run", message: "sagas: invalid run"}
+var ErrInvalidRun = &KindError{name: "invalid-run", message: "sagas: invalid run"}
 
 const idBytes = 16
 
