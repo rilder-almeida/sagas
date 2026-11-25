@@ -280,7 +280,7 @@ type mutation struct {
 func copyMutations() []mutation {
 	return []mutation{
 		{"scalar field", func(e *sagas.Event) { e.Step = mutated }},
-		{"Version", func(e *sagas.Event) { e.Version = sagas.EventVersion + 1 }},
+		{"Version", func(e *sagas.Event) { e.Version = "v9.0.0" }},
 		{"Changed slice", func(e *sagas.Event) { e.Changed[0] = mutated }},
 		{"Steps slice", func(e *sagas.Event) { e.Steps[0].Name = mutated }},
 		{"Steps Compensable from true", func(e *sagas.Event) { e.Steps[0].Compensable = false }},
@@ -399,10 +399,10 @@ func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {
 	wantError(tb, ruleInvalidEvent, "Append of a nil event", j.Append(tb.Context(), nil))
 	wantError(tb, ruleInvalidEvent, "Append of an event with seq 0", j.Append(tb.Context(), journalEvent(0)))
 
-	for _, version := range []int{0, sagas.EventVersion + 1} {
+	for _, version := range []string{"v0.1.0", "v9.0.0"} {
 		e := journalEvent(1)
 		e.Version = version
-		what := fmt.Sprintf("Append of an event with version %d", version)
+		what := fmt.Sprintf("Append of an event with version %q", version)
 		wantError(tb, ruleUnknownVersion, what, j.Append(tb.Context(), e))
 	}
 }

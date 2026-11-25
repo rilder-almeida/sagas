@@ -167,7 +167,7 @@ type zeroesVersion struct{ *sagas.MemoryJournal }
 func (j zeroesVersion) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
 	events, err := j.MemoryJournal.Events(ctx, execution)
 	for i := range events {
-		events[i].Version = 0
+		events[i].Version = ""
 	}
 
 	return events, err
@@ -476,16 +476,16 @@ func journalRows() []journalRow {
 			newJournal: func() sagas.Journal { return ignoresVersion{sagas.NewMemoryJournal()} },
 			wantRules:  []string{ruleUnknownVersion, ruleStoredCopy},
 			wantCauses: []string{
-				"Append of an event with version 0 returned nil",
-				"Append of an event with version 2 returned nil",
+				`Append of an event with version "v0.1.0" returned nil`,
+				`Append of an event with version "v9.0.0" returned nil`,
 				"resend of seq 1 after the caller changed its Version returned nil",
 			},
 		},
 		{
-			name:       "[Fail] When: the journal stores Version as 0 ; Should: report the stored events that differ",
+			name:       "[Fail] When: the journal stores Version empty ; Should: report the stored events that differ",
 			newJournal: func() sagas.Journal { return zeroesVersion{sagas.NewMemoryJournal()} },
 			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
-			wantCauses: []string{"Version:0", `Events of execution "execution" returned event 1 as`},
+			wantCauses: []string{"Version:", `Events of execution "execution" returned event 1 as`},
 		},
 		{
 			name:       "[Fail] When: the journal drops Err.Cause ; Should: report the stored events that differ",

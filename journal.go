@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"time"
 )
 
 var (
@@ -37,73 +36,6 @@ type EventReader interface {
 
 var _ EventReader = (*MemoryJournal)(nil)
 
-// EventVersion is this release's event format. Version 1 holds no state values, so its executions cannot be resumed.
-const EventVersion = 1
-
-// Event is one journal record: Saga, the Execution ID, the run's Writer token, Seq from 1, Kind and Time. Version is
-// the format of the writing release. Steps lists all steps on saga-started. Step names the step of a step or
-// compensation event. Attempt counts its attempts. Changed names the fields that a success committed. Err is set on a
-// failed, unknown or compensation-failed event. Status is the run's end on saga-finished.
-type Event struct {
-	Saga      string
-	Execution string
-	Writer    string
-	Seq       int
-	Version   int
-	Kind      EventKind
-	Step      string
-	Attempt   int
-	Err       EventError
-	Changed   []string
-	Steps     []StepZone
-	Status    Status
-	Time      time.Time
-}
-
-// EventError is an Error as text: its Kind name, its Err as Message, its Cause and Previous. Zero means no error.
-type EventError struct {
-	Kind     string
-	Message  string
-	Cause    string
-	Previous []string
-}
-
-// StepZone is one entry of Event.Steps: a step's Name, its Zone, and Compensable, true when it has a compensation.
-type StepZone struct {
-	Name        string
-	Zone        Zone
-	Compensable bool
-}
-
-// EventKind says what an Event records. The empty string means not set and is never a real event.
-type EventKind string
-
-// EventKind values.
-const (
-	EventSagaStarted           EventKind = "saga-started"
-	EventStepStarted           EventKind = "step-started"
-	EventStepSucceeded         EventKind = "step-succeeded"
-	EventStepFailed            EventKind = "step-failed"
-	EventStepUnknown           EventKind = "step-unknown"
-	EventStepSkipped           EventKind = "step-skipped"
-	EventCompensationStarted   EventKind = "compensation-started"
-	EventCompensationSucceeded EventKind = "compensation-succeeded"
-	EventCompensationFailed    EventKind = "compensation-failed"
-	EventCompensationBlocked   EventKind = "compensation-blocked"
-	EventCompensationHalted    EventKind = "compensation-halted"
-	EventSagaFinished          EventKind = "saga-finished"
-)
-
-// Zone says where a step runs: before the pivot, as the pivot or after it. The empty string is unset, never a zone.
-type Zone string
-
-// Zone values.
-const (
-	ZoneCompensable Zone = "compensable"
-	ZonePivot       Zone = "pivot"
-	ZoneForwardOnly Zone = "forward-only"
-)
-
 // MemoryJournal is a Journal that keeps every execution in memory. Its zero value is ready to use.
 type MemoryJournal struct {
 	mu      sync.Mutex
@@ -130,7 +62,7 @@ func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
 	}
 
 	if e.Version != EventVersion {
-		return fmt.Errorf("%w: execution %q seq %d version %d", errInvalidEvent, e.Execution, e.Seq, e.Version)
+		return fmt.Errorf("%w: execution %q seq %d version %q", errInvalidEvent, e.Execution, e.Seq, e.Version)
 	}
 
 	j.mu.Lock()

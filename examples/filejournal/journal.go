@@ -124,7 +124,7 @@ func validate(e *sagas.Event) error {
 	case e.Seq < 1:
 		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
 	case e.Version != sagas.EventVersion:
-		return fmt.Errorf("%w: execution %q seq %d version %d", errInvalidEvent, e.Execution, e.Seq, e.Version)
+		return fmt.Errorf("%w: execution %q seq %d version %q", errInvalidEvent, e.Execution, e.Seq, e.Version)
 	default:
 		return nil
 	}
@@ -256,7 +256,7 @@ func readEvents(root *os.Root, execution string) ([]sagas.Event, error) {
 		}
 
 		if e.Version != sagas.EventVersion {
-			return nil, fmt.Errorf("%w: execution %q line %d: version %d",
+			return nil, fmt.Errorf("%w: execution %q line %d: version %q",
 				errUnknownVersion, execution, len(events)+1, e.Version)
 		}
 

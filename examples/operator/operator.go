@@ -152,7 +152,7 @@ var errUnknownVersion = errors.New("unknown event version")
 func checkVersions(execution string, events []sagas.Event) error {
 	for i := range events {
 		if events[i].Version != sagas.EventVersion {
-			return fmt.Errorf("%w: execution %q event %d has version %d",
+			return fmt.Errorf("%w: execution %q event %d has version %q",
 				errUnknownVersion, execution, i+1, events[i].Version)
 		}
 	}

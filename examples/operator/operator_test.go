@@ -244,7 +244,7 @@ func Test_checkVersions(t *testing.T) {
 	t.Parallel()
 
 	current := eventAt(1, sagas.EventSagaStarted)
-	future := sagas.Event{Version: sagas.EventVersion + 1, Kind: sagas.EventSagaStarted}
+	future := sagas.Event{Version: "v0.3.0", Kind: sagas.EventSagaStarted}
 
 	tests := []struct {
 		name    string

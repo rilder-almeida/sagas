@@ -234,7 +234,7 @@ func Test_fileJournal_Events(t *testing.T) {
 			name: "[Fail] When: a line has another Version ; Should: return errUnknownVersion and no events",
 			seed: []sagas.Event{
 				*testEvent(1, "a"),
-				{Execution: runID, Seq: 2, Version: sagas.EventVersion + 1},
+				{Execution: runID, Seq: 2, Version: "v0.3.0"},
 			},
 			read:    runID,
 			wantErr: errUnknownVersion,
