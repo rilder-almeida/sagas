@@ -646,7 +646,7 @@ func rejectionStopRow() runRow {
 		name:         "[Fail] When: the journal rejects an event beside a sibling ; Should: name it as the cause",
 		steps:        waitingSibling(),
 		script:       map[int]error{6: ErrConcurrentWriter},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),
@@ -819,7 +819,7 @@ func droppedPredicateRow() runRow {
 			return Sequence(rec.step("a"), Parallel(rec.step("b"), rec.stepIf("c", late)))
 		},
 		script:       map[int]error{5: ErrConcurrentWriter},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantAttempts: map[string]int{"c": 0},
 		wantErrs:     []error{ErrConcurrentWriter},
@@ -848,7 +848,7 @@ func droppedOutcomeRow() runRow {
 			return Sequence(rec.step("a"), Parallel(rec.step("b"), late))
 		},
 		script:       map[int]error{6: ErrConcurrentWriter},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantAttempts: map[string]int{"c": 1},
 		wantTrail:    afterA(together(startOf("b"), startOf("c"))),

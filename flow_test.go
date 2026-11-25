@@ -578,7 +578,8 @@ func Test_settingsOf(t *testing.T) {
 	t.Parallel()
 
 	step := act("a", okAction)
-	step.Description, step.RetryPolicy, step.AttemptTimeout, step.FailurePolicy = "books", NoRetry(), time.Second, Halt
+	step.Description, step.RetryPolicy, step.AttemptTimeout = "books", NoRetry(), time.Second
+	step.FailurePolicy = BlockAll
 
 	pivot := paying("p", okAction)
 	pivot.Description, pivot.RetryPolicy, pivot.AttemptTimeout = "charges", RetryPolicy{Attempts: 2}, time.Minute
@@ -592,7 +593,7 @@ func Test_settingsOf(t *testing.T) {
 			name: "[Success] When: a Step sets every field ; Should: read each one and no pivot mark",
 			flow: step,
 			want: stepSettings{
-				name: "a", description: "books", retry: NoRetry(), timeout: time.Second, failure: Halt,
+				name: "a", description: "books", retry: NoRetry(), timeout: time.Second, failure: BlockAll,
 			},
 		},
 		{

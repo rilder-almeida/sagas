@@ -12,17 +12,17 @@ type compDecision int
 const (
 	compRun compDecision = iota
 	compBlocked
-	compHalted
+	compBlockedAll
 )
 
 type rollback[S any] struct {
-	wg      sync.WaitGroup
-	results chan settled[S]
-	done    []bool
-	begun   []bool
-	tainted []bool
-	halted  bool
-	running int
+	wg         sync.WaitGroup
+	results    chan settled[S]
+	done       []bool
+	begun      []bool
+	tainted    []bool
+	blockedAll bool
+	running    int
 }
 
 func backwardDone(children []int, done []bool) bool {
@@ -35,10 +35,10 @@ func backwardDone(children []int, done []bool) bool {
 	return true
 }
 
-func decide(halted, blockedBelow bool) compDecision {
+func decide(blockedAll, blockedBelow bool) compDecision {
 	switch {
-	case halted:
-		return compHalted
+	case blockedAll:
+		return compBlockedAll
 	case blockedBelow:
 		return compBlocked
 	default:
@@ -122,8 +122,8 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 
 	r.decidedUnrun(grace)
 
-	switch decide(b.halted, blockedBelow) {
-	case compHalted:
+	switch decide(b.blockedAll, blockedBelow) {
+	case compBlockedAll:
 		r.skip(grace, b, i, EventCompensationHalted)
 	case compBlocked:
 		r.skip(grace, b, i, EventCompensationBlocked)
@@ -164,7 +164,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 
 	b.wg.Go(func() {
 		r.act(grace, j, step.compensation, func(done settled[S]) {
-			done.late, done.graced = graceEnded(grace), true
+			done.late, done.onGrace = graceEnded(grace), true
 			b.results <- done
 		})
 	})
@@ -227,7 +227,7 @@ func (r *runner[S]) lateResult(f *settled[S]) *outcome {
 
 	r.graceHit = true
 
-	if f.graced {
+	if f.onGrace {
 		out := withGraceEnd(&f.out)
 
 		return &out
@@ -280,13 +280,13 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out *outc
 	policy := r.saga.steps[i].policy
 	b.tainted[i] = policy == Block
 
-	if policy == Halt {
-		r.halt(grace, b)
+	if policy == BlockAll {
+		r.blockAll(grace, b)
 	}
 }
 
-func (r *runner[S]) halt(grace context.Context, b *rollback[S]) {
-	b.halted = true
+func (r *runner[S]) blockAll(grace context.Context, b *rollback[S]) {
+	b.blockedAll = true
 
 	for _, i := range slices.Backward(r.saga.order) {
 		if !b.done[i] && !b.begun[i] && r.owes(i) {

@@ -130,12 +130,12 @@ func Test_New(t *testing.T) {
 			saga: tripName, flow: a,
 		},
 		{
-			name: "[Success] When: one step has the Halt policy ; Should: block every compensation on a failure",
-			saga: tripName, flow: Sequence(a, failingUndo("b", Halt, alwaysFails)),
+			name: "[Success] When: one step has the BlockAll policy ; Should: block every compensation on a failure",
+			saga: tripName, flow: Sequence(a, failingUndo("b", BlockAll, alwaysFails)),
 			wantBlockAll: true,
 		},
 		{
-			name: "[Success] When: no step has the Halt policy ; Should: not block every compensation",
+			name: "[Success] When: no step has the BlockAll policy ; Should: not block every compensation",
 			saga: tripName, flow: Sequence(a, failingUndo("b", Continue, alwaysFails)),
 		},
 		{

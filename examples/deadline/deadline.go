@@ -333,7 +333,7 @@ func policyRuns() []scenario {
 	return []scenario{
 		{name: "block", grace: longGrace, policy: sagas.Block, fault: faultInvoiceUndo},
 		{name: "continue", grace: longGrace, policy: sagas.Continue, fault: faultInvoiceUndo},
-		{name: "halt", grace: longGrace, policy: sagas.Halt, fault: faultInvoiceUndo},
+		{name: "halt", grace: longGrace, policy: sagas.BlockAll, fault: faultInvoiceUndo},
 	}
 }
 

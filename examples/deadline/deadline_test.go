@@ -197,7 +197,7 @@ func Test_newSaga(t *testing.T) {
 		{
 			name:       "[Fail] When: a compensation fails under halt ; Should: halt every compensation not started",
 			grace:      longGrace,
-			policy:     sagas.Halt,
+			policy:     sagas.BlockAll,
 			fault:      faultInvoiceUndo,
 			wantReport: "t-1: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n",
 			wantHeld:   []string{invoiceStep, packStep, reserveStep},

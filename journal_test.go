@@ -27,7 +27,7 @@ func journalEvent(execution string, seq int) Event {
 		Err:       EventError{Kind: nameFailed, Message: "declined", Cause: "stopped", Previous: []string{"first"}},
 		Changed:   []string{"Seats"},
 		Steps:     []StepZone{{Name: "reserve", Zone: ZoneCompensable}},
-		Status:    statusUnfinished,
+		Status:    noEndStatus,
 		Time:      time.Date(2026, 11, 17, 10, 0, seq, 0, time.UTC),
 	}
 }

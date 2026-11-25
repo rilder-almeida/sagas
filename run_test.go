@@ -141,6 +141,8 @@ func (j *scriptJournal) scripted(ctx context.Context, e *Event, err error) error
 	}
 }
 
+const noEndStatus Status = "unfinished"
+
 type runRecord struct {
 	Execution string
 	Status    Status
@@ -149,7 +151,7 @@ type runRecord struct {
 }
 
 func recordOf(events []Event) runRecord {
-	r := runRecord{Status: statusUnfinished, Steps: foldStepStatuses(events), events: events}
+	r := runRecord{Status: noEndStatus, Steps: foldStepStatuses(events), events: events}
 
 	for i := range events {
 		if events[i].Kind == EventSagaStarted {
@@ -1370,7 +1372,7 @@ func skippedAtGraceEndRow() runRow {
 		script:      map[int]error{6: errAwaitDone},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrCompensated, ErrJournal},
@@ -1393,7 +1395,7 @@ func forwardIntentAtGraceEndRow() runRow {
 		script:      map[int]error{6: errAwaitDone},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrGraceEnded, errStop, context.Canceled},
 		wantNotErrs: []error{ErrCompensated, ErrJournal},
@@ -1415,7 +1417,7 @@ func pivotOutcomeAtGraceEndRow() runRow {
 		script:      map[int]error{5: errAwaitDone},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrIncomplete,
 		wantErrs:    []error{ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrCompensated, ErrJournal},
@@ -1438,7 +1440,7 @@ func finishedAtGraceEndRow() runRow {
 		script:       map[int]error{8: errAwaitDone},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
@@ -1465,7 +1467,7 @@ func completedFinishAtGraceEndRow() runRow {
 		script:      map[int]error{3: errAwaitThenKeep},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrGraceEnded,
 		wantErrs:    []error{ErrGraceEnded, errStop},
 		wantNotErrs: []error{ErrJournal},
@@ -1485,7 +1487,7 @@ func completedMixedFinishAtGraceEndRow() runRow {
 		script:      map[int]error{3: errAwaitThenKeep, 4: errors.Join(errJournalDown, context.Canceled)},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrJournal,
 		wantErrs:    []error{ErrJournal, errJournalDown, ErrGraceEnded, errStop},
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded},
@@ -1510,7 +1512,7 @@ func finishedBeforeGraceEndRow() runRow {
 		script:       map[int]error{8: errJournalDown},
 		cancelAfter:  pause / 2,
 		cancelCause:  errStop,
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
@@ -1534,7 +1536,7 @@ func finishedAfterCompensatedRow() runRow {
 			return Sequence(rec.undoable("a"), once("b", alwaysFails))
 		},
 		script:       map[int]error{8: errJournalDown},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrCompensated,
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
@@ -1557,7 +1559,7 @@ func finishedAfterCompensationFailedRow() runRow {
 			return Sequence(undoOnce("a", okAction, alwaysFails), once("b", alwaysFails))
 		},
 		script:       map[int]error{8: errJournalDown},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrCompensationFailed,
 		wantKinds:    map[string]*KindError{"b": ErrFailed, comp("a"): ErrFailed},
 		wantFailed:   []string{"b", comp("a")},
@@ -1593,7 +1595,7 @@ func finishedAfterIncompleteRow() runRow {
 			return Sequence(rec.undoable("a"), rec.pivot(), once("z", alwaysFails))
 		},
 		script:       map[int]error{8: errJournalDown},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrIncomplete,
 		wantKinds:    map[string]*KindError{"z": ErrFailed},
 		wantFailed:   []string{"z"},
@@ -1637,7 +1639,7 @@ func pivotOutcomeRejectedRow() runRow {
 			return Sequence(rec.undoable("a"), rec.pivot(), rec.step("z"))
 		},
 		script:      map[int]error{5: ErrConcurrentWriter},
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrConcurrentWriter,
 		wantErrs:    []error{ErrConcurrentWriter},
 		wantNotErrs: []error{ErrJournal},
@@ -1681,7 +1683,7 @@ func undoIntentRejectedRow() runRow {
 			return Sequence(rec.undoable("a"), b, once("c", alwaysFails))
 		},
 		script:       map[int]error{8: fmt.Errorf("%w: other writer", ErrConcurrentWriter)},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantKinds:    map[string]*KindError{"c": ErrFailed},
 		wantFailed:   []string{"c"},
@@ -1734,7 +1736,7 @@ func undoOutcomeRejectedRow() runRow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
 		script:       map[int]error{9: ErrConcurrentWriter},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantKinds:    map[string]*KindError{"c": ErrFailed},
 		wantFailed:   []string{"c"},
@@ -1758,7 +1760,7 @@ func undoneThenRejectedRow() runRow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
 		script:       map[int]error{10: ErrConcurrentWriter},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantKinds:    map[string]*KindError{"c": ErrFailed},
 		wantFailed:   []string{"c"},
@@ -1780,7 +1782,7 @@ func undoRunningRejectedRow() runRow {
 			"Should: commit and append nothing for it, and list it and the unstarted ones in Pending",
 		steps:        rejectedUndoFlow(lateUndoneHotel()),
 		script:       map[int]error{13: ErrConcurrentWriter},
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantKinds:    map[string]*KindError{"c": ErrFailed},
 		wantFailed:   []string{"c"},
@@ -1806,7 +1808,7 @@ func turnAfterRejectionRow() runRow {
 		script:       map[int]error{13: ErrConcurrentWriter},
 		cancelAfter:  pause,
 		cancelCause:  errStop,
-		wantStatus:   statusUnfinished,
+		wantStatus:   noEndStatus,
 		wantKind:     ErrConcurrentWriter,
 		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrFailed},
 		wantFailed:   []string{"c", comp("d")},
@@ -2154,7 +2156,7 @@ func storedThenDownRow() runRow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"))
 		},
 		script:         map[int]error{5: failing(errStoreThenFail, forever)},
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrJournal},
 		wantFailed:     []string{comp("b")},

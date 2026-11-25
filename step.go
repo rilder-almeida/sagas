@@ -13,8 +13,8 @@ const (
 	Block FailurePolicy = "block"
 	// Continue goes on with the compensations that remain.
 	Continue FailurePolicy = "continue"
-	// Halt makes a failed compensation of this step stop every compensation that did not start.
-	Halt FailurePolicy = "halt"
+	// BlockAll makes a failed compensation of this step block every compensation that did not start.
+	BlockAll FailurePolicy = "block-all"
 )
 
 const nameRule = `name may hold only ASCII letters, digits, "-", "_" and "." and must start with a letter or a digit`
@@ -47,7 +47,7 @@ func checkSettings(s *StepReport) ruleList {
 	rules = append(rules, checkRetry(s.RetryPolicy)...)
 
 	switch s.FailurePolicy {
-	case "", Block, Continue, Halt:
+	case "", Block, Continue, BlockAll:
 	default:
 		rules = append(rules, fmt.Sprintf("unknown compensation failure policy %q", string(s.FailurePolicy)))
 	}

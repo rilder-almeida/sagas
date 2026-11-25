@@ -570,8 +570,8 @@ func continueRow() runRow {
 
 func haltRow() runRow {
 	return policyRow(
-		"[Fail] When: a compensation with Halt fails ; Should: halt the earlier compensation",
-		Halt, stepHalted, []string{haltedA(), closed}, []string{"a", "b"},
+		"[Fail] When: a compensation with BlockAll fails ; Should: halt the earlier compensation",
+		BlockAll, stepHalted, []string{haltedA(), closed}, []string{"a", "b"},
 	)
 }
 
@@ -608,7 +608,7 @@ func blockAcrossRow() runRow {
 
 func blockThenHaltRow() runRow {
 	return runRow{
-		name: "[Fail] When: a compensation waits on a Block failure, then a later Halt failure ; Should: halt it",
+		name: "[Fail] When: a compensation waits on a Block failure, then a later BlockAll failure ; Should: halt it",
 		steps: func(rec *recorder) Flow {
 			late := func(context.Context, tripState) error {
 				time.Sleep(pause)
@@ -617,7 +617,7 @@ func blockThenHaltRow() runRow {
 			}
 
 			return Sequence(rec.undoable("a"), Parallel(
-				failingUndo("b", Block, alwaysFails), failingUndo("d", Halt, late),
+				failingUndo("b", Block, alwaysFails), failingUndo("d", BlockAll, late),
 			), once("c", alwaysFails))
 		},
 		wantStatus: StatusCompensationFailed,
@@ -644,7 +644,7 @@ func blockThenHaltRow() runRow {
 
 func haltAtOnceRow() runRow {
 	return runRow{
-		name: "[Fail] When: a Halt failure happens while another compensation still runs ; " +
+		name: "[Fail] When: a BlockAll failure happens while another compensation still runs ; " +
 			"Should: halt the waiting compensation at once",
 		steps: func(rec *recorder) Flow {
 			slow := func(context.Context, tripState) error {
@@ -655,7 +655,7 @@ func haltAtOnceRow() runRow {
 			}
 
 			return Sequence(rec.undoable("a"), Parallel(
-				undoOnce("b", okAction, slow), failingUndo("d", Halt, alwaysFails),
+				undoOnce("b", okAction, slow), failingUndo("d", BlockAll, alwaysFails),
 			), once("c", alwaysFails))
 		},
 		wantStatus:   StatusCompensationFailed,
@@ -812,7 +812,7 @@ func resendAfterRejectionRow() runRow {
 			return Sequence(Parallel(b, rec.undoable("c")), once("d", alwaysFails))
 		},
 		script:     map[int]error{10: inTurn(errJournalDown, ErrConcurrentWriter)},
-		wantStatus: statusUnfinished,
+		wantStatus: noEndStatus,
 		wantKind:   ErrConcurrentWriter,
 		wantKinds:  map[string]*KindError{"d": ErrFailed, comp("c"): ErrJournal, comp("b"): ErrFailed},
 		wantFailed: []string{"d", comp("c"), comp("b")},
@@ -844,7 +844,7 @@ func undoOutcomeDownRow() runRow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
 		script:         map[int]error{9: failing(errJournalDown, forever)},
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
 		wantFailed:     []string{"c", comp("b")},
@@ -868,7 +868,7 @@ func journalOutageRow() runRow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
 		script:         map[int]error{8: failing(errJournalDown, forever)},
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
 		wantFailed:     []string{"c", comp("b")},
@@ -895,7 +895,7 @@ func graceWaitingRow() runRow {
 		opts:        []Option{WithRecoveryTimeout(pause)},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrCompensationFailed,
 		wantKinds:   map[string]*KindError{comp("a"): ErrGraceEnded, comp("b"): ErrUnknown, "c": ErrFailed},
 		wantFailed:  []string{"c", comp("b"), comp("a")},
@@ -925,7 +925,7 @@ func graceRunningRow() runRow {
 		opts:           []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:    pause,
 		cancelCause:    errStop,
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
 		wantFailed:     []string{"c", comp("b")},
@@ -963,7 +963,7 @@ func graceLateOwnFieldRow() runRow {
 		opts:           []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:    pause,
 		cancelCause:    errStop,
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{"c": ErrFailed, comp("d"): ErrGraceEnded},
 		wantFailed:     []string{"c", comp("d")},
@@ -1077,7 +1077,7 @@ func graceLateFailureRow() runRow {
 		opts:           []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:    pause,
 		cancelCause:    errStop,
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrFailed, "c": ErrFailed},
 		wantFailed:     []string{"c", comp("b")},
@@ -1107,7 +1107,7 @@ func graceIntentRow() runRow {
 		script:         map[int]error{6: errAwaitDone},
 		cancelAfter:    pause,
 		cancelCause:    errStop,
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrGraceEnded, "c": ErrFailed},
 		wantFailed:     []string{"c", comp("b")},
@@ -1230,7 +1230,7 @@ func graceLateSuccessRow() runRow {
 		opts:           []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:    pause,
 		cancelCause:    errStop,
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{"c": ErrFailed, comp("b"): ErrGraceEnded},
 		wantFailed:     []string{"c", comp("b")},
@@ -1260,7 +1260,7 @@ func graceBlockedRow() runRow {
 		opts:           []Option{WithRecoveryTimeout(pause)},
 		cancelAfter:    pause,
 		cancelCause:    errStop,
-		wantStatus:     statusUnfinished,
+		wantStatus:     noEndStatus,
 		wantKind:       ErrCompensationFailed,
 		wantKinds:      map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
 		wantFailed:     []string{"c", comp("b")},
@@ -1279,18 +1279,18 @@ func graceBlockedRow() runRow {
 
 func graceHaltRow() runRow {
 	return runRow{
-		name: "[Fail] When: the grace period fails a waiting compensation with Halt ; " +
-			"Should: apply Halt to the compensations before it",
+		name: "[Fail] When: the grace period fails a waiting compensation with BlockAll ; " +
+			"Should: apply BlockAll to the compensations before it",
 		steps: func(rec *recorder) Flow {
 			return Sequence(
-				rec.undoable("x"), failingUndo("a", Halt, rec.do(undoA)),
+				rec.undoable("x"), failingUndo("a", BlockAll, rec.do(undoA)),
 				failingUndo("b", Continue, blockedOnCtx), once("c", alwaysFails),
 			)
 		},
 		opts:        []Option{WithRecoveryTimeout(pause)},
 		cancelAfter: pause,
 		cancelCause: errStop,
-		wantStatus:  statusUnfinished,
+		wantStatus:  noEndStatus,
 		wantKind:    ErrCompensationFailed,
 		wantKinds:   map[string]*KindError{comp("a"): ErrGraceEnded, comp("b"): ErrUnknown, "c": ErrFailed},
 		wantFailed:  []string{"c", comp("b"), comp("a")},
@@ -1350,11 +1350,11 @@ func graceTurnAfterReadRow() runRow {
 
 func graceHaltAfterReadRow() runRow {
 	return runRow{
-		name: "[Fail] When: a Halt failure is read after the grace end ; " +
+		name: "[Fail] When: a BlockAll failure is read after the grace end ; " +
 			"Should: halt the waiting compensation and match the caller cause and context.Canceled",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
-				slowUndo(rec, errAlwaysFails, Halt),
+				slowUndo(rec, errAlwaysFails, BlockAll),
 				undoOnce("d", okAction, rec.do("undo:d")),
 			), once("c", alwaysFails))
 		},
@@ -1385,7 +1385,7 @@ func graceHaltAfterReadRow() runRow {
 
 func haltBeforeGraceEndRow() runRow {
 	return runRow{
-		name: "[Fail] When: a Halt failure halts a compensation after a caller cancel and before the grace end ; " +
+		name: "[Fail] When: a BlockAll failure halts a compensation after a caller cancel and before the grace end ; " +
 			"Should: not match the caller cause",
 		steps: func(rec *recorder) Flow {
 			slowFail := func(context.Context, tripState) error {
@@ -1394,7 +1394,7 @@ func haltBeforeGraceEndRow() runRow {
 				return errAlwaysFails
 			}
 
-			return Sequence(rec.undoable("a"), failingUndo("b", Halt, slowFail), once("c", alwaysFails))
+			return Sequence(rec.undoable("a"), failingUndo("b", BlockAll, slowFail), once("c", alwaysFails))
 		},
 		cancelAfter:  pause / 2,
 		cancelCause:  errStop,
@@ -1450,7 +1450,7 @@ func Test_decide(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		halted       bool
+		blockedAll   bool
 		blockedBelow bool
 		want         compDecision
 	}{
@@ -1461,10 +1461,10 @@ func Test_decide(t *testing.T) {
 			want:         compBlocked,
 		},
 		{
-			name:         "[Fail] When: a Halt failure happened and one it waits on is blocked ; Should: halt it",
-			halted:       true,
+			name:         "[Fail] When: a BlockAll failure happened and one it waits on is blocked ; Should: halt it",
+			blockedAll:   true,
 			blockedBelow: true,
-			want:         compHalted,
+			want:         compBlockedAll,
 		},
 	}
 
@@ -1472,7 +1472,7 @@ func Test_decide(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, decide(tt.halted, tt.blockedBelow))
+			assert.Equal(t, tt.want, decide(tt.blockedAll, tt.blockedBelow))
 		})
 	}
 }

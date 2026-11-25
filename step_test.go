@@ -337,12 +337,21 @@ func Test_checkSettings(t *testing.T) {
 			},
 		},
 		{
-			name:   "[Success] When: the policy is halt on a step with Compensate ; Should: report nothing",
-			report: StepReport{FailurePolicy: Halt, Compensate: true},
+			name:   "[Success] When: the policy is BlockAll on a step with Compensate ; Should: report nothing",
+			report: StepReport{FailurePolicy: BlockAll, Compensate: true},
 		},
 		{
 			name:   "[Success] When: the policy is block on a step with Compensate ; Should: report nothing",
 			report: StepReport{FailurePolicy: Block, Compensate: true},
+		},
+		{
+			name:   `[Success] When: FailurePolicy is "block-all" ; Should: no rule`,
+			report: StepReport{FailurePolicy: "block-all", Compensate: true},
+		},
+		{
+			name:   `[Fail] When: FailurePolicy is "halt" ; Should: unknown compensation failure policy "halt"`,
+			report: StepReport{FailurePolicy: "halt", Compensate: true},
+			want:   ruleList{`unknown compensation failure policy "halt"`},
 		},
 		{
 			name:   "[Fail] When: the policy is unknown ; Should: name it",
@@ -351,7 +360,7 @@ func Test_checkSettings(t *testing.T) {
 		},
 		{
 			name:   "[Fail] When: the policy is set without Compensate ; Should: report it",
-			report: StepReport{FailurePolicy: Halt},
+			report: StepReport{FailurePolicy: BlockAll},
 			want:   ruleList{"FailurePolicy without Compensate"},
 		},
 		{

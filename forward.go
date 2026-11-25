@@ -51,10 +51,10 @@ type verdict struct {
 }
 
 type settled[S any] struct {
-	step   int
-	out    outcome
-	late   bool
-	graced bool
+	step    int
+	out     outcome
+	late    bool
+	onGrace bool
 }
 
 func (verdict) isReport() {}
@@ -222,7 +222,7 @@ func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j jo
 	}
 
 	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) {
-		done.late, done.graced = graceEnded(grace), r.saga.steps[j.step].zone != ZoneCompensable
+		done.late, done.onGrace = graceEnded(grace), r.saga.steps[j.step].zone != ZoneCompensable
 		reports <- done
 	})
 }

@@ -21,7 +21,6 @@ type Status string
 
 // Status values.
 const (
-	statusUnfinished         Status = "unfinished"
 	StatusCompleted          Status = "completed"
 	StatusCompensated        Status = "compensated"
 	StatusCompensationFailed Status = "compensation-failed"

@@ -114,7 +114,7 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 
 		n.buildCalls(name, rep, &in.methods[i], d.middleware)
 
-		s.blockAll = s.blockAll || n.policy == Halt
+		s.blockAll = s.blockAll || n.policy == BlockAll
 		s.steps = append(s.steps, n)
 	}
 

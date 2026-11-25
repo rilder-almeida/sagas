@@ -151,7 +151,7 @@ func (r *runner[S]) send(ctx context.Context, e *Event) error {
 			reason = ErrGraceEnded
 		}
 
-		failed := settled[S]{out: outcome{kind: outcomeFailure, err: reason}, late: late, graced: true}
+		failed := settled[S]{out: outcome{kind: outcomeFailure, err: reason}, late: late, onGrace: true}
 		err = r.lateResult(&failed).err
 		r.appendErrs = append(r.appendErrs, err)
 

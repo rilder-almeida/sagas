@@ -222,7 +222,7 @@ func inspectSuccessRows() []inspectRow {
 	trip := Inspect[tripState]
 	full := &fullStep{
 		Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
-		FailurePolicy: Halt,
+		FailurePolicy: BlockAll,
 		do:            okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
 	}
 
@@ -232,7 +232,7 @@ func inspectSuccessRows() []inspectRow {
 			inspect: trip, flow: full,
 			wantReports: []StepReport{{
 				Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
-				FailurePolicy: Halt, Compensate: true, Enabled: true, Wrap: true,
+				FailurePolicy: BlockAll, Compensate: true, Enabled: true, Wrap: true,
 			}},
 		},
 		{
@@ -308,7 +308,7 @@ func inspectSuccessRows() []inspectRow {
 func inspectStepRows() []inspectRow {
 	trip := Inspect[tripState]
 	compensable := act("a", okAction)
-	compensable.FailurePolicy = Halt
+	compensable.FailurePolicy = BlockAll
 	timed := act("a", okAction)
 	timed.AttemptTimeout = -time.Second
 	retried := act("a", okAction)
@@ -893,7 +893,7 @@ func Test_inspectStep(t *testing.T) {
 
 	full := &fullStep{
 		Name: fullName, do: okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
-		FailurePolicy: Halt,
+		FailurePolicy: BlockAll,
 	}
 
 	tests := []struct {
@@ -911,7 +911,7 @@ func Test_inspectStep(t *testing.T) {
 			name: "[Success] When: a step has every method ; Should: report and return all of them",
 			flow: full,
 			wantReport: StepReport{
-				Name: fullName, FailurePolicy: Halt,
+				Name: fullName, FailurePolicy: BlockAll,
 				Compensate: true, Enabled: true, Wrap: true,
 			},
 			wantCall: true, wantCompensate: true, wantEnabled: true, wantWrap: true,
