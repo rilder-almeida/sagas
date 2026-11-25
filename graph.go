@@ -197,14 +197,28 @@ func checkReach(reports []StepReport, g *graph, pivot int) []error {
 }
 
 type graph struct {
-	parents  [][]int
-	children [][]int
-	order    []int
-	pivot    int
+	parents   [][]int
+	children  [][]int
+	ancestors [][]bool
+	order     []int
+	pivot     int
+}
+
+func ancestorsOf(parents [][]int) [][]bool {
+	out := make([][]bool, len(parents))
+	for i := range out {
+		out[i] = reach(parents, i)
+	}
+
+	return out
+}
+
+func (g *graph) concurrent(i, k int) bool {
+	return i != k && !g.ancestors[i][k] && !g.ancestors[k][i]
 }
 
 func checkGraph(reports []StepReport, parents [][]int) (graph, []error) {
-	g := graph{parents: parents, children: childrenOf(parents), pivot: -1}
+	g := graph{parents: parents, children: childrenOf(parents), ancestors: ancestorsOf(parents), pivot: -1}
 
 	o := topoOrder(g.parents, g.children)
 	g.order = o.order

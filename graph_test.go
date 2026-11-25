@@ -190,3 +190,90 @@ func Test_zones(t *testing.T) {
 		})
 	}
 }
+
+func Test_ancestorsOf(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		parents [][]int
+		want    [][]bool
+	}{
+		{
+			name:    "[Success] When: the steps form a chain ; Should: give each step all steps before it",
+			parents: [][]int{{}, {0}, {1}},
+			want: [][]bool{
+				{false, false, false},
+				{true, false, false},
+				{true, true, false},
+			},
+		},
+		{
+			name:    "[Success] When: the steps form a diamond ; Should: give the join every other step",
+			parents: [][]int{{}, {0}, {0}, {1, 2}},
+			want: [][]bool{
+				{false, false, false, false},
+				{true, false, false, false},
+				{true, false, false, false},
+				{true, true, true, false},
+			},
+		},
+		{
+			name:    "[Success] When: two chains are disjoint ; Should: keep their ancestors apart",
+			parents: [][]int{{}, {0}, {}, {2}},
+			want: [][]bool{
+				{false, false, false, false},
+				{true, false, false, false},
+				{false, false, false, false},
+				{false, false, true, false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, ancestorsOf(tt.parents))
+		})
+	}
+}
+
+func Test_graph_concurrent(t *testing.T) {
+	t.Parallel()
+
+	g := graph{ancestors: ancestorsOf([][]int{{}, {0}, {0}, {1, 2}})}
+
+	tests := []struct {
+		name string
+		i, k int
+		want bool
+	}{
+		{
+			name: "[Success] When: two branches of a diamond ; Should: be concurrent",
+			i:    1,
+			k:    2,
+			want: true,
+		},
+		{
+			name: "[Fail] When: one step is an ancestor of the other ; Should: not be concurrent",
+			i:    0,
+			k:    3,
+			want: false,
+		},
+		{
+			name: "[Fail] When: a step is compared with itself ; Should: not be concurrent",
+			i:    1,
+			k:    1,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, g.concurrent(tt.i, tt.k))
+		})
+	}
+}
