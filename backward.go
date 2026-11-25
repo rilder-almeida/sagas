@@ -23,6 +23,8 @@ type rollback[S any] struct {
 	tainted    []bool
 	blockedAll bool
 	running    int
+	level      int
+	top        int
 }
 
 func backwardDone(children []int, done []bool) bool {
@@ -52,10 +54,22 @@ func (r *runner[S]) backward(grace context.Context) {
 		results: make(chan settled[S], n), done: make([]bool, n), begun: make([]bool, n), tainted: make([]bool, n),
 	}
 
+	if r.saga.blockAll {
+		for i := range r.saga.steps {
+			b.top = max(b.top, r.saga.steps[i].level)
+		}
+	}
+
 	defer b.wg.Wait()
 
 	for {
 		r.unwind(grace, b)
+
+		if b.running == 0 && b.level < b.top {
+			b.level++
+
+			continue
+		}
 
 		if b.running == 0 {
 			r.owedAfterRejection()
@@ -92,7 +106,9 @@ func (r *runner[S]) unwind(grace context.Context, b *rollback[S]) {
 
 		for _, i := range slices.Backward(r.saga.order) {
 			children := r.saga.steps[i].children
-			if b.done[i] || b.begun[i] || !backwardDone(children, b.done) {
+			later := r.saga.blockAll && r.saga.steps[i].level > b.level
+
+			if b.done[i] || b.begun[i] || later || !backwardDone(children, b.done) {
 				continue
 			}
 

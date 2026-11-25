@@ -131,6 +131,13 @@ func backwardRows() []runRow {
 		callerValueRow(),
 		continuePastFailedUndoRow(),
 		unsentSuccessOutputRow(),
+		levelWaitRow(),
+		serialLevelRow(),
+		compensableLevelRow(),
+		emptyLevelRow(),
+		graceLevelRow(),
+		rejectedLevelRow(),
+		branchNoWaitRow(),
 	}
 }
 
@@ -1577,5 +1584,270 @@ func unsentSuccessOutputRow() runRow {
 		wantOrder:    [][2]string{{"a", "undo:a saw ritz"}},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoFailedOf("a"), closed),
 		wantState:    tripState{Hotel: hotelRitz},
+	}
+}
+
+func haltedOf(step string) string { return trailOf(EventCompensationHalted, step) }
+
+func failsAfter(wait time.Duration) func(context.Context, tripState) error {
+	return func(context.Context, tripState) error {
+		time.Sleep(wait)
+
+		return errAlwaysFails
+	}
+}
+
+func (r *recorder) undoableAfter(name string, wait time.Duration) *undoStep {
+	return undoOnce(name, r.do(name), func(ctx context.Context, s tripState) error {
+		time.Sleep(wait)
+
+		return r.do("undo:"+name)(ctx, s)
+	})
+}
+
+func (r *recorder) undoableWith(name string, policy FailurePolicy) *undoStep {
+	return failingUndo(name, policy, r.do("undo:"+name))
+}
+
+func levelWaitRow() runRow {
+	return runRow{
+		name: "[Success] When: BlockAll saga, a level-0 compensation fails while a level-0 sibling runs " +
+			"and a level-1 step waits ; Should: the sibling ends compensated, the level-1 step is blocked",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				Sequence(rec.undoable("w"), rec.undoable("z")),
+				failingUndo("x", BlockAll, failsAfter(pause)),
+				rec.undoableAfter("y", 2*pause),
+			), once("c", alwaysFails))
+		},
+		runs:         100,
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("x"): ErrFailed, "c": ErrFailed},
+		wantFailed:   []string{"c", comp("x")},
+		wantErrText:  map[string]string{comp("x"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("x"): 1, "c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"w": stepHalted, "z": stepCompensated, "x": stepCompensationFailed, "y": stepCompensated, "c": stepFailed,
+		},
+		wantPending: []string{"w", "x"},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(
+				startOf("w"), doneOf("w"), startOf("z"), doneOf("z"),
+				startOf("x"), doneOf("x"), startOf("y"), doneOf("y"),
+			),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("z"), compStartOf("x"), compStartOf("y")),
+			seq(undoneOf("z"), undoFailedOf("x"), haltedOf("w"), undoneOf("y"), closed),
+		),
+	}
+}
+
+func serialLevelRow() runRow {
+	return runRow{
+		name: "[Success] When: a serial run of a BlockAll saga reaches a level-1 step before a level-0 one ; " +
+			"Should: run the level-0 compensations one at a time first and halt the level-1 step",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				failingUndo("x", BlockAll, alwaysFails), Sequence(rec.undoable("w"), rec.undoable("z")),
+			), once("c", alwaysFails))
+		},
+		serial:       true,
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("x"): ErrFailed, "c": ErrFailed},
+		wantFailed:   []string{"c", comp("x")},
+		wantErrText:  map[string]string{comp("x"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("x"): 1, "c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"w": stepHalted, "z": stepCompensated, "x": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"x", "w"},
+		wantTrail: seq(
+			opened, startOf("x"), doneOf("x"), startOf("w"), doneOf("w"), startOf("z"), doneOf("z"),
+			startOf("c"), failedOf("c"),
+			compStartOf("z"), undoneOf("z"), compStartOf("x"), undoFailedOf("x"), haltedOf("w"), closed,
+		),
+	}
+}
+
+func compensableLevelRow() runRow {
+	return runRow{
+		name: "[Success] When: BlockAll saga, P over N with no Compensate over M, and Q2 over Q over R, " +
+			"and Q's compensation fails ; Should: P is compensated in level 1 beside Q, Q2 is blocked",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				Sequence(rec.undoableWith("p", Block), rec.step("n"), rec.undoableAfter("m", pause)),
+				Sequence(
+					rec.undoableWith("q2", Block),
+					failingUndo("q", BlockAll, alwaysFails),
+					rec.undoableWith("r", Block),
+				),
+			), once("c", alwaysFails))
+		},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("q"): ErrFailed, "c": ErrFailed},
+		wantFailed:   []string{"c", comp("q")},
+		wantErrText:  map[string]string{comp("q"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("q"): 1, "c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"p": stepCompensated, "n": stepSucceeded, "m": stepCompensated,
+			"q2": stepHalted, "q": stepCompensationFailed, "r": stepCompensated, "c": stepFailed,
+		},
+		wantPending: []string{"q2", "q"},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(
+				startOf("p"), doneOf("p"), startOf("n"), doneOf("n"), startOf("m"), doneOf("m"),
+				startOf("q2"), doneOf("q2"), startOf("q"), doneOf("q"), startOf("r"), doneOf("r"),
+			),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("m"), compStartOf("r")),
+			seq(undoneOf("r"), undoneOf("m")),
+			together(compStartOf("p"), compStartOf("q"), undoFailedOf("q"), haltedOf("q2"), undoneOf("p")),
+			seq(closed),
+		),
+	}
+}
+
+func emptyLevelRow() runRow {
+	return runRow{
+		name: "[Success] When: BlockAll saga with a level that holds no owed compensation ; " +
+			"Should: the run ends with the next level compensated",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoableWith("a", BlockAll), once("c", alwaysFails), rec.undoable("d"))
+		},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "c": stepFailed, "d": stepNotStarted},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("c"), failedOf("c"), compStartOf("a"), undoneOf("a"), closed,
+		),
+	}
+}
+
+func graceLevelRow() runRow {
+	return runRow{
+		name: "[Fail] When: BlockAll saga and the grace period ends while level 0 runs ; " +
+			"Should: the later levels end with ErrGraceEnded and Run returns",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				Sequence(
+					rec.undoableWith("x", Continue), rec.undoableWith("a", Continue),
+					failingUndo("b", Continue, blockedOnCtx),
+				),
+				rec.undoableWith("y", BlockAll),
+			), once("c", alwaysFails))
+		},
+		opts:        []Option{WithRecoveryTimeout(pause)},
+		cancelAfter: pause,
+		cancelCause: errStop,
+		wantStatus:  noEndStatus,
+		wantKind:    ErrCompensationFailed,
+		wantKinds: map[string]*KindError{
+			comp("x"): ErrGraceEnded, comp("a"): ErrGraceEnded, comp("b"): ErrUnknown, "c": ErrFailed,
+		},
+		wantFailed: []string{"c", comp("b"), comp("a"), comp("x")},
+		wantErrText: map[string]string{
+			comp("x"): ErrGraceEnded.Error(), comp("a"): ErrGraceEnded.Error(), comp("b"): canceledTxt,
+			"c": errAlwaysFails.Error(),
+		},
+		wantAttempts:   map[string]int{comp("x"): 0, comp("a"): 0, comp("b"): 1, "c": 1},
+		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded},
+		wantUnrecorded: []string{comp("b"), comp("a"), comp("x")},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{ErrGraceEnded, errStop},
+		wantSteps: map[string]stepStatus{
+			"x": stepSucceeded, "a": stepSucceeded, "b": stepCompensationFailed, "y": stepCompensated, "c": stepFailed,
+		},
+		wantPending: []string{"x", "a", "b"},
+		wantRunOnly: []string{"x", "a"},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(
+				startOf("x"), doneOf("x"), startOf("a"), doneOf("a"), startOf("b"), doneOf("b"),
+				startOf("y"), doneOf("y"),
+			),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("y")),
+			seq(undoneOf("y")),
+		),
+	}
+}
+
+func rejectedLevelRow() runRow {
+	return runRow{
+		name: "[Fail] When: BlockAll saga and the journal rejects the run during level 0 ; " +
+			"Should: Run returns ErrConcurrentWriter and the loop ends",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				rec.undoableWith("a", BlockAll), Parallel(rec.undoableAfter("b", pause), rec.undoable("d")),
+				once("c", alwaysFails),
+			)
+		},
+		script:       map[int]error{12: ErrConcurrentWriter},
+		wantStatus:   noEndStatus,
+		wantKind:     ErrConcurrentWriter,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{ErrConcurrentWriter, errAlwaysFails},
+		wantNotErrs:  []error{ErrJournal},
+		wantSteps: map[string]stepStatus{
+			"a": stepSucceeded, "b": stepCompensationFailed, "d": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"a", "b", "d"},
+		wantRunOnly: []string{"a"},
+		wantTrail: slices.Concat(
+			seq(opened, startOf("a"), doneOf("a")),
+			together(startOf("b"), doneOf("b"), startOf("d"), doneOf("d")),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("d")),
+		),
+	}
+}
+
+func branchNoWaitRow() runRow {
+	return runRow{
+		name: "[Success] When: Block saga with two independent branches and one stuck compensation ; " +
+			"Should: the other branch compensates without waiting",
+		steps: func(rec *recorder) Flow {
+			return Sequence(Parallel(
+				Sequence(rec.undoable("a"), rec.undoableAfter("b", pause)),
+				Sequence(rec.undoable("d"), rec.undoable("e")),
+			), once("c", alwaysFails))
+		},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"c": ErrFailed},
+		wantFailed:   []string{"c"},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"a": stepCompensated, "b": stepCompensated, "d": stepCompensated, "e": stepCompensated, "c": stepFailed,
+		},
+		wantOrder: [][2]string{{"undo:d", undoB}},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(
+				startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("d"), doneOf("d"),
+				startOf("e"), doneOf("e"),
+			),
+			seq(startOf("c"), failedOf("c")),
+			together(compStartOf("b"), compStartOf("e")),
+			seq(undoneOf("e"), compStartOf("d"), undoneOf("d"), undoneOf("b"), compStartOf("a"), undoneOf("a"), closed),
+		),
 	}
 }

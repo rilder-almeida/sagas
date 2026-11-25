@@ -7,6 +7,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -250,6 +252,68 @@ func Test_newSaga(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wantHeld, held)
+		})
+	}
+}
+
+func Test_newSaga_blockAllRepeat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		scenario string
+		runs     int
+		want     []string
+	}{
+		{
+			name:     "[Success] When: the halt scenario runs with no gate many times ; Should: print one report line",
+			scenario: "halt",
+			runs:     100,
+			want:     []string{"halt: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runs := policyRuns()
+			sc := runs[slices.IndexFunc(runs, func(s scenario) bool { return s.name == tt.scenario })]
+			lines := make([]string, tt.runs)
+			errs := make([]error, tt.runs)
+
+			var wg sync.WaitGroup
+
+			for i := range lines {
+				wg.Go(func() {
+					svc := newServices()
+
+					saga, err := newSaga(svc, longGrace, sagas.BlockAll)
+					if err != nil {
+						errs[i] = err
+
+						return
+					}
+
+					ctx, cancel := context.WithTimeout(t.Context(), callerTimeout)
+					defer cancel()
+
+					o := order{ID: sc.name, Fault: sc.fault}
+					runErr := saga.Run(ctx, &o)
+
+					var out bytes.Buffer
+
+					errs[i] = report(&out, &o, svc.undone.take(), runErr)
+					lines[i] = out.String()
+				})
+			}
+
+			wg.Wait()
+
+			require.NoError(t, errors.Join(errs...))
+
+			slices.Sort(lines)
+			assert.Equal(t, tt.want, slices.Compact(lines))
 		})
 	}
 }
