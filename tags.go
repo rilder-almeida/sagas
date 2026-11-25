@@ -130,3 +130,12 @@ func tagOffense(path string, tag reflect.StructTag, top bool) []offense {
 
 	return offenses
 }
+
+func refuseExecutionIDMethod[S any]() error {
+	if _, ok := any((*S)(nil)).(interface{ ExecutionID() string }); !ok {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s: method ExecutionID is no longer read, tag the string field sagas:\"id\" instead",
+		ErrInvalidState, typeLabel(reflect.TypeFor[S]()))
+}

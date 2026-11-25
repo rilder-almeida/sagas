@@ -87,7 +87,7 @@ func Test_tagKeys(t *testing.T) {
 		want []string
 	}{
 		{name: "[Success] When: the tag is empty ; Should: return no key", tag: ``},
-		{name: "[Success] When: one pair ; Should: return its key", tag: `sagas:"id"`, want: []string{"sagas"}},
+		{name: "[Success] When: one pair ; Should: return its key", tag: tagLiteral, want: []string{"sagas"}},
 		{
 			name: "[Success] When: two pairs ; Should: return both keys in order",
 			tag:  `json:"x,omitzero" sagas:"id,secret"`,
@@ -115,11 +115,11 @@ func Test_tagOffense(t *testing.T) {
 		top  bool
 		want []offense
 	}{
-		{name: `[Success] When: sagas tag at the top level ; Should: return no offense`, tag: `sagas:"id"`, top: true},
+		{name: `[Success] When: sagas tag at the top level ; Should: return no offense`, tag: tagLiteral, top: true},
 		{name: "[Success] When: no tag ; Should: return no offense", tag: ``, top: false},
 		{
 			name: `[Fail] When: sagas tag below the top level ; Should: return the level offense`,
-			tag:  `sagas:"id"`,
+			tag:  tagLiteral,
 			want: []offense{{path: ".X", rule: "sagas tag below the top level"}},
 		},
 		{
@@ -135,6 +135,90 @@ func Test_tagOffense(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, tt.want, tagOffense(".X", tt.tag, tt.top))
+		})
+	}
+}
+
+const tagLiteral = `sagas:"id"`
+
+type valueMethodState struct{ ID string }
+
+func (s valueMethodState) ExecutionID() string { return s.ID }
+
+type pointerMethodState struct{ ID string }
+
+func (s *pointerMethodState) ExecutionID() string { return s.ID }
+
+type otherSignatureState struct{ ID string }
+
+func (otherSignatureState) ExecutionID() int { return 0 }
+
+type otherNameState struct{ ID string }
+
+func (s otherNameState) Execution() string { return s.ID }
+
+func Test_refuseExecutionIDMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		run      func() error
+		wantText []string
+	}{
+		{
+			name:     "[Fail] When: the state has the method on a value receiver ; Should: refuse it, name the tag",
+			run:      refuseExecutionIDMethod[valueMethodState],
+			wantText: []string{"valueMethodState", "ExecutionID", tagLiteral},
+		},
+		{
+			name:     "[Fail] When: the state has the method on a pointer receiver ; Should: refuse it, name the tag",
+			run:      refuseExecutionIDMethod[pointerMethodState],
+			wantText: []string{"pointerMethodState", "ExecutionID", tagLiteral},
+		},
+		{
+			name: "[Fail] When: New gets a state with the method ; Should: refuse it",
+			run: func() error {
+				_, err := New[valueMethodState]("s", &okStep[valueMethodState]{})
+
+				return err
+			},
+			wantText: []string{"valueMethodState", tagLiteral},
+		},
+		{
+			name: "[Fail] When: Inspect gets a state with the method ; Should: report the same problem",
+			run: func() error {
+				_, err := Inspect[pointerMethodState](&okStep[pointerMethodState]{})
+
+				return err
+			},
+			wantText: []string{"pointerMethodState", tagLiteral},
+		},
+		{
+			name: "[Success] When: the method returns another type ; Should: accept the state",
+			run:  refuseExecutionIDMethod[otherSignatureState],
+		},
+		{
+			name: "[Success] When: the method has another name ; Should: accept the state",
+			run:  refuseExecutionIDMethod[otherNameState],
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.run()
+			if len(tt.wantText) == 0 {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorIs(t, err, ErrInvalidState)
+
+			for _, part := range tt.wantText {
+				assert.Contains(t, err.Error(), part)
+			}
 		})
 	}
 }
