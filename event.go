@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"encoding/json/jsontext"
 	"strconv"
 	"strings"
 	"time"
@@ -13,8 +14,8 @@ const EventVersion = "v0.2.0"
 // Event is one journal record of an execution. Writer is the token of the run that wrote it, and Seq counts from 1.
 // Version is the EventVersion of the writing package. Step names the step of a step or compensation event. Attempts
 // counts the attempts made, and zero means the call never ran. Err is set on a failed, unknown or compensation-failed
-// event. Changed names the fields that a success committed. Steps lists every step on saga-started. Status is the end
-// of the run on saga-finished and saga-suspended.
+// event. Values holds every state field on saga-started and the output of a success. Steps lists every step on
+// saga-started. Status is the end of the run on saga-finished and saga-suspended.
 type Event struct {
 	Saga      string
 	Execution string
@@ -25,10 +26,16 @@ type Event struct {
 	Step      string
 	Attempts  int
 	Err       EventError
-	Changed   []string
+	Values    []FieldValue
 	Steps     []StepZone
 	Status    Status
 	Time      time.Time
+}
+
+// FieldValue is the JSON value of one state field, named by its Go name. A JSON null is stored as null.
+type FieldValue struct {
+	Field string
+	Value jsontext.Value
 }
 
 // EventError is an Error as text. Kind is the name of the error kind. Message and Cause are the texts of Error.Err and
@@ -50,8 +57,7 @@ type StepZone struct {
 // EventKind says what an Event records. The empty string means not set and is never a real event.
 type EventKind string
 
-// EventKind values. saga-finished ends a completed or compensated run. saga-suspended ends a run that waits for
-// repair, with the status compensation-failed or incomplete.
+// saga-finished ends a completed or compensated run, and saga-suspended a compensation-failed or incomplete one.
 const (
 	EventSagaStarted           EventKind = "saga-started"
 	EventStepStarted           EventKind = "step-started"

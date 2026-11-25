@@ -1,7 +1,6 @@
 package sagas
 
 import (
-	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -289,51 +288,36 @@ func (s *store[S]) compensationBase(step int) snapshot[S] {
 }
 
 type commitResult struct {
-	changed []string
-	label   *KindError
+	values []FieldValue
+	label  *KindError
 }
 
-func (s *store[S]) record(step int, out encodedOutput) (commitResult, error) {
-	return s.put(step, out, s.base(step))
-}
-
-func (s *store[S]) replace(step int, out encodedOutput) (commitResult, error) {
-	return s.put(step, out, s.compensationBase(step))
-}
-
-func (s *store[S]) restore(step int) commitResult {
-	f := s.field[step]
-	if f < 0 {
-		return commitResult{changed: []string{}}
-	}
-
-	before := s.compensationBase(step).fields[f]
-	s.outputs[step] = nil
-
-	return s.change(f, before, s.base(step).fields[f])
-}
-
-func (s *store[S]) put(step int, out encodedOutput, before snapshot[S]) (commitResult, error) {
+func (s *store[S]) put(step int, out encodedOutput) (commitResult, error) {
 	if out.err != nil {
 		return commitResult{label: ErrInvalidState}, out.err
 	}
 
 	f := s.field[step]
 	if f < 0 || out.data == nil {
-		return commitResult{changed: []string{}}, nil
+		return commitResult{}, nil
 	}
 
 	s.outputs[step] = out.data
 
-	return s.change(f, before.fields[f], out.data), nil
+	return commitResult{values: []FieldValue{{Field: s.names[f], Value: out.data}}}, nil
 }
 
-func (s *store[S]) change(f int, before, after []byte) commitResult {
-	if bytes.Equal(before, after) {
-		return commitResult{changed: []string{}}
+func (s *store[S]) restore(step int) {
+	s.outputs[step] = nil
+}
+
+func (s *store[S]) initialValues() []FieldValue {
+	values := make([]FieldValue, len(s.initial))
+	for i, data := range s.initial {
+		values[i] = FieldValue{Field: s.names[i], Value: data}
 	}
 
-	return commitResult{changed: []string{s.names[f]}}
+	return values
 }
 
 func (s *store[S]) writeBack(dst *S) error {

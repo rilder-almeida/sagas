@@ -1220,7 +1220,7 @@ func recordAll(t *testing.T, st *store[testState], outputs []recorded) {
 	t.Helper()
 
 	for _, r := range outputs {
-		_, err := st.record(r.step, outputOf(st, r))
+		_, err := st.put(r.step, outputOf(st, r))
 		require.NoError(t, err)
 	}
 }
@@ -1525,7 +1525,11 @@ func Test_store_base(t *testing.T) {
 	}
 }
 
-func Test_store_record(t *testing.T) {
+func fieldJSON(field, data string) []FieldValue {
+	return []FieldValue{{Field: field, Value: jsontext.Value(data)}}
+}
+
+func Test_store_put(t *testing.T) {
 	t.Parallel()
 
 	_, stateErr := examineState(reflect.TypeFor[testState]())
@@ -1535,81 +1539,96 @@ func Test_store_record(t *testing.T) {
 	loop.Next = loop
 
 	tests := []struct {
-		name        string
-		shape       storeShape
-		earlier     []recorded
-		output      recorded
-		wantChanged []string
-		wantErr     error
-		wantLabel   *KindError
-		wantInMsg   []string
-		wantState   testState
+		name       string
+		shape      storeShape
+		earlier    []recorded
+		output     recorded
+		wantValues []FieldValue
+		wantErr    error
+		wantLabel  *KindError
+		wantInMsg  []string
+		wantState  testState
 	}{
 		{
-			name:        "[Success] When: a producer changes its field ; Should: record the output and name the field",
-			shape:       diamond(),
-			output:      recorded{step: 0, value: 5},
-			wantChanged: []string{seatsField},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+			name:       "[Success] When: a producer changes its field ; Should: record the output and return its value",
+			shape:      diamond(),
+			output:     recorded{step: 0, value: 5},
+			wantValues: fieldJSON(seatsField, "5"),
+			wantState:  withState(func(s *testState) { s.Seats = 5 }),
 		},
 		{
-			name:        "[Success] When: the output equals the base of the step ; Should: return an empty list",
-			shape:       diamond(),
-			earlier:     []recorded{{step: 0, value: 5}},
-			output:      recorded{step: 1, value: baseState().Charge},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+			name:       "[Success] When: the output equals the base of the step ; Should: still return its value",
+			shape:      diamond(),
+			earlier:    []recorded{{step: 0, value: 5}},
+			output:     recorded{step: 1, value: baseState().Charge},
+			wantValues: fieldJSON(chargeField, `{"Total":1.5}`),
+			wantState:  withState(func(s *testState) { s.Seats = 5 }),
 		},
 		{
-			name:        "[Success] When: a later producer sets the initial value back ; Should: name the field, win",
-			shape:       seatsChain(),
-			earlier:     []recorded{{step: 0, value: 5}},
-			output:      recorded{step: 1, value: baseState().Seats},
-			wantChanged: []string{seatsField},
-			wantState:   baseState(),
+			name:       "[Success] When: a later producer sets the initial value back ; Should: return it, win",
+			shape:      seatsChain(),
+			earlier:    []recorded{{step: 0, value: 5}},
+			output:     recorded{step: 1, value: baseState().Seats},
+			wantValues: fieldJSON(seatsField, "2"),
+			wantState:  baseState(),
 		},
 		{
-			name:        "[Success] When: a sibling changed another field ; Should: compare with the step base only",
-			shape:       diamond(),
-			earlier:     []recorded{{step: 0, value: 5}, {step: 1, value: chargeState{Total: 10}}},
-			output:      recorded{step: 2, value: []string{"c"}},
-			wantChanged: []string{itemsField},
+			name:       "[Success] When: the step recorded an output before ; Should: replace it, return the new value",
+			shape:      seatsChain(),
+			earlier:    []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			output:     recorded{step: 1, value: 9},
+			wantValues: fieldJSON(seatsField, "9"),
+			wantState:  withState(func(s *testState) { s.Seats = 9 }),
+		},
+		{
+			name:       "[Success] When: a sibling wrote another field ; Should: return only the field of the step",
+			shape:      diamond(),
+			earlier:    []recorded{{step: 0, value: 5}, {step: 1, value: chargeState{Total: 10}}},
+			output:     recorded{step: 2, value: []string{"c"}},
+			wantValues: fieldJSON(itemsField, `["c"]`),
 			wantState: withState(func(s *testState) {
 				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
 			}),
 		},
 		{
-			name:        "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
-			shape:       diamond(),
-			output:      recorded{step: 2, value: []string{}},
-			wantChanged: []string{itemsField},
-			wantState:   withState(func(s *testState) { s.Items = []string{} }),
+			name:       "[Success] When: a nil slice is the output ; Should: return the value null",
+			shape:      diamond(),
+			output:     recorded{step: 2, value: []string(nil)},
+			wantValues: fieldJSON(itemsField, "null"),
+			wantState:  baseState(),
 		},
 		{
-			name:        "[Success] When: the step hands no bytes ; Should: return an empty list, record nothing",
-			shape:       diamond(),
-			earlier:     []recorded{{step: 0, value: 5}},
-			output:      recorded{step: 1, output: &encodedOutput{}},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+			name:       "[Success] When: an empty slice is the output ; Should: return the value []",
+			shape:      diamond(),
+			output:     recorded{step: 2, value: []string{}},
+			wantValues: fieldJSON(itemsField, "[]"),
+			wantState:  withState(func(s *testState) { s.Items = []string{} }),
 		},
 		{
-			name:        "[Success] When: the step is a None step ; Should: return an empty list, record nothing",
-			shape:       noneAfterSeats(),
-			earlier:     []recorded{{step: 0, value: 5}},
-			output:      recorded{step: 1, output: &encodedOutput{data: []byte("9")}},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
-		},
-		{
-			name:      "[Fail] When: the output holds a NaN ; Should: return ErrInvalidState naming it, record nothing",
+			name:      "[Success] When: the step hands no bytes ; Should: return no value, record nothing",
 			shape:     diamond(),
 			earlier:   []recorded{{step: 0, value: 5}},
+			output:    recorded{step: 1, output: &encodedOutput{}},
+			wantState: withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:      "[Success] When: the step is a None step ; Should: return no value, record nothing",
+			shape:     noneAfterSeats(),
+			earlier:   []recorded{{step: 0, value: 5}},
+			output:    recorded{step: 1, output: &encodedOutput{data: []byte("9")}},
+			wantState: withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:      "[Fail] When: the output holds a NaN ; Should: return ErrInvalidState naming it, keep the old",
+			shape:     diamond(),
+			earlier:   diamondOutputs(),
 			output:    recorded{step: 1, value: chargeState{Total: math.NaN()}},
 			wantErr:   ErrInvalidState,
 			wantLabel: ErrInvalidState,
 			wantInMsg: []string{"sagas: invalid state: Charge: ", "Total"},
-			wantState: withState(func(s *testState) { s.Seats = 5 }),
+			wantState: withState(func(s *testState) {
+				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
+			}),
 		},
 		{
 			name:      "[Fail] When: the output holds a loop ; Should: return ErrInvalidState, record nothing",
@@ -1629,11 +1648,11 @@ func Test_store_record(t *testing.T) {
 			st := newTestStore(t, baseState(), tt.shape)
 			recordAll(t, st, tt.earlier)
 
-			res, err := st.record(tt.output.step, outputOf(st, tt.output))
+			res, err := st.put(tt.output.step, outputOf(st, tt.output))
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Same(t, tt.wantLabel, res.label)
 			assertInOrder(t, errText(err), tt.wantInMsg)
-			assert.Equal(t, tt.wantChanged, res.changed)
+			assert.Equal(t, tt.wantValues, res.values)
 			assert.Equal(t, tt.wantState, written(t, st))
 		})
 	}
@@ -1764,52 +1783,39 @@ func Test_store_restore(t *testing.T) {
 	require.NoError(t, stateErr)
 
 	tests := []struct {
-		name        string
-		shape       storeShape
-		outputs     []recorded
-		restored    []int
-		wantChanged []string
-		wantState   testState
+		name      string
+		shape     storeShape
+		outputs   []recorded
+		restored  []int
+		wantState testState
 	}{
 		{
-			name:        "[Success] When: the later of two producers restores ; Should: fall back to the first output",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
-			restored:    []int{1},
-			wantChanged: []string{seatsField},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+			name:      "[Success] When: the later of two producers restores ; Should: fall back to the first output",
+			shape:     seatsChain(),
+			outputs:   []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			restored:  []int{1},
+			wantState: withState(func(s *testState) { s.Seats = 5 }),
 		},
 		{
-			name:        "[Success] When: both producers restore in reverse ; Should: fall back to the initial value",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
-			restored:    []int{1, 0},
-			wantChanged: []string{seatsField},
-			wantState:   baseState(),
+			name:      "[Success] When: both producers restore in reverse ; Should: fall back to the initial value",
+			shape:     seatsChain(),
+			outputs:   []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			restored:  []int{1, 0},
+			wantState: baseState(),
 		},
 		{
-			name:        "[Success] When: the step recorded nothing ; Should: change nothing",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}},
-			restored:    []int{1},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+			name:      "[Success] When: the step recorded nothing ; Should: change nothing",
+			shape:     seatsChain(),
+			outputs:   []recorded{{step: 0, value: 5}},
+			restored:  []int{1},
+			wantState: withState(func(s *testState) { s.Seats = 5 }),
 		},
 		{
-			name:        "[Success] When: the output equals the base ; Should: drop it and return an empty list",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 5}},
-			restored:    []int{1},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
-		},
-		{
-			name:        "[Success] When: the step is a None step ; Should: change nothing",
-			shape:       noneAfterSeats(),
-			outputs:     []recorded{{step: 0, value: 5}},
-			restored:    []int{1},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+			name:      "[Success] When: the step is a None step ; Should: change nothing",
+			shape:     noneAfterSeats(),
+			outputs:   []recorded{{step: 0, value: 5}},
+			restored:  []int{1},
+			wantState: withState(func(s *testState) { s.Seats = 5 }),
 		},
 	}
 
@@ -1820,82 +1826,10 @@ func Test_store_restore(t *testing.T) {
 			st := newTestStore(t, baseState(), tt.shape)
 			recordAll(t, st, tt.outputs)
 
-			var res commitResult
 			for _, step := range tt.restored {
-				res = st.restore(step)
+				st.restore(step)
 			}
 
-			assert.Equal(t, tt.wantChanged, res.changed)
-			assert.Nil(t, res.label)
-			assert.Equal(t, tt.wantState, written(t, st))
-		})
-	}
-}
-
-func Test_store_replace(t *testing.T) {
-	t.Parallel()
-
-	_, stateErr := examineState(reflect.TypeFor[testState]())
-	require.NoError(t, stateErr)
-
-	tests := []struct {
-		name        string
-		shape       storeShape
-		outputs     []recorded
-		replacement recorded
-		wantChanged []string
-		wantErr     error
-		wantLabel   *KindError
-		wantState   testState
-	}{
-		{
-			name:        "[Success] When: the compensation returns a new value ; Should: replace the output, name it",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
-			replacement: recorded{step: 1, value: 9},
-			wantChanged: []string{seatsField},
-			wantState:   withState(func(s *testState) { s.Seats = 9 }),
-		},
-		{
-			name:        "[Success] When: the step recorded nothing ; Should: record the value as its output",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}},
-			replacement: recorded{step: 1, value: 9},
-			wantChanged: []string{seatsField},
-			wantState:   withState(func(s *testState) { s.Seats = 9 }),
-		},
-		{
-			name:        "[Success] When: the value equals the recorded output ; Should: return an empty list",
-			shape:       seatsChain(),
-			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
-			replacement: recorded{step: 1, value: 7},
-			wantChanged: []string{},
-			wantState:   withState(func(s *testState) { s.Seats = 7 }),
-		},
-		{
-			name:        "[Fail] When: the value holds a NaN ; Should: return ErrInvalidState, keep the output",
-			shape:       diamond(),
-			outputs:     diamondOutputs(),
-			replacement: recorded{step: 1, value: chargeState{Total: math.NaN()}},
-			wantErr:     ErrInvalidState,
-			wantLabel:   ErrInvalidState,
-			wantState: withState(func(s *testState) {
-				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
-			}),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			st := newTestStore(t, baseState(), tt.shape)
-			recordAll(t, st, tt.outputs)
-
-			res, err := st.replace(tt.replacement.step, outputOf(st, tt.replacement))
-			require.ErrorIs(t, err, tt.wantErr)
-			assert.Same(t, tt.wantLabel, res.label)
-			assert.Equal(t, tt.wantChanged, res.changed)
 			assert.Equal(t, tt.wantState, written(t, st))
 		})
 	}
@@ -1954,7 +1888,7 @@ func benchRecord[S any](b *testing.B, initial S, field int, change func(*S) any)
 		attempt, copyErr := copyState(st.base(0))
 		require.NoError(b, copyErr)
 
-		_, recordErr := st.record(0, outputOf(st, recorded{step: 0, value: change(attempt)}))
+		_, recordErr := st.put(0, outputOf(st, recorded{step: 0, value: change(attempt)}))
 		require.NoError(b, recordErr)
 	}
 }

@@ -247,7 +247,8 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		zoned[i] = s.steps[i].stepZone()
 	}
 
-	if startErr := r.append(grace, &Event{Kind: EventSagaStarted, Steps: zoned}); startErr != nil {
+	started := Event{Kind: EventSagaStarted, Steps: zoned, Values: committed.initialValues()}
+	if startErr := r.append(grace, &started); startErr != nil {
 		return startErr
 	}
 

@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -115,9 +116,22 @@ func copyEvents(events []Event) []Event {
 }
 
 func cloneSlices(e *Event) {
-	e.Changed = slices.Clone(e.Changed)
+	e.Values = cloneValues(e.Values)
 	e.Steps = slices.Clone(e.Steps)
 	e.Err.Previous = slices.Clone(e.Err.Previous)
+}
+
+func cloneValues(values []FieldValue) []FieldValue {
+	if values == nil {
+		return nil
+	}
+
+	out := make([]FieldValue, len(values))
+	for i, v := range values {
+		out[i] = FieldValue{Field: v.Field, Value: slices.Clone(v.Value)}
+	}
+
+	return out
 }
 
 // CheckEvent returns an error that wraps ErrInvalidEvent for a nil event, a Seq below 1 or an incompatible Version.
@@ -138,8 +152,12 @@ func CheckEvent(e *Event) error {
 // SameEvent reports whether sent is an equal resend of stored, with Time as an instant and a nil slice as empty.
 func SameEvent(stored, sent *Event) bool {
 	return sameScalars(stored, sent) && sameError(&stored.Err, &sent.Err) &&
-		slices.Equal(stored.Changed, sent.Changed) && slices.Equal(stored.Steps, sent.Steps) &&
+		slices.EqualFunc(stored.Values, sent.Values, sameValue) && slices.Equal(stored.Steps, sent.Steps) &&
 		stored.Time.Equal(sent.Time)
+}
+
+func sameValue(a, b FieldValue) bool {
+	return a.Field == b.Field && bytes.Equal(a.Value, b.Value)
 }
 
 func sameError(a, b *EventError) bool {

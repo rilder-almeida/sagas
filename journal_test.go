@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"maps"
 	"slices"
@@ -25,7 +26,7 @@ func journalEvent(execution string, seq int) Event {
 		Step:      "reserve",
 		Attempts:  1,
 		Err:       EventError{Kind: nameFailed, Message: "declined", Cause: "stopped", Previous: []string{"first"}},
-		Changed:   []string{"Seats"},
+		Values:    []FieldValue{{Field: "Seats", Value: jsontext.Value("2")}, {Field: "Card"}},
 		Steps:     []StepZone{{Name: "reserve", Zone: ZoneCompensable}},
 		Status:    noEndStatus,
 		Time:      time.Date(2026, 11, 17, 10, 0, seq, 0, time.UTC),
@@ -34,7 +35,7 @@ func journalEvent(execution string, seq int) Event {
 
 func withEvent(e *Event, change func(*Event)) *Event {
 	out := *e
-	out.Changed = slices.Clone(out.Changed)
+	out.Values = cloneValues(out.Values)
 	out.Steps = slices.Clone(out.Steps)
 	out.Err.Previous = slices.Clone(out.Err.Previous)
 	change(&out)
@@ -59,8 +60,12 @@ func scribbleEvent(e *Event) {
 	e.Seq = 99
 	e.Version = scribbled
 
-	for k := range e.Changed {
-		e.Changed[k] = scribbled
+	for k := range e.Values {
+		e.Values[k].Field = scribbled
+
+		for b := range e.Values[k].Value {
+			e.Values[k].Value[b] = 'x'
+		}
 	}
 
 	for k := range e.Steps {
@@ -110,7 +115,7 @@ func Test_MemoryJournal_Append(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	noSlices := func(e *Event) { e.Changed, e.Steps = nil, nil }
+	noSlices := func(e *Event) { e.Values, e.Steps = nil, nil }
 	stamp := func(e *Event) { e.Time = now }
 	stamped := func() Event { return *withEvent(new(journalEvent("a", 1)), stamp) }
 
@@ -142,7 +147,7 @@ func Test_MemoryJournal_Append(t *testing.T) {
 			want:  map[string][]Event{"a": {journalEvent("a", 1), journalEvent("a", 2)}},
 		},
 		{
-			name:  "[Success] When: the first event has nil Changed and Steps ; Should: store them as nil",
+			name:  "[Success] When: the first event has nil Values and Steps ; Should: store them as nil",
 			event: withEvent(new(journalEvent("c", 1)), noSlices),
 			want:  map[string][]Event{"c": {*withEvent(new(journalEvent("c", 1)), noSlices)}},
 		},
@@ -494,9 +499,9 @@ func Test_SameEvent(t *testing.T) {
 		},
 		{
 			name:   "[Success] When: nil slices against empty slices ; Should: return true, nil equals empty",
-			stored: withEvent(&base, func(e *Event) { e.Changed, e.Steps, e.Err.Previous = nil, nil, nil }),
+			stored: withEvent(&base, func(e *Event) { e.Values, e.Steps, e.Err.Previous = nil, nil, nil }),
 			sent: withEvent(&base, func(e *Event) {
-				e.Changed, e.Steps, e.Err.Previous = []string{}, []StepZone{}, []string{}
+				e.Values, e.Steps, e.Err.Previous = []FieldValue{}, []StepZone{}, []string{}
 			}),
 			want: true,
 		},
@@ -553,12 +558,23 @@ func Test_SameEvent(t *testing.T) {
 			stored: &base, sent: withEvent(&base, func(e *Event) { e.Err.Previous = append(e.Err.Previous, "second") }),
 		},
 		{
-			name:   "[Fail] When: a Changed name differs ; Should: return false",
-			stored: &base, sent: withEvent(&base, func(e *Event) { e.Changed[0] = "Total" }),
+			name:   "[Success] When: a nil Value against an empty Value ; Should: return true, nil equals empty",
+			stored: &base, sent: withEvent(&base, func(e *Event) { e.Values[1].Value = jsontext.Value{} }),
+			want: true,
 		},
 		{
-			name:   "[Fail] When: Changed has one more name ; Should: return false",
-			stored: &base, sent: withEvent(&base, func(e *Event) { e.Changed = append(e.Changed, "Total") }),
+			name:   "[Fail] When: a Values field name differs ; Should: return false",
+			stored: &base, sent: withEvent(&base, func(e *Event) { e.Values[0].Field = "Total" }),
+		},
+		{
+			name:   "[Fail] When: a byte of a Value differs ; Should: return false",
+			stored: &base, sent: withEvent(&base, func(e *Event) { e.Values[0].Value[0] = '3' }),
+		},
+		{
+			name:   "[Fail] When: Values has one more element ; Should: return false",
+			stored: &base, sent: withEvent(&base, func(e *Event) {
+				e.Values = append(e.Values, FieldValue{Field: "Total", Value: jsontext.Value("1")})
+			}),
 		},
 		{
 			name:   "[Fail] When: a Steps name differs ; Should: return false",

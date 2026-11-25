@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"encoding/json/jsontext"
 	"slices"
 	"strconv"
 	"testing"
@@ -601,7 +602,7 @@ func benchEvents(steps int) []Event {
 				Step:     name,
 				Seq:      len(events) + 2,
 				Attempts: 1,
-				Changed:  []string{seatsField},
+				Values:   []FieldValue{{Field: seatsField, Value: jsontext.Value("2")}},
 			},
 		)
 	}

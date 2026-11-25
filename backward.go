@@ -223,16 +223,16 @@ func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome, b
 	)
 
 	if r.saga.steps[f.step].replaces {
-		res, err = r.store.replace(f.step, f.out.output)
+		res, err = r.store.put(f.step, f.out.output)
 	} else {
-		res = r.store.restore(f.step)
+		r.store.restore(f.step)
 	}
 
 	if err != nil {
 		return outcome{kind: outcomeFailure, attempts: attempts, err: err, label: res.label}, false
 	}
 
-	done := Event{Kind: EventCompensationSucceeded, Step: name, Attempts: attempts, Changed: res.changed}
+	done := Event{Kind: EventCompensationSucceeded, Step: name, Attempts: attempts, Values: res.values}
 	if err = r.persist(grace, &done); err != nil {
 		return outcome{kind: outcomeFailure, attempts: attempts, err: err, label: appendLabel(err)}, false
 	}

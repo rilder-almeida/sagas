@@ -339,7 +339,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 		return
 	}
 
-	res, err := r.store.record(i, f.out.output)
+	res, err := r.store.put(i, f.out.output)
 	if err != nil {
 		kind := outcomeFailure
 		if i == r.saga.pivot {
@@ -353,7 +353,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 
 	r.runs[i].status, r.runs[i].attempts = runSucceeded, f.out.attempts
 
-	done := Event{Kind: EventStepSucceeded, Step: name, Attempts: f.out.attempts, Changed: res.changed}
+	done := Event{Kind: EventStepSucceeded, Step: name, Attempts: f.out.attempts, Values: res.values}
 	if !r.record(grace, &done) {
 		r.runs[i].status, r.runs[i].applied = runUnknown, i == r.saga.pivot
 	}

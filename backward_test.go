@@ -175,7 +175,7 @@ func ownOutputRow() runRow {
 		func(rec *recorder) Flow { return Sequence(rec.restorable("a", hotelRitz), once("x", alwaysFails)) },
 	)
 	row.wantOrder = [][2]string{{"a", "undo:a saw ritz"}}
-	row.wantChanged = map[string][]string{undoneOf("a"): {hotelField}}
+	row.wantValues = map[string][]FieldValue{undoneOf("a"): nil}
 
 	return row
 }
@@ -214,7 +214,7 @@ func sequenceRestoreRow() runRow {
 			opened, startOf("r1"), doneOf("r1"), startOf("r2"), doneOf("r2"), startOf("x"), failedOf("x"),
 			compStartOf("r2"), undoneOf("r2"), compStartOf("r1"), undoneOf("r1"), closed,
 		),
-		wantChanged: map[string][]string{undoneOf("r2"): {hotelField}, undoneOf("r1"): {hotelField}},
+		wantValues: map[string][]FieldValue{undoneOf("r2"): nil, undoneOf("r1"): nil},
 	}
 }
 
@@ -243,8 +243,8 @@ func failedStepInputRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("f"), failedOf("f"), compStartOf("f"), undoneOf("f"), closed,
 		),
-		wantChanged: map[string][]string{undoneOf("f"): {}},
-		wantState:   tripState{Hotel: "a"},
+		wantValues: map[string][]FieldValue{undoneOf("f"): nil},
+		wantState:  tripState{Hotel: "a"},
 	}
 }
 
@@ -303,8 +303,8 @@ func reversedOrderRow() runRow {
 			opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("c"), failedOf("c"),
 			compStartOf("b"), undoneOf("b"), compStartOf("a"), undoneOf("a"), closed,
 		),
-		wantChanged: map[string][]string{undoneOf("b"): {hotelField}},
-		wantState:   tripState{Hotel: refunded},
+		wantValues: map[string][]FieldValue{undoneOf("b"): {hotelValue(refunded)}},
+		wantState:  tripState{Hotel: refunded},
 	}
 }
 

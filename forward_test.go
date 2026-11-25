@@ -2,11 +2,13 @@ package sagas
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"math"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,6 +82,35 @@ func forwardRows() []runRow {
 		serialVerdictRow(),
 		stoppedCauseRow(),
 		attemptsRow(),
+		valuesRow(),
+	}
+}
+
+func hotelValue(hotel Hotel) FieldValue {
+	return FieldValue{Field: hotelField, Value: jsontext.Value(strconv.Quote(string(hotel)))}
+}
+
+func valuesRow() runRow {
+	return runRow{
+		name: "[Success] When: a step writes the value its field already held and the next step has no output ; " +
+			"Should: record every initial field on saga-started, one value for the first step and none for the next",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.booking("a"), rec.step("b"))
+		},
+		initial:    tripState{Hotel: hotelRitz, Rate: 1.5},
+		wantStatus: StatusCompleted,
+		wantTrail:  afterA(seq(startOf("b"), doneOf("b"), closed)),
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded},
+		wantValues: map[string][]FieldValue{
+			opened: {
+				hotelValue(hotelRitz),
+				{Field: "Rate", Value: jsontext.Value("1.5")},
+				{Field: "Fee", Value: jsontext.Value("0")},
+			},
+			doneOf("a"): {hotelValue(hotelRitz)},
+			doneOf("b"): nil,
+		},
+		wantState: tripState{Hotel: hotelRitz, Rate: 1.5},
 	}
 }
 

@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"maps"
@@ -691,9 +692,9 @@ func Test_runner_append(t *testing.T) {
 			require.True(t, tt.failAt >= 0 && tt.failAt <= tt.appends, "failAt must be within 0..appends")
 
 			for i := 1; i <= tt.appends; i++ {
-				changed := []string{hotelField}
-				err = r.append(ctx, &Event{Kind: EventStepSucceeded, Step: "a", Changed: changed})
-				changed[0] = "mutated"
+				values := []FieldValue{{Field: hotelField, Value: jsontext.Value(`"ritz"`)}}
+				err = r.append(ctx, &Event{Kind: EventStepSucceeded, Step: "a", Values: values})
+				values[0].Field, values[0].Value[1] = "mutated", 'x'
 
 				wantErrs := tt.wantErrs
 				if i != tt.failAt {
@@ -752,7 +753,7 @@ func assertAppended(t *testing.T, j *scriptJournal, wantStored, calls int) {
 		assert.Equal(t, "writer-1", e.Writer)
 		assert.Equal(t, EventVersion, e.Version)
 		assert.Equal(t, EventStepSucceeded, e.Kind)
-		assert.Equal(t, []string{hotelField}, e.Changed)
+		assert.Equal(t, []FieldValue{{Field: hotelField, Value: jsontext.Value(`"ritz"`)}}, e.Values)
 		assert.False(t, e.Time.IsZero())
 	}
 }
@@ -972,7 +973,7 @@ type runRow struct {
 	wantOrder          [][2]string
 	wantZones          []StepZone
 	wantTrail          [][]string
-	wantChanged        map[string][]string
+	wantValues         map[string][]FieldValue
 	wantEventAttempts  map[string]int
 	initial            tripState
 	wantState          tripState
@@ -1202,8 +1203,8 @@ func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 		key := trailOf(events[i].Kind, events[i].Step)
 		trail = append(trail, key)
 
-		if want, found := tt.wantChanged[key]; found {
-			assert.Equal(t, want, events[i].Changed, "event %s", key)
+		if want, found := tt.wantValues[key]; found {
+			assert.Equal(t, want, events[i].Values, "event %s", key)
 		}
 
 		if want, found := tt.wantEventAttempts[key]; found {
@@ -1222,7 +1223,7 @@ func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 		}
 	}
 
-	checked := slices.Concat(slices.Collect(maps.Keys(tt.wantChanged)), slices.Collect(maps.Keys(tt.wantEventAttempts)))
+	checked := slices.Concat(slices.Collect(maps.Keys(tt.wantValues)), slices.Collect(maps.Keys(tt.wantEventAttempts)))
 	for _, key := range checked {
 		assert.Contains(t, trail, key, "no stored event %s to check", key)
 	}
@@ -2263,5 +2264,89 @@ func compensatedListRow() runRow {
 			startOf("c"), failedOf("c"), compStartOf("d"), undoFailedOf("d"), compStartOf("b"), undoneOf("b"),
 			compStartOf("a"), undoneOf("a"), suspended,
 		),
+	}
+}
+
+type Rooms []string
+
+const roomsField = "Rooms"
+
+type ledgerState struct {
+	ID    string `sagas:"id"`
+	Hotel Hotel
+	Rooms Rooms
+}
+
+type roomsStep struct {
+	Step[ledgerState, Rooms]
+
+	rooms Rooms
+}
+
+func (s *roomsStep) Execute(context.Context, ledgerState) (Rooms, error) { return s.rooms, nil }
+
+func ledgerEvents(t *testing.T, initial ledgerState, rooms Rooms) []Event {
+	t.Helper()
+
+	journal := NewMemoryJournal()
+
+	s, err := New[ledgerState]("ledger", &roomsStep{Name: "rooms", rooms: rooms},
+		WithJournal(journal))
+	require.NoError(t, err)
+
+	st := initial
+	st.ID = "ledger-1"
+	require.NoError(t, s.Run(t.Context(), &st))
+
+	events := storedEvents(t, journal, st.ID)
+	require.Len(t, events, 4)
+
+	return events
+}
+
+func Test_Saga_Run_fieldValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		initial     ledgerState
+		rooms       Rooms
+		wantStarted []FieldValue
+		wantDone    []FieldValue
+	}{
+		{
+			name: "[Success] When: the step returns a nil slice ; " +
+				"Should: record null on the success and every initial field by its Go name on saga-started",
+			initial: ledgerState{Hotel: hotelRitz},
+			wantStarted: []FieldValue{
+				{Field: "ID", Value: jsontext.Value(`"ledger-1"`)},
+				{Field: hotelField, Value: jsontext.Value(`"ritz"`)},
+				{Field: roomsField, Value: jsontext.Value("null")},
+			},
+			wantDone: []FieldValue{{Field: roomsField, Value: jsontext.Value("null")}},
+		},
+		{
+			name: "[Success] When: the step returns the rooms the state already held ; " +
+				"Should: still record the rooms on the success",
+			initial: ledgerState{Rooms: Rooms{"a1"}},
+			rooms:   Rooms{"a1"},
+			wantStarted: []FieldValue{
+				{Field: "ID", Value: jsontext.Value(`"ledger-1"`)},
+				{Field: hotelField, Value: jsontext.Value(`""`)},
+				{Field: roomsField, Value: jsontext.Value(`["a1"]`)},
+			},
+			wantDone: []FieldValue{{Field: roomsField, Value: jsontext.Value(`["a1"]`)}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			events := ledgerEvents(t, tt.initial, tt.rooms)
+			assert.Equal(t, tt.wantStarted, events[0].Values)
+			assert.Equal(t, EventStepSucceeded, events[2].Kind)
+			assert.Equal(t, tt.wantDone, events[2].Values)
+		})
 	}
 }

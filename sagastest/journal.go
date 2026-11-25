@@ -2,6 +2,7 @@ package sagastest
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"reflect"
@@ -69,8 +70,8 @@ func journalEvent(seq int) *sagas.Event {
 		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Version: sagas.EventVersion,
 		Kind: sagas.EventStepStarted,
 		Step: "step", Attempts: 1,
-		Err:     sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
-		Changed: []string{"changed"},
+		Err:    sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
+		Values: []sagas.FieldValue{{Field: "Field", Value: jsontext.Value(`"value"`)}},
 		Steps: []sagas.StepZone{
 			{Name: "step", Zone: sagas.ZoneCompensable, Compensable: true},
 			{Name: "bare", Zone: sagas.ZonePivot},
@@ -90,7 +91,7 @@ func otherEvent(seq int) *sagas.Event {
 func emptySlicesEvent(seq int) *sagas.Event {
 	e := journalEvent(seq)
 	e.Kind = sagas.EventSagaFinished
-	e.Changed, e.Steps, e.Err.Previous = []string{}, []sagas.StepZone{}, []string{}
+	e.Values, e.Steps, e.Err.Previous = []sagas.FieldValue{}, []sagas.StepZone{}, []string{}
 
 	return e
 }
@@ -281,7 +282,7 @@ func copyMutations() []mutation {
 	return []mutation{
 		{"scalar field", func(e *sagas.Event) { e.Step = mutated }},
 		{"Version", func(e *sagas.Event) { e.Version = "v9.0.0" }},
-		{"Changed slice", func(e *sagas.Event) { e.Changed[0] = mutated }},
+		{"Values element", func(e *sagas.Event) { e.Values[0].Field = mutated }},
 		{"Steps slice", func(e *sagas.Event) { e.Steps[0].Name = mutated }},
 		{"Steps Compensable from true", func(e *sagas.Event) { e.Steps[0].Compensable = false }},
 		{"Steps Compensable from false", func(e *sagas.Event) { e.Steps[1].Compensable = true }},

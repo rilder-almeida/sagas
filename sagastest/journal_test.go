@@ -200,8 +200,8 @@ type readsEmptyAsNil struct{ *sagas.MemoryJournal }
 func (j readsEmptyAsNil) Events(ctx context.Context, execution string) ([]sagas.Event, error) {
 	events, err := j.MemoryJournal.Events(ctx, execution)
 	for i := range events {
-		if len(events[i].Changed) == 0 {
-			events[i].Changed = nil
+		if len(events[i].Values) == 0 {
+			events[i].Values = nil
 		}
 
 		if len(events[i].Steps) == 0 {
@@ -447,7 +447,7 @@ func journalRows() []journalRow {
 			wantRules: []string{ruleStoredCopy},
 			wantCauses: []string{
 				"resend of seq 1 after the caller changed its scalar field returned nil",
-				"resend of seq 1 after the caller changed its Changed slice returned nil",
+				"resend of seq 1 after the caller changed its Values element returned nil",
 			},
 		},
 		{
@@ -741,7 +741,7 @@ func Test_Journal_referenceEvents(t *testing.T) {
 		{
 			name:  "[Fail] When: the reference event with empty slices ; Should: name only the empty slices",
 			event: emptySlicesEvent(seqThird),
-			want:  []string{"Event.Err.Previous", "Event.Changed", "Event.Steps"},
+			want:  []string{"Event.Err.Previous", "Event.Values", "Event.Steps"},
 		},
 		{
 			name:  "[Fail] When: an event without Status ; Should: name Status",
