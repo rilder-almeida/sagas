@@ -19,6 +19,7 @@ import (
 const (
 	opened         = string(EventSagaStarted)
 	closed         = string(EventSagaFinished)
+	suspended      = string(EventSagaSuspended)
 	ifB            = "if:b"
 	storedCompText = "compensable"
 	hotelRitz      = "ritz"
@@ -415,7 +416,7 @@ func forwardOnlyCommitFailsRow() runRow {
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepFailed},
 		wantPending:  []string{"z"},
 		wantTrail: seq(
-			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), suspended,
 		),
 		wantZones: pivotZones("z"),
 	}
@@ -504,7 +505,7 @@ func pivotCommitFailsRow() runRow {
 		},
 		wantPending: []string{"p", "y", "z"},
 		wantRunOnly: []string{"y", "z"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), closed),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), suspended),
 		wantZones: []StepZone{
 			{Name: "a", Zone: ZoneCompensable, Compensable: true},
 			{Name: "p", Zone: ZonePivot},
@@ -597,7 +598,7 @@ func forwardOnlyOwnFailureRow() runRow {
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepFailed},
 		wantPending:  []string{"z"},
 		wantTrail: seq(
-			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), suspended,
 		),
 		wantZones: pivotZones("z"),
 	}
@@ -746,7 +747,7 @@ func pivotPanicRow() runRow {
 		wantNotErrs:  []error{ErrCompensated},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "p": stepUnknown, "z": stepNotStarted},
 		wantPending:  []string{"p"},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), closed),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("p"), lostOf("p"), suspended),
 		wantZones:    pivotZones("z"),
 	}
 }
@@ -789,7 +790,7 @@ func forwardOnlyFailureRow() runRow {
 		wantTrail: slices.Concat(
 			seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p")),
 			together(startOf("y"), startOf("z"), failedOf("z"), doneOf("y")),
-			seq(closed),
+			seq(suspended),
 		),
 		wantZones: forwardOnlyZones(),
 		wantState: tripState{Hotel: hotelRitz},

@@ -34,7 +34,6 @@ func compStartOf(step string) string  { return trailOf(EventCompensationStarted,
 func undoneOf(step string) string     { return trailOf(EventCompensationSucceeded, step) }
 func undoFailedOf(step string) string { return trailOf(EventCompensationFailed, step) }
 func blockedOf(step string) string    { return trailOf(EventCompensationBlocked, step) }
-func haltedA() string                 { return trailOf(EventCompensationHalted, "a") }
 
 func failingUndo(
 	name string,
@@ -275,7 +274,7 @@ func continuePastFailedUndoRow() runRow {
 		wantOrder:   [][2]string{{"a2", "undo:a1 saw a1"}},
 		wantTrail: seq(
 			opened, startOf("a1"), doneOf("a1"), startOf("a2"), doneOf("a2"), startOf("x"), failedOf("x"),
-			compStartOf("a2"), undoFailedOf("a2"), compStartOf("a1"), undoneOf("a1"), closed,
+			compStartOf("a2"), undoFailedOf("a2"), compStartOf("a1"), undoneOf("a1"), suspended,
 		),
 		wantState: tripState{Hotel: "a2"},
 	}
@@ -611,14 +610,14 @@ func policyRow(name string, policy FailurePolicy, a stepStatus, tail, pending []
 func blockRow() runRow {
 	return policyRow(
 		"[Fail] When: a compensation with Block fails ; Should: block the earlier compensation",
-		Block, stepBlocked, []string{blockedOf("a"), closed}, []string{"a", "b"},
+		Block, stepBlocked, []string{blockedOf("a"), suspended}, []string{"a", "b"},
 	)
 }
 
 func continueRow() runRow {
 	row := policyRow(
 		"[Fail] When: a compensation with Continue fails ; Should: still run the earlier compensation",
-		Continue, stepCompensated, []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"},
+		Continue, stepCompensated, []string{compStartOf("a"), undoneOf("a"), suspended}, []string{"b"},
 	)
 	row.wantCompensated = []string{"a"}
 
@@ -627,8 +626,8 @@ func continueRow() runRow {
 
 func haltRow() runRow {
 	return policyRow(
-		"[Fail] When: a compensation with BlockAll fails ; Should: halt the earlier compensation",
-		BlockAll, stepHalted, []string{haltedA(), closed}, []string{"a", "b"},
+		"[Fail] When: a compensation with BlockAll fails ; Should: block the earlier compensation",
+		BlockAll, stepBlocked, []string{blockedOf("a"), suspended}, []string{"a", "b"},
 	)
 }
 
@@ -658,7 +657,7 @@ func blockAcrossRow() runRow {
 		wantPending: []string{"a", "b"},
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("x"), doneOf("x"), startOf("b"), doneOf("b"),
-			startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed,
+			startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"), blockedOf("a"), suspended,
 		),
 	}
 }
@@ -687,14 +686,14 @@ func blockThenHaltRow() runRow {
 		wantAttempts: map[string]int{comp("b"): 1, "c": 1, comp("d"): 1},
 		wantErrs:     []error{errAlwaysFails},
 		wantSteps: map[string]stepStatus{
-			"a": stepHalted, "b": stepCompensationFailed, "c": stepFailed, "d": stepCompensationFailed,
+			"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed, "d": stepCompensationFailed,
 		},
 		wantPending: []string{"a", "b", "d"},
 		wantTrail: afterA(
 			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
 			seq(startOf("c"), failedOf("c")),
 			together(compStartOf("b"), compStartOf("d")),
-			seq(undoFailedOf("b"), undoFailedOf("d"), haltedA(), closed),
+			seq(undoFailedOf("b"), undoFailedOf("d"), blockedOf("a"), suspended),
 		),
 	}
 }
@@ -724,14 +723,14 @@ func haltAtOnceRow() runRow {
 		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
 		wantErrs:     []error{errAlwaysFails},
 		wantSteps: map[string]stepStatus{
-			"a": stepHalted, "b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed,
+			"a": stepBlocked, "b": stepCompensated, "c": stepFailed, "d": stepCompensationFailed,
 		},
 		wantPending: []string{"a", "d"},
 		wantTrail: afterA(
 			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
 			seq(startOf("c"), failedOf("c")),
 			together(compStartOf("b"), compStartOf("d")),
-			seq(undoFailedOf("d"), haltedA(), undoneOf("b"), closed),
+			seq(undoFailedOf("d"), blockedOf("a"), undoneOf("b"), suspended),
 		),
 	}
 }
@@ -752,7 +751,7 @@ func undoPanicRow() runRow {
 		wantText:     []string{panicBoom},
 		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
-		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
+		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), suspended),
 	}
 }
 
@@ -808,7 +807,7 @@ func undoIntentRow() runRow {
 		wantErrs:     []error{ErrJournal, errJournalDown},
 		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
-		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), closed),
+		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), suspended),
 	}
 }
 
@@ -856,7 +855,7 @@ func undoOutcomeTwiceRow() runRow {
 		wantPending:     []string{"a", "b"},
 		wantRunOnly:     []string{"b"},
 		wantOrder:       [][2]string{{"b", undoB}},
-		wantTrail:       chainTrail(compStartOf("b"), undoneOf("b"), blockedOf("a"), closed),
+		wantTrail:       chainTrail(compStartOf("b"), undoneOf("b"), blockedOf("a"), suspended),
 	}
 }
 
@@ -1060,13 +1059,13 @@ func slowUndo(rec *recorder, err error, policy FailurePolicy) *replaceStep {
 	return s
 }
 
-func readLateTrail(bOutcome string) [][]string {
+func readLateTrail(bOutcome, end string) [][]string {
 	return slices.Concat(
 		seq(opened),
 		together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
 		seq(startOf("c"), failedOf("c")),
 		together(compStartOf("b"), compStartOf("d")),
-		seq(undoneOf("d"), bOutcome, closed),
+		seq(undoneOf("d"), bOutcome, end),
 	)
 }
 
@@ -1093,7 +1092,7 @@ func graceSuccessCommittedRow() runRow {
 		wantErrs:     []error{errAlwaysFails},
 		wantNotErrs:  []error{ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"b": stepCompensated, "c": stepFailed, "d": stepCompensated},
-		wantTrail:    readLateTrail(undoneOf("b")),
+		wantTrail:    readLateTrail(undoneOf("b"), closed),
 		wantState:    tripState{Hotel: undoneHotel},
 	}
 }
@@ -1122,7 +1121,7 @@ func graceReadLateFailureRow() runRow {
 		wantNotErrs:  []error{ErrGraceEnded, errStop},
 		wantSteps:    map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated},
 		wantPending:  []string{"b"},
-		wantTrail:    readLateTrail(undoFailedOf("b")),
+		wantTrail:    readLateTrail(undoFailedOf("b"), suspended),
 	}
 }
 
@@ -1235,7 +1234,7 @@ func blockChainRow() runRow {
 		wantPending: []string{"a", "b", "c"},
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("c"), doneOf("c"),
-			startOf("d"), failedOf("d"), compStartOf("c"), undoFailedOf("c"), blockedOf("b"), blockedOf("a"), closed,
+			startOf("d"), failedOf("d"), compStartOf("c"), undoFailedOf("c"), blockedOf("b"), blockedOf("a"), suspended,
 		),
 	}
 }
@@ -1258,7 +1257,7 @@ func unknownThenUndoFailsRow() runRow {
 		wantPending:  []string{"a", "b"},
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("b"), lostOf("b"), compStartOf("b"), undoFailedOf("b"),
-			blockedOf("a"), closed,
+			blockedOf("a"), suspended,
 		),
 	}
 }
@@ -1410,7 +1409,7 @@ func graceTurnAfterReadRow() runRow {
 			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
 			seq(startOf("c"), failedOf("c")),
 			together(compStartOf("b"), compStartOf("d")),
-			seq(undoneOf("d"), undoneOf("b"), undoFailedOf("a"), closed),
+			seq(undoneOf("d"), undoneOf("b"), undoFailedOf("a"), suspended),
 		),
 		wantState: tripState{Hotel: undoneHotel},
 	}
@@ -1440,14 +1439,14 @@ func graceHaltAfterReadRow() runRow {
 		wantErrs:     []error{errAlwaysFails, errStop, context.Canceled},
 		wantNotErrs:  []error{ErrGraceEnded},
 		wantSteps: map[string]stepStatus{
-			"a": stepHalted, "b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated,
+			"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed, "d": stepCompensated,
 		},
 		wantPending: []string{"a", "b"},
 		wantTrail: afterA(
 			together(startOf("b"), startOf("d"), doneOf("b"), doneOf("d")),
 			seq(startOf("c"), failedOf("c")),
 			together(compStartOf("b"), compStartOf("d")),
-			seq(undoneOf("d"), undoFailedOf("b"), haltedA(), closed),
+			seq(undoneOf("d"), undoFailedOf("b"), blockedOf("a"), suspended),
 		),
 	}
 }
@@ -1475,16 +1474,16 @@ func haltBeforeGraceEndRow() runRow {
 		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
 		wantErrs:     []error{errAlwaysFails},
 		wantNotErrs:  []error{errStop, ErrGraceEnded},
-		wantSteps:    map[string]stepStatus{"a": stepHalted, "b": stepCompensationFailed, "c": stepFailed},
+		wantSteps:    map[string]stepStatus{"a": stepBlocked, "b": stepCompensationFailed, "c": stepFailed},
 		wantPending:  []string{"a", "b"},
-		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), haltedA(), closed),
+		wantTrail:    chainTrail(compStartOf("b"), undoFailedOf("b"), blockedOf("a"), suspended),
 	}
 }
 
 func policyCopyRow(given, later FailurePolicy, a stepStatus) runRow {
-	tail, pending, compensated := []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"}, []string{"a"}
+	tail, pending, compensated := []string{compStartOf("a"), undoneOf("a"), suspended}, []string{"b"}, []string{"a"}
 	if a == stepBlocked {
-		tail, pending, compensated = []string{blockedOf("a"), closed}, []string{"a", "b"}, nil
+		tail, pending, compensated = []string{blockedOf("a"), suspended}, []string{"a", "b"}, nil
 	}
 
 	return runRow{
@@ -1615,12 +1614,10 @@ func unsentSuccessOutputRow() runRow {
 		wantSteps:    map[string]stepStatus{"a": stepCompensationFailed},
 		wantPending:  []string{"a"},
 		wantOrder:    [][2]string{{"a", "undo:a saw ritz"}},
-		wantTrail:    seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoFailedOf("a"), closed),
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoFailedOf("a"), suspended),
 		wantState:    tripState{Hotel: hotelRitz},
 	}
 }
-
-func haltedOf(step string) string { return trailOf(EventCompensationHalted, step) }
 
 func failsAfter(wait time.Duration) func(context.Context, tripState) error {
 	return func(context.Context, tripState) error {
@@ -1663,7 +1660,7 @@ func levelWaitRow() runRow {
 		wantAttempts: map[string]int{comp("x"): 1, "c": 1},
 		wantErrs:     []error{errAlwaysFails},
 		wantSteps: map[string]stepStatus{
-			"w": stepHalted, "z": stepCompensated, "x": stepCompensationFailed, "y": stepCompensated, "c": stepFailed,
+			"w": stepBlocked, "z": stepCompensated, "x": stepCompensationFailed, "y": stepCompensated, "c": stepFailed,
 		},
 		wantPending: []string{"w", "x"},
 		wantTrail: slices.Concat(
@@ -1674,7 +1671,7 @@ func levelWaitRow() runRow {
 			),
 			seq(startOf("c"), failedOf("c")),
 			together(compStartOf("z"), compStartOf("x"), compStartOf("y")),
-			seq(undoneOf("z"), undoFailedOf("x"), haltedOf("w"), undoneOf("y"), closed),
+			seq(undoneOf("z"), undoFailedOf("x"), blockedOf("w"), undoneOf("y"), suspended),
 		),
 	}
 }
@@ -1698,13 +1695,13 @@ func serialLevelRow() runRow {
 		wantAttempts: map[string]int{comp("x"): 1, "c": 1},
 		wantErrs:     []error{errAlwaysFails},
 		wantSteps: map[string]stepStatus{
-			"w": stepHalted, "z": stepCompensated, "x": stepCompensationFailed, "c": stepFailed,
+			"w": stepBlocked, "z": stepCompensated, "x": stepCompensationFailed, "c": stepFailed,
 		},
 		wantPending: []string{"x", "w"},
 		wantTrail: seq(
 			opened, startOf("x"), doneOf("x"), startOf("w"), doneOf("w"), startOf("z"), doneOf("z"),
 			startOf("c"), failedOf("c"),
-			compStartOf("z"), undoneOf("z"), compStartOf("x"), undoFailedOf("x"), haltedOf("w"), closed,
+			compStartOf("z"), undoneOf("z"), compStartOf("x"), undoFailedOf("x"), blockedOf("w"), suspended,
 		),
 	}
 }
@@ -1733,7 +1730,7 @@ func compensableLevelRow() runRow {
 		wantErrs:     []error{errAlwaysFails},
 		wantSteps: map[string]stepStatus{
 			"p": stepCompensated, "n": stepSucceeded, "m": stepCompensated,
-			"q2": stepHalted, "q": stepCompensationFailed, "r": stepCompensated, "c": stepFailed,
+			"q2": stepBlocked, "q": stepCompensationFailed, "r": stepCompensated, "c": stepFailed,
 		},
 		wantPending: []string{"q2", "q"},
 		wantTrail: slices.Concat(
@@ -1745,8 +1742,8 @@ func compensableLevelRow() runRow {
 			seq(startOf("c"), failedOf("c")),
 			together(compStartOf("m"), compStartOf("r")),
 			seq(undoneOf("r"), undoneOf("m")),
-			together(compStartOf("p"), compStartOf("q"), undoFailedOf("q"), haltedOf("q2"), undoneOf("p")),
-			seq(closed),
+			together(compStartOf("p"), compStartOf("q"), undoFailedOf("q"), blockedOf("q2"), undoneOf("p")),
+			seq(suspended),
 		),
 	}
 }

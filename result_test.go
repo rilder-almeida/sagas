@@ -122,14 +122,14 @@ func storedTextRows() []foldRow {
 			),
 		},
 		{
-			name: "[Fail] When: the stored texts say a compensation failed ; Should: report it and halted",
+			name: "[Fail] When: the stored texts say a run is suspended ; Should: report the failed and blocked steps",
 			events: literalEvents(
 				Event{Kind: "compensation-failed", Step: bookStep},
-				Event{Kind: "compensation-halted", Step: holdStep},
-				finished(StatusCompensationFailed),
+				Event{Kind: "compensation-blocked", Step: holdStep},
+				Event{Kind: "saga-suspended", Status: StatusCompensationFailed},
 			),
 			want: wantSteps(
-				stepResult{Name: holdStep, Status: "halted"},
+				stepResult{Name: holdStep, Status: "blocked"},
 				stepResult{Name: bookStep, Status: compensationFailed},
 			),
 		},
@@ -148,7 +148,7 @@ func storedTextRows() []foldRow {
 				Event{Kind: "step-unknown", Step: payStep},
 				Event{Kind: "step-skipped", Step: shipStep},
 				Event{Kind: "compensation-blocked", Step: bookStep},
-				finished(StatusIncomplete),
+				Event{Kind: "saga-suspended", Status: StatusIncomplete},
 			),
 			want: wantSteps(
 				stepResult{Name: bookStep, Status: "blocked"},
@@ -234,7 +234,7 @@ func Test_foldStepStatuses(t *testing.T) {
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepFailed, Step: bookStep},
 				Event{Kind: EventCompensationFailed, Step: holdStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+				Event{Kind: EventSagaSuspended, Status: StatusCompensationFailed},
 			),
 			want: wantSteps(
 				stepResult{Name: holdStep, Status: stepCompensationFailed},
@@ -246,22 +246,10 @@ func Test_foldStepStatuses(t *testing.T) {
 			events: runEvents(
 				Event{Kind: EventCompensationFailed, Step: bookStep},
 				Event{Kind: EventCompensationBlocked, Step: holdStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+				Event{Kind: EventSagaSuspended, Status: StatusCompensationFailed},
 			),
 			want: wantSteps(
 				stepResult{Name: holdStep, Status: stepBlocked},
-				stepResult{Name: bookStep, Status: stepCompensationFailed},
-			),
-		},
-		{
-			name: "[Fail] When: a compensation is halted ; Should: report it halted",
-			events: runEvents(
-				Event{Kind: EventCompensationFailed, Step: bookStep},
-				Event{Kind: EventCompensationHalted, Step: holdStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
-			),
-			want: wantSteps(
-				stepResult{Name: holdStep, Status: stepHalted},
 				stepResult{Name: bookStep, Status: stepCompensationFailed},
 			),
 		},
@@ -274,7 +262,7 @@ func Test_foldStepStatuses(t *testing.T) {
 			name: "[Fail] When: the pivot ends unknown ; Should: report it unknown",
 			events: runEvents(
 				Event{Kind: EventStepUnknown, Step: payStep},
-				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
+				Event{Kind: EventSagaSuspended, Status: StatusIncomplete},
 			),
 			want: wantSteps(
 				stepResult{Name: payStep, Status: stepUnknown},
@@ -286,7 +274,7 @@ func Test_foldStepStatuses(t *testing.T) {
 				Event{Kind: EventStepSucceeded, Step: payStep},
 				Event{Kind: EventStepFailed, Step: shipStep},
 				Event{Kind: EventStepUnknown, Step: notifyStep},
-				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
+				Event{Kind: EventSagaSuspended, Status: StatusIncomplete},
 			),
 			want: wantSteps(
 				stepResult{Name: payStep, Status: stepSucceeded},
@@ -397,8 +385,8 @@ func Test_nextStatus(t *testing.T) {
 			current: stepSucceeded, kind: EventCompensationBlocked, want: stepBlocked,
 		},
 		{
-			name:    "[Success] When: the compensation is halted ; Should: be halted",
-			current: stepSucceeded, kind: EventCompensationHalted, want: stepHalted,
+			name:    "[Fail] When: the event is saga-suspended ; Should: keep the current status",
+			current: stepCompensationFailed, kind: EventSagaSuspended, want: stepCompensationFailed,
 		},
 		{
 			name:    "[Fail] When: the event is saga-started ; Should: keep the current status",
@@ -414,7 +402,7 @@ func Test_nextStatus(t *testing.T) {
 		},
 		{
 			name:    "[Fail] When: the kind is unknown ; Should: keep the current status",
-			current: stepHalted, kind: EventKind("no such kind"), want: stepHalted,
+			current: stepCompensated, kind: EventKind("compensation-halted"), want: stepCompensated,
 		},
 	}
 
@@ -487,19 +475,7 @@ func Test_pendingOf(t *testing.T) {
 				Event{Kind: EventStepFailed, Step: payStep},
 				Event{Kind: EventCompensationFailed, Step: bookStep},
 				Event{Kind: EventCompensationBlocked, Step: holdStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
-			),
-			want: []string{holdStep, bookStep},
-		},
-		{
-			name: "[Fail] When: a compensation fails and another is halted ; Should: list both in step order",
-			events: runEvents(
-				Event{Kind: EventStepSucceeded, Step: holdStep},
-				Event{Kind: EventStepSucceeded, Step: bookStep},
-				Event{Kind: EventStepFailed, Step: payStep},
-				Event{Kind: EventCompensationFailed, Step: bookStep},
-				Event{Kind: EventCompensationHalted, Step: holdStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+				Event{Kind: EventSagaSuspended, Status: StatusCompensationFailed},
 			),
 			want: []string{holdStep, bookStep},
 		},
@@ -509,7 +485,7 @@ func Test_pendingOf(t *testing.T) {
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepSucceeded, Step: bookStep},
 				Event{Kind: EventStepUnknown, Step: payStep},
-				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
+				Event{Kind: EventSagaSuspended, Status: StatusIncomplete},
 			),
 			want: []string{payStep},
 		},
@@ -521,7 +497,7 @@ func Test_pendingOf(t *testing.T) {
 				Event{Kind: EventStepSucceeded, Step: payStep},
 				Event{Kind: EventStepFailed, Step: shipStep},
 				Event{Kind: EventStepUnknown, Step: notifyStep},
-				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
+				Event{Kind: EventSagaSuspended, Status: StatusIncomplete},
 			),
 			want: []string{shipStep, notifyStep, archiveStep},
 		},
@@ -533,7 +509,7 @@ func Test_pendingOf(t *testing.T) {
 				Event{Kind: EventStepSucceeded, Step: payStep},
 				Event{Kind: EventStepSucceeded, Step: shipStep},
 				Event{Kind: EventStepFailed, Step: notifyStep},
-				Event{Kind: EventSagaFinished, Status: StatusIncomplete},
+				Event{Kind: EventSagaSuspended, Status: StatusIncomplete},
 			),
 			want: []string{notifyStep, archiveStep},
 		},
@@ -550,7 +526,7 @@ func Test_pendingOf(t *testing.T) {
 			events: runEvents(
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepStarted, Step: bookStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+				Event{Kind: EventSagaSuspended, Status: StatusCompensationFailed},
 			),
 			want: []string{bookStep},
 		},
@@ -559,7 +535,7 @@ func Test_pendingOf(t *testing.T) {
 			events: bareEvents(bookStep,
 				Event{Kind: EventStepSucceeded, Step: holdStep},
 				Event{Kind: EventStepStarted, Step: bookStep},
-				Event{Kind: EventSagaFinished, Status: StatusCompensationFailed},
+				Event{Kind: EventSagaSuspended, Status: StatusCompensationFailed},
 			),
 			want: nil,
 		},

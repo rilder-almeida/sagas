@@ -147,6 +147,7 @@ const noEndStatus Status = "unfinished"
 type runRecord struct {
 	Execution string
 	Status    Status
+	End       EventKind
 	Steps     []stepResult
 	events    []Event
 }
@@ -159,8 +160,8 @@ func recordOf(events []Event) runRecord {
 			r.Execution = events[i].Execution
 		}
 
-		if events[i].Kind == EventSagaFinished {
-			r.Status = events[i].Status
+		if events[i].Kind == EventSagaFinished || events[i].Kind == EventSagaSuspended {
+			r.Status, r.End = events[i].Status, events[i].Kind
 		}
 	}
 
@@ -1038,6 +1039,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	assert.Equal(t, tt.wantCompensated, compensated)
 
 	assert.Equal(t, tt.wantStatus, res.Status)
+	assert.Equal(t, endKindOf(tt.wantStatus), res.End)
 	assert.Equal(t, tt.wantPending, pending)
 	assert.Equal(t, journalPending(res, tt), pendingOf(res.events))
 	assert.Equal(t, tt.wantState, got.state)
@@ -1045,6 +1047,19 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	assertEvents(t, res, tt, storedEvents(t, journal.MemoryJournal, res.Execution))
 
 	assertFailures(t, tt, got, res)
+}
+
+func endKindOf(status Status) EventKind {
+	switch status {
+	case StatusCompleted, StatusCompensated:
+		return EventSagaFinished
+	case StatusCompensationFailed, StatusIncomplete:
+		return EventSagaSuspended
+	case noEndStatus:
+		return ""
+	}
+
+	return ""
 }
 
 func journalPending(res *runRecord, tt *runRow) []string {
@@ -1342,7 +1357,7 @@ func lateForwardOnlyVerdictRow() runRow {
 		wantSteps:    map[string]stepStatus{"p": stepSucceeded, "y": stepFailed, "z": stepNotStarted},
 		wantPending:  []string{"y", "z"},
 		wantOrder:    [][2]string{{"p", "if:z"}},
-		wantTrail:    seq(opened, startOf("p"), doneOf("p"), startOf("y"), failedOf("y"), closed),
+		wantTrail:    seq(opened, startOf("p"), doneOf("p"), startOf("y"), failedOf("y"), suspended),
 		wantZones: []StepZone{
 			{Name: "p", Zone: ZonePivot}, {Name: "y", Zone: ZoneForwardOnly}, {Name: "z", Zone: ZoneForwardOnly},
 		},
@@ -1640,7 +1655,7 @@ func pivotOutcomeAppendRow() runRow {
 		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepNotStarted},
 		wantPending: []string{"p", "z"},
 		wantRunOnly: []string{"p"},
-		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), suspended),
 		wantZones:   pivotZones("z"),
 	}
 }
@@ -1681,7 +1696,7 @@ func forwardOnlyIntentRow() runRow {
 		wantPending: []string{"z"},
 		wantClosed:  map[string]EventError{"z": journalDownEvent()},
 		wantTrail: seq(
-			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), closed,
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), failedOf("z"), suspended,
 		),
 		wantZones: pivotZones("z"),
 	}
@@ -2162,7 +2177,7 @@ func backwardStoredIntentRow() runRow {
 		},
 		wantPending: []string{"b"},
 		wantOrder:   [][2]string{{"a", undoA}},
-		wantTrail:   chainTrail(compStartOf("b"), undoFailedOf("b"), compStartOf("a"), undoneOf("a"), closed),
+		wantTrail:   chainTrail(compStartOf("b"), undoFailedOf("b"), compStartOf("a"), undoneOf("a"), suspended),
 	}
 }
 
@@ -2235,7 +2250,7 @@ func compensatedListRow() runRow {
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("d"), doneOf("d"),
 			startOf("c"), failedOf("c"), compStartOf("d"), undoFailedOf("d"), compStartOf("b"), undoneOf("b"),
-			compStartOf("a"), undoneOf("a"), closed,
+			compStartOf("a"), undoneOf("a"), suspended,
 		),
 	}
 }

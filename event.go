@@ -12,7 +12,8 @@ const EventVersion = "v0.2.0"
 // Event is one journal record of an execution. Writer is the token of the run that wrote it, and Seq counts from 1.
 // Version is the EventVersion of the writing package. Step names the step of a step or compensation event, and
 // Attempt counts its attempts. Err is set on a failed, unknown or compensation-failed event. Changed names the fields
-// that a success committed. Steps lists every step on saga-started. Status is the end of the run on saga-finished.
+// that a success committed. Steps lists every step on saga-started. Status is the end of the run on saga-finished
+// and saga-suspended.
 type Event struct {
 	Saga      string
 	Execution string
@@ -60,8 +61,8 @@ const (
 	EventCompensationSucceeded EventKind = "compensation-succeeded"
 	EventCompensationFailed    EventKind = "compensation-failed"
 	EventCompensationBlocked   EventKind = "compensation-blocked"
-	EventCompensationHalted    EventKind = "compensation-halted"
 	EventSagaFinished          EventKind = "saga-finished"
+	EventSagaSuspended         EventKind = "saga-suspended"
 )
 
 // Zone says where a step runs: before the pivot, as the pivot or after it. The empty string is unset, never a zone.

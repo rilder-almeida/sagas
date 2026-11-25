@@ -144,7 +144,7 @@ func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBe
 
 	switch decide(b.blockedAll, blockedBelow) {
 	case compBlockedAll:
-		r.skip(grace, b, i, EventCompensationHalted)
+		r.skip(grace, b, i, EventCompensationBlocked)
 	case compBlocked:
 		r.skip(grace, b, i, EventCompensationBlocked)
 		b.tainted[i] = true
@@ -313,7 +313,7 @@ func (r *runner[S]) blockUnbegun(grace context.Context, b *rollback[S]) {
 			b.begun[i] = true
 
 			r.decidedUnrun(grace)
-			r.skip(grace, b, i, EventCompensationHalted)
+			r.skip(grace, b, i, EventCompensationBlocked)
 		}
 	}
 }

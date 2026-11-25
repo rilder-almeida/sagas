@@ -260,7 +260,7 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 	}
 
 	status := r.status(end)
-	sealed := status != "" && r.record(grace, &Event{Kind: EventSagaFinished, Status: status})
+	sealed := status != "" && r.record(grace, &Event{Kind: endEventKind(status), Status: status})
 
 	if r.graceHit && r.interrupted == nil {
 		r.interrupted = callerCause(ctx)
@@ -285,6 +285,14 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 	return &RunError{
 		Kind: kind, Steps: r.stepErrors(), Pending: r.pending(), Compensated: r.compensated(), causes: causes,
 	}
+}
+
+func endEventKind(status Status) EventKind {
+	if status == StatusCompensationFailed || status == StatusIncomplete {
+		return EventSagaSuspended
+	}
+
+	return EventSagaFinished
 }
 
 func (r *runner[S]) stepErrors() []*Error {

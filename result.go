@@ -9,7 +9,7 @@ var (
 	// started compensation succeeds.
 	ErrCompensated = &KindError{name: "compensated", message: "sagas: compensated"}
 	// ErrCompensationFailed is returned when a run stops before the pivot applies, a pivot error included, and a
-	// compensation fails for good, is blocked or is halted.
+	// compensation fails for good or is blocked.
 	ErrCompensationFailed = &KindError{name: "compensation_failed", message: "sagas: compensation failed"}
 	// ErrIncomplete is returned when a run passed the pivot and stopped before the end, or the outcome of the pivot
 	// stayed unknown.
@@ -38,7 +38,6 @@ const (
 	stepCompensated        stepStatus = "compensated"
 	stepCompensationFailed stepStatus = "compensation-failed"
 	stepBlocked            stepStatus = "blocked"
-	stepHalted             stepStatus = "halted"
 )
 
 type stepResult struct {
@@ -79,7 +78,7 @@ func owed(status stepStatus, step StepZone, pivot stepStatus) bool {
 	switch status {
 	case stepUnknown:
 		return step.Zone != ZoneCompensable || step.Compensable
-	case stepCompensationFailed, stepBlocked, stepHalted:
+	case stepCompensationFailed, stepBlocked:
 		return true
 	case stepFailed, stepNotStarted:
 		return step.Zone == ZoneForwardOnly && pivot == stepSucceeded
@@ -117,13 +116,13 @@ func nextStatus(current stepStatus, k EventKind) stepStatus {
 	case EventStepStarted:
 		return stepUnknown
 	case EventStepSucceeded, EventStepFailed, EventStepUnknown, EventCompensationSucceeded, EventCompensationFailed,
-		EventCompensationBlocked, EventCompensationHalted:
+		EventCompensationBlocked:
 		return outcomeStatus(k)
 	case EventStepSkipped:
 		return stepSkipped
 	case EventCompensationStarted:
 		return stepCompensationFailed
-	case "", EventSagaStarted, EventSagaFinished:
+	case "", EventSagaStarted, EventSagaFinished, EventSagaSuspended:
 		return current
 	default:
 	}
@@ -145,9 +144,8 @@ func outcomeStatus(k EventKind) stepStatus {
 		return stepCompensationFailed
 	case EventCompensationBlocked:
 		return stepBlocked
-	case EventCompensationHalted:
-		return stepHalted
-	case "", EventSagaStarted, EventStepStarted, EventStepSkipped, EventCompensationStarted, EventSagaFinished:
+	case "", EventSagaStarted, EventStepStarted, EventStepSkipped, EventCompensationStarted, EventSagaFinished,
+		EventSagaSuspended:
 		return ""
 	default:
 	}
