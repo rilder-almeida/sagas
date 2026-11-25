@@ -166,7 +166,7 @@ func newTestJournal(tb testing.TB, dir string) *fileJournal {
 func testEvent(seq int, step string) *sagas.Event {
 	return &sagas.Event{
 		Saga: "saga", Execution: runID, Writer: "writer", Seq: seq, Version: sagas.EventVersion,
-		Kind: sagas.EventStepStarted, Step: step, Attempt: 1,
+		Kind: sagas.EventStepStarted, Step: step, Attempts: 1,
 		Time: time.Date(2026, time.November, 23, 12, 0, 0, 0, time.UTC),
 	}
 }

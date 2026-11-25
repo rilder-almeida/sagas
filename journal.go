@@ -148,5 +148,6 @@ func sameError(a, b *EventError) bool {
 
 func sameScalars(a, b *Event) bool {
 	return a.Saga == b.Saga && a.Execution == b.Execution && a.Writer == b.Writer && a.Seq == b.Seq &&
-		a.Version == b.Version && a.Kind == b.Kind && a.Step == b.Step && a.Attempt == b.Attempt && a.Status == b.Status
+		a.Version == b.Version && a.Kind == b.Kind && a.Step == b.Step && a.Attempts == b.Attempts &&
+		a.Status == b.Status
 }

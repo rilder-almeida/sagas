@@ -597,11 +597,11 @@ func benchEvents(steps int) []Event {
 			events,
 			Event{Kind: EventStepStarted, Step: name, Seq: len(events) + 1},
 			Event{
-				Kind:    EventStepSucceeded,
-				Step:    name,
-				Seq:     len(events) + 2,
-				Attempt: 1,
-				Changed: []string{seatsField},
+				Kind:     EventStepSucceeded,
+				Step:     name,
+				Seq:      len(events) + 2,
+				Attempts: 1,
+				Changed:  []string{seatsField},
 			},
 		)
 	}

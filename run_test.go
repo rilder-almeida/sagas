@@ -972,6 +972,7 @@ type runRow struct {
 	wantZones          []StepZone
 	wantTrail          [][]string
 	wantChanged        map[string][]string
+	wantEventAttempts  map[string]int
 	initial            tripState
 	wantState          tripState
 }
@@ -1202,6 +1203,10 @@ func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 
 		if want, found := tt.wantChanged[key]; found {
 			assert.Equal(t, want, events[i].Changed, "event %s", key)
+		}
+
+		if want, found := tt.wantEventAttempts[key]; found {
+			assert.Equal(t, want, events[i].Attempts, "event %s", key)
 		}
 	}
 

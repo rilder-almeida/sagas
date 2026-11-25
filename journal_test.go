@@ -23,7 +23,7 @@ func journalEvent(execution string, seq int) Event {
 		Version:   EventVersion,
 		Kind:      EventStepSucceeded,
 		Step:      "reserve",
-		Attempt:   1,
+		Attempts:  1,
 		Err:       EventError{Kind: nameFailed, Message: "declined", Cause: "stopped", Previous: []string{"first"}},
 		Changed:   []string{"Seats"},
 		Steps:     []StepZone{{Name: "reserve", Zone: ZoneCompensable}},
@@ -524,8 +524,8 @@ func Test_SameEvent(t *testing.T) {
 			stored: &base, sent: withEvent(&base, func(e *Event) { e.Step = "charge" }),
 		},
 		{
-			name:   "[Fail] When: Attempt differs ; Should: return false",
-			stored: &base, sent: withEvent(&base, func(e *Event) { e.Attempt = 2 }),
+			name:   "[Fail] When: Attempts differs ; Should: return false",
+			stored: &base, sent: withEvent(&base, func(e *Event) { e.Attempts = 2 }),
 		},
 		{
 			name:   "[Fail] When: the Err kind differs ; Should: return false",

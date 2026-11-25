@@ -68,7 +68,7 @@ func journalEvent(seq int) *sagas.Event {
 	return &sagas.Event{
 		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Version: sagas.EventVersion,
 		Kind: sagas.EventStepStarted,
-		Step: "step", Attempt: 1,
+		Step: "step", Attempts: 1,
 		Err:     sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
 		Changed: []string{"changed"},
 		Steps: []sagas.StepZone{

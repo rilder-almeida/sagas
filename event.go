@@ -10,10 +10,10 @@ import (
 const EventVersion = "v0.2.0"
 
 // Event is one journal record of an execution. Writer is the token of the run that wrote it, and Seq counts from 1.
-// Version is the EventVersion of the writing package. Step names the step of a step or compensation event, and
-// Attempt counts its attempts. Err is set on a failed, unknown or compensation-failed event. Changed names the fields
-// that a success committed. Steps lists every step on saga-started. Status is the end of the run on saga-finished
-// and saga-suspended.
+// Version is the EventVersion of the writing package. Step names the step of a step or compensation event. Attempts
+// counts the attempts made, and zero means the call never ran. Err is set on a failed, unknown or compensation-failed
+// event. Changed names the fields that a success committed. Steps lists every step on saga-started. Status is the end
+// of the run on saga-finished and saga-suspended.
 type Event struct {
 	Saga      string
 	Execution string
@@ -22,7 +22,7 @@ type Event struct {
 	Version   string
 	Kind      EventKind
 	Step      string
-	Attempt   int
+	Attempts  int
 	Err       EventError
 	Changed   []string
 	Steps     []StepZone

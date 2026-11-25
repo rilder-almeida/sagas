@@ -496,12 +496,12 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 		recorded := outcomeOf(res.events, step)
 		if slices.Contains(tt.wantUnrecorded, step) {
 			assert.Equal(t, EventError{}, recorded.Err)
-			assert.Zero(t, recorded.Attempt)
+			assert.Zero(t, recorded.Attempts)
 
 			continue
 		}
 
-		assert.Equal(t, se.Attempts, recorded.Attempt)
+		assert.Equal(t, se.Attempts, recorded.Attempts)
 		assertEventMirror(t, recorded.Err, se)
 	}
 
@@ -516,7 +516,7 @@ func assertFailures(t *testing.T, tt *runRow, got *ran, res *runRecord) {
 	for step, want := range tt.wantClosed {
 		closing := outcomeOf(res.events, step)
 		assert.Equal(t, EventStepFailed, closing.Kind, "closing event of step %s", step)
-		assert.Zero(t, closing.Attempt, "closing event of step %s", step)
+		assert.Zero(t, closing.Attempts, "closing event of step %s", step)
 		assert.Equal(t, want, closing.Err, "closing event of step %s", step)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,6 +79,39 @@ func forwardRows() []runRow {
 		skippedAncestorRow(),
 		serialVerdictRow(),
 		stoppedCauseRow(),
+		attemptsRow(),
+	}
+}
+
+func succeedsOnTry(n int64) func(context.Context, tripState) error {
+	var calls atomic.Int64
+
+	return func(context.Context, tripState) error {
+		if calls.Add(1) < n {
+			return errAlwaysFails
+		}
+
+		return nil
+	}
+}
+
+func attemptsRow() runRow {
+	return runRow{
+		name: "[Fail] When: a step succeeds on its third try and the next fails once ; " +
+			"Should: record 3 and 1 attempts and no event for the step after",
+		steps: func(rec *recorder) Flow {
+			return Sequence(act("a", succeedsOnTry(3)), once("b", alwaysFails), rec.step("c"))
+		},
+		wantStatus:        StatusCompensated,
+		wantKind:          ErrCompensated,
+		wantKinds:         map[string]*KindError{"b": ErrFailed},
+		wantFailed:        []string{"b"},
+		wantErrText:       map[string]string{"b": errAlwaysFails.Error()},
+		wantAttempts:      map[string]int{"b": 1},
+		wantErrs:          []error{errAlwaysFails},
+		wantSteps:         map[string]stepStatus{"a": stepSucceeded, "b": stepFailed, "c": stepNotStarted},
+		wantTrail:         seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), closed),
+		wantEventAttempts: map[string]int{doneOf("a"): 3, failedOf("b"): 1},
 	}
 }
 
