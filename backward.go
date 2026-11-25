@@ -285,11 +285,11 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out *outc
 	b.tainted[i] = policy == Block
 
 	if policy == BlockAll {
-		r.blockAll(grace, b)
+		r.blockUnbegun(grace, b)
 	}
 }
 
-func (r *runner[S]) blockAll(grace context.Context, b *rollback[S]) {
+func (r *runner[S]) blockUnbegun(grace context.Context, b *rollback[S]) {
 	b.blockedAll = true
 
 	for _, i := range slices.Backward(r.saga.order) {

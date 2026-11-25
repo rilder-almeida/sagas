@@ -123,20 +123,10 @@ func Test_New(t *testing.T) {
 		opts         []Option
 		wantErrs     []error
 		wantContains []string
-		wantBlockAll bool
 	}{
 		{
 			name: "[Success] When: the saga is valid ; Should: return a saga",
 			saga: tripName, flow: a,
-		},
-		{
-			name: "[Success] When: one step has the BlockAll policy ; Should: block every compensation on a failure",
-			saga: tripName, flow: Sequence(a, failingUndo("b", BlockAll, alwaysFails)),
-			wantBlockAll: true,
-		},
-		{
-			name: "[Success] When: no step has the BlockAll policy ; Should: not block every compensation",
-			saga: tripName, flow: Sequence(a, failingUndo("b", Continue, alwaysFails)),
 		},
 		{
 			name:         "[Fail] When: the saga name is empty ; Should: reject it naming the saga",
@@ -305,7 +295,6 @@ func Test_New(t *testing.T) {
 			requireText(t, err, tt.wantContains, nil)
 			assert.Contains(t, errText(err), errText(inspectErr))
 			assert.Equal(t, err == nil, s != nil)
-			assert.Equal(t, tt.wantBlockAll, s != nil && s.blockAll)
 		})
 	}
 }

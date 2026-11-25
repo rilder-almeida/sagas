@@ -2,6 +2,7 @@ package sagastest
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -21,6 +22,8 @@ const (
 	startC = "start c"
 	endC   = "end c"
 )
+
+var errLastFails = errors.New("last step fails")
 
 type trace struct {
 	mu    sync.Mutex
@@ -55,13 +58,23 @@ func (s *traceStep) Execute(context.Context, probeState) error {
 	return nil
 }
 
+func (s *traceStep) Compensate(context.Context, probeState) error {
+	s.trace.add("undo start " + s.Name)
+	time.Sleep(time.Millisecond)
+	s.trace.add("undo end " + s.Name)
+
+	return nil
+}
+
 func Test_WithoutConcurrency(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		steps []string
-		want  []string
+		name    string
+		steps   []string
+		fail    bool
+		wantErr error
+		want    []string
 	}{
 		{
 			name: "[Success] When: two parallel steps run under the mark ; " +
@@ -74,6 +87,17 @@ func Test_WithoutConcurrency(t *testing.T) {
 				"Should: run them one at a time in graph order",
 			steps: []string{"a", "b", "c"},
 			want:  []string{startA, endA, startB, endB, startC, endC},
+		},
+		{
+			name: "[Fail] When: a step after three parallel compensable steps fails under the mark ; " +
+				"Should: run the compensations one at a time in reverse graph order",
+			steps:   []string{"a", "b", "c"},
+			fail:    true,
+			wantErr: sagas.ErrCompensated,
+			want: []string{
+				startA, endA, startB, endB, startC, endC,
+				"undo start c", "undo end c", "undo start b", "undo end b", "undo start a", "undo end a",
+			},
 		},
 	}
 
@@ -92,9 +116,14 @@ func Test_WithoutConcurrency(t *testing.T) {
 						flows = append(flows, s)
 					}
 
-					saga, err := sagas.New[probeState]("serial", sagas.Parallel(flows...))
+					flow := sagas.Flow(sagas.Parallel(flows...))
+					if tt.fail {
+						flow = sagas.Sequence(flow, newProbe("x", sagas.NoRetry(), errLastFails))
+					}
+
+					saga, err := sagas.New[probeState]("serial", flow)
 					require.NoError(t, err)
-					require.NoError(t, saga.Run(WithoutConcurrency(t.Context()), &probeState{ID: runID}))
+					require.ErrorIs(t, saga.Run(WithoutConcurrency(t.Context()), &probeState{ID: runID}), tt.wantErr)
 					assert.Equal(t, tt.want, tr.snapshot())
 				}
 			})
