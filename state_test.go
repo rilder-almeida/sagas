@@ -1918,6 +1918,12 @@ func (s *undoRoomsStep) Execute(context.Context, ledgerState) (Rooms, error) { r
 
 func (*undoRoomsStep) Compensate(context.Context, ledgerState) error { return nil }
 
+type refundCardStep struct {
+	cardStep
+}
+
+func (*refundCardStep) Compensate(context.Context, ledgerState) (Card, error) { return "void", nil }
+
 func seqOf(t *testing.T, events []Event, kind EventKind, step string) int {
 	t.Helper()
 
@@ -1930,6 +1936,23 @@ func seqOf(t *testing.T, events []Event, kind EventKind, step string) int {
 	require.Failf(t, "no event", "%s %s", kind, step)
 
 	return 0
+}
+
+func rebuildSaga(t *testing.T, seen *ledgerState, secondCard Card, tip Tip, opts ...Option) *Saga[ledgerState] {
+	t.Helper()
+
+	flow := []Flow{
+		&undoRoomsStep{Name: "rooms", rooms: Rooms{"a1"}},
+		&refundCardStep{cardStep{Name: "card", card: "5500", seen: seen}},
+	}
+	if secondCard != "" {
+		flow = append(flow, &cardStep{Name: "card2", card: secondCard})
+	}
+
+	s, err := New[ledgerState]("ledger", Sequence(append(flow, &tipStep{Name: "tip", tip: tip})...), opts...)
+	require.NoError(t, err)
+
+	return s
 }
 
 func throughOf(t *testing.T, events []Event, step string, pastEnd int) int {
@@ -1949,6 +1972,7 @@ func Test_rebuildState(t *testing.T) {
 		name        string
 		initial     ledgerState
 		tip         Tip
+		secondCard  Card
 		freshStore  bool
 		throughStep string
 		pastEnd     int
@@ -1970,10 +1994,16 @@ func Test_rebuildState(t *testing.T) {
 			wantSeen:    true,
 		},
 		{
-			name: "[Success] When: a compensated run restored a field ; " +
+			name: "[Success] When: a compensated run restored one field and replaced a secret one ; " +
 				"Should: equal the state that Run wrote back",
 			initial: ledgerState{Rooms: Rooms{"old"}},
 			tip:     Tip(math.NaN()),
+		},
+		{
+			name: "[Success] When: a compensation replaced a field that a later step without compensation wrote ; " +
+				"Should: keep the value of the later step, as Run wrote back",
+			secondCard: "6011",
+			tip:        Tip(math.NaN()),
 		},
 		{
 			name:    "[Success] When: through is past the last seq ; Should: return the final state",
@@ -2003,12 +2033,7 @@ func Test_rebuildState(t *testing.T) {
 
 			var seen ledgerState
 
-			s, err := New[ledgerState]("ledger", Sequence(
-				&undoRoomsStep{Name: "rooms", rooms: Rooms{"a1"}},
-				&cardStep{Name: "card", card: "5500", seen: &seen},
-				&tipStep{Name: "tip", tip: tt.tip},
-			), WithJournal(journal), WithSecretStore(secrets))
-			require.NoError(t, err)
+			s := rebuildSaga(t, &seen, tt.secondCard, tt.tip, WithJournal(journal), WithSecretStore(secrets))
 
 			st := tt.initial
 			st.ID = ledgerID
