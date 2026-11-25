@@ -125,9 +125,9 @@ type RunError struct {
 	// Steps holds one *Error for each action or compensation that did not succeed, in order, so one step can
 	// appear twice.
 	Steps []*Error
-	// Pending holds, in step order, each unknown step, unless it is in the compensable zone and its compensation is
-	// missing or succeeded. It also holds each step whose compensation failed, was blocked or was halted. After a
-	// succeeded pivot, it holds each forward-only step that failed or did not start.
+	// Pending holds, in step order, each unknown step except a compensable one whose compensation is missing or
+	// succeeded, each step whose compensation failed, was blocked or was halted, and, after a succeeded pivot, each
+	// forward-only step that failed or did not start.
 	Pending []string
 	causes  []error
 }

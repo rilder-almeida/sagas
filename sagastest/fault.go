@@ -42,7 +42,8 @@ func (f *fault) matches(info sagas.CallInfo) bool {
 		(len(f.attempts) == 0 || slices.Contains(f.attempts, info.Attempt))
 }
 
-// Fail returns middleware that fails the step called step with err, without running its call. It panics on a nil err.
+// Fail returns middleware that fails the step called step with err, without running its call. The name step must equal
+// CallInfo.Step, and Fail panics on a nil err.
 func Fail(step string, err error, opts ...FaultOption) sagas.MiddlewareFunc {
 	if err == nil {
 		panic("sagastest: Fail needs a non-nil error")

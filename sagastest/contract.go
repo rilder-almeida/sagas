@@ -14,14 +14,16 @@ import (
 // each call.
 type Setup[S any] func(mw ...sagas.Middleware) Case[S]
 
-// Case is one saga under test: the saga, its state, a check of the fakes, the flow given to sagas.New, and Late,
-// which sends the action of step again to the fakes with key.
+// Case is one saga under test.
 type Case[S any] struct {
 	Saga  *sagas.Saga[S]
 	State *S
+	// Check is a check of the fakes.
 	Check func(*S) error
-	Flow  sagas.Flow
-	Late  func(ctx context.Context, step, key string) error
+	// Flow is the flow given to sagas.New.
+	Flow sagas.Flow
+	// Late sends the action of step again to the fakes with key.
+	Late func(ctx context.Context, step, key string) error
 }
 
 type plan struct {
@@ -134,7 +136,7 @@ const (
 var errTrigger = errors.New("sagastest: injected failure of the step action")
 
 // Compensations proves, for every step with Compensate, that its compensation is a no-op when the step never applied,
-// is idempotent over a landed step, and tolerates a late step.
+// is idempotent over a landed step, and tolerates a late step. Each case must end in sagas.ErrCompensated.
 func Compensations[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 
@@ -238,7 +240,8 @@ func repeated(step string, phase sagas.Phase) sagas.MiddlewareFunc {
 	}
 }
 
-// Pivot proves that the pivot is atomic and that every forward-only step is idempotent.
+// Pivot proves that the pivot is atomic and that every forward-only step is idempotent. A pivot with one attempt must
+// end in sagas.ErrIncomplete.
 func Pivot[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 

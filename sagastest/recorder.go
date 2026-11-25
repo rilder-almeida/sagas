@@ -10,14 +10,14 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-// Call is one recorded call of a step method. Err is the error the call returned, and for a panic it wraps
-// sagas.ErrPanic and the *sagas.PanicError.
+// Call is one recorded call of a step method.
 type Call struct {
 	Step    string
 	Phase   sagas.Phase
 	Attempt int
 	Key     string
-	Err     error
+	// Err is the error the call returned, and for a panic it wraps sagas.ErrPanic and the *sagas.PanicError.
+	Err error
 }
 
 // Recorder records every call that passes through its middleware. It is safe for concurrent use.

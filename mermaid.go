@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Mermaid returns the saga as a Mermaid flowchart.
+// Mermaid returns the saga as a Mermaid flowchart. Node IDs are s plus the index of the step in the flow.
 func (s *Saga[S]) Mermaid() string {
 	lines := []string{"flowchart TD"}
 

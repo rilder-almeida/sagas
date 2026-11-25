@@ -202,7 +202,8 @@ func WithJournal(j Journal) Option {
 	}
 }
 
-// WithMiddleware sets the middlewares that wrap every call of the saga, the first one outermost.
+// WithMiddleware sets the middlewares that wrap every call of the saga, the first one outermost. Call it once with
+// every middleware.
 func WithMiddleware(mw ...Middleware) Option {
 	return func(d *definition) {
 		d.middleware = slices.Clone(mw)
@@ -211,7 +212,8 @@ func WithMiddleware(mw ...Middleware) Option {
 }
 
 // WithRecoveryTimeout sets the grace period after the caller's context ends. Zero means DefaultRecoveryTimeout, and the
-// bound holds only when every step, compensation and the journal honor their context.
+// bound holds only when every step, compensation and the journal honor their context. A call that returns after the
+// grace period can miss the journal, but Run reports it.
 func WithRecoveryTimeout(t time.Duration) Option {
 	return func(d *definition) {
 		d.recovery = t

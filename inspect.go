@@ -48,8 +48,8 @@ type inspection[S any] struct {
 	idField int
 }
 
-// Inspect runs the checks of New on flow for the state type S and reports each step in the order it first appears. It
-// cannot see a step method that a field of the same name or two embedded types hide.
+// Inspect runs the checks of New on flow for the state type S and reports each step in the order it first appears, or
+// returns every problem joined. It cannot see a step method that a field of the same name or two embedded types hide.
 func Inspect[S any](flow Flow) ([]StepReport, error) {
 	in, err := examine[S](flow)
 	if err != nil {

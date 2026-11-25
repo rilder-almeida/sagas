@@ -64,13 +64,14 @@ const (
 	PhaseCompensate Phase = "compensate"
 )
 
-// CallInfo describes one call of a step method. Attempt counts from 1.
+// CallInfo describes one call of a step method.
 type CallInfo struct {
 	Saga      string
 	Execution string
 	Step      string
 	Phase     Phase
-	Attempt   int
+	// Attempt counts from 1.
+	Attempt int
 }
 
 // IdempotencyKey returns the key of the call, the same in every phase of a step in one execution of one saga. It equals

@@ -22,7 +22,10 @@ var (
 
 var errInvalidEvent = errors.New("sagas: invalid event")
 
-// Journal stores the events of each execution and only appends them. sagastest.Journal proves its contract.
+// Journal stores the events of each execution and only appends them. Append treats a nil event, a Seq below 1 or a
+// Version other than EventVersion as invalid. It stores the next Seq of an execution as a deep copy of the event. An
+// equal resend from the same Writer stores nothing and returns nil, and Append refuses any other Seq. Once ctx is done,
+// it stores nothing and returns an error. sagastest.Journal proves this contract.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
