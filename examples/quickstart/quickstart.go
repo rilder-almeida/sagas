@@ -73,7 +73,7 @@ func (s *store) removeIfPresent(ctx context.Context, key string) error {
 // --8<-- [start:state]
 
 type account struct {
-	ID        string
+	ID        string `sagas:"id"`
 	Email     string
 	Plan      string
 	AccountID string
@@ -81,8 +81,6 @@ type account struct {
 	ChargeID  string
 	MailID    string
 }
-
-func (a *account) ExecutionID() string { return a.ID }
 
 // --8<-- [end:state]
 

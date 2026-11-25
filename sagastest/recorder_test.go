@@ -23,7 +23,7 @@ func runRecorded(t *testing.T, group groupBuilder, inner []sagas.Middleware, ste
 	saga, err := sagas.New[probeState]("recorded", group(steps...), sagas.WithMiddleware(mw...))
 	require.NoError(t, err)
 
-	runErr := saga.Run(context.Background(), &probeState{})
+	runErr := saga.Run(context.Background(), &probeState{ID: runID})
 
 	return rec.Calls(), runErr
 }
@@ -74,9 +74,9 @@ func newPanicProbe(name string) *panicProbe {
 func (*panicProbe) Execute(context.Context, *probeState) error { panic(errBoom) }
 
 const (
-	keyA = "run-1/a"
-	keyB = "run-1/b"
-	keyC = "run-1/c"
+	keyA = "recorded/run-1/a"
+	keyB = "recorded/run-1/b"
+	keyC = "recorded/run-1/c"
 )
 
 func Test_NewRecorder(t *testing.T) {
@@ -295,9 +295,9 @@ func Test_Recorder_Calls(t *testing.T) {
 
 			rec := NewRecorder()
 			probe := plain("a")
-			saga, err := sagas.New[probeState]("copy", probe, sagas.WithMiddleware(rec.Middleware()))
+			saga, err := sagas.New[probeState]("recorded", probe, sagas.WithMiddleware(rec.Middleware()))
 			require.NoError(t, err)
-			require.NoError(t, saga.Run(context.Background(), &probeState{}))
+			require.NoError(t, saga.Run(context.Background(), &probeState{ID: runID}))
 
 			first := rec.Calls()
 			want := []Call{{Step: "a", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyA}}

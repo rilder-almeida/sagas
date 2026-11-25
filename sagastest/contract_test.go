@@ -416,7 +416,7 @@ func newShop(
 
 		return Case[probeState]{
 			Saga:  saga,
-			State: &probeState{},
+			State: &probeState{ID: runID},
 			Check: func(*probeState) error { return book.check() },
 			Flow:  f,
 			Late:  late(book),
@@ -513,7 +513,7 @@ func Test_Compensations(t *testing.T) {
 			},
 			wantErrors: []string{
 				`step "charge", case "compensation runs twice": ` +
-					`Check: refunded more than once: key "run-1/charge" refunded 2 times`,
+					`Check: refunded more than once: key "shop/run-1/charge" refunded 2 times`,
 			},
 			wantSetups: 4,
 		},
@@ -527,7 +527,7 @@ func Test_Compensations(t *testing.T) {
 			},
 			wantErrors: []string{
 				`step "charge", case "compensation runs twice": ` +
-					`Check: refunded more than once: key "run-1/charge" refunded 2 times`,
+					`Check: refunded more than once: key "shop/run-1/charge" refunded 2 times`,
 			},
 			wantSetups: 4,
 		},
@@ -779,7 +779,8 @@ func Test_Pivot(t *testing.T) {
 				return shopSetup(t, shipsTwice, pivotFlow(3, false), noLate)
 			},
 			wantErrors: []string{
-				`step "ship", case "step repeated": Check: shipped more than once: key "run-1/ship" shipped 2 times`,
+				`step "ship", case "step repeated": Check: shipped more than once: ` +
+					`key "shop/run-1/ship" shipped 2 times`,
 			},
 			wantSetups: 3,
 		},
@@ -793,7 +794,7 @@ func Test_Pivot(t *testing.T) {
 			},
 			wantErrors: []string{
 				`step "pivot", case "unknown outcome": Check: pivot applied more than once: ` +
-					`key "run-1/pivot" applied 2 times`,
+					`key "shop/run-1/pivot" applied 2 times`,
 			},
 			wantSetups: 3,
 		},
@@ -806,7 +807,8 @@ func Test_Pivot(t *testing.T) {
 				return shopSetup(t, sound, pivotFlow(3, true), noLate)
 			},
 			wantErrors: []string{
-				`step "pivot", case "unknown outcome": the final state {N:2} differs from the clean run {N:1}`,
+				`step "pivot", case "unknown outcome": the final state {N:2 ID:run-1} ` +
+					`differs from the clean run {N:1 ID:run-1}`,
 			},
 			wantSetups: 3,
 		},

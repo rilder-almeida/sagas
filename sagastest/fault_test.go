@@ -17,11 +17,12 @@ var (
 	errTail = errors.New("tail")
 )
 
-type probeState struct {
-	N int
-}
+const runID = "run-1"
 
-func (probeState) ExecutionID() string { return "run-1" }
+type probeState struct {
+	N  int
+	ID string `sagas:"id"`
+}
 
 type probeStep struct {
 	sagas.Step
@@ -101,7 +102,7 @@ func runFlow(t *testing.T, flow sagas.Flow, mw sagas.Middleware) error {
 	saga, err := sagas.New[probeState]("probe-saga", flow, sagas.WithMiddleware(mw))
 	require.NoError(t, err)
 
-	return saga.Run(context.Background(), &probeState{})
+	return saga.Run(context.Background(), &probeState{ID: runID})
 }
 
 func runProbe(t *testing.T, retry sagas.RetryPolicy, probeErr error, mw sagas.Middleware) (int, error) {

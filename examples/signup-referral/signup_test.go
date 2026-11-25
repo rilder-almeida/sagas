@@ -197,7 +197,7 @@ func Test_newSaga(t *testing.T) {
 			require.NoError(t, report(&out, &a, ran, runErr))
 			assert.Equal(t, tt.wantReport, out.String())
 
-			key := sagas.CallInfo{Execution: a.ID, Step: "referral"}.IdempotencyKey()
+			key := sagas.CallInfo{Saga: "signup", Execution: a.ID, Step: "referral"}.IdempotencyKey()
 			id, putErr := svc.referrals.put(t.Context(), key, "FRIEND")
 
 			require.NoError(t, putErr)

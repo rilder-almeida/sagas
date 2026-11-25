@@ -23,9 +23,9 @@ func Test_CallInfo_IdempotencyKey(t *testing.T) {
 		want string
 	}{
 		{
-			name: "[Success] When: an execute call of a step ; Should: join the execution and step",
+			name: "[Success] When: an execute call of a step ; Should: join the saga, the execution and the step",
 			info: CallInfo{Saga: infoSaga, Execution: infoExecution, Step: secondStep, Phase: PhaseExecute, Attempt: 1},
-			want: infoExecution + "/" + secondStep,
+			want: infoSaga + "/" + infoExecution + "/" + secondStep,
 		},
 		{
 			name: "[Success] When: a later compensate attempt of the same step ; Should: return the same key",
@@ -36,17 +36,22 @@ func Test_CallInfo_IdempotencyKey(t *testing.T) {
 				Phase:     PhaseCompensate,
 				Attempt:   3,
 			},
-			want: infoExecution + "/" + secondStep,
+			want: infoSaga + "/" + infoExecution + "/" + secondStep,
 		},
 		{
 			name: "[Success] When: another execution of the step ; Should: return a different key",
 			info: CallInfo{Saga: infoSaga, Execution: "exec-2", Step: secondStep, Phase: PhaseExecute, Attempt: 1},
-			want: "exec-2/" + secondStep,
+			want: infoSaga + "/exec-2/" + secondStep,
 		},
 		{
-			name: "[Fail] When: the zero CallInfo ; Should: return only the separator",
+			name: "[Success] When: another saga with the same execution and step ; Should: return a different key",
+			info: CallInfo{Saga: "refund", Execution: infoExecution, Step: secondStep, Phase: PhaseExecute, Attempt: 1},
+			want: "refund/" + infoExecution + "/" + secondStep,
+		},
+		{
+			name: "[Fail] When: the zero CallInfo ; Should: return only the separators",
 			info: CallInfo{},
-			want: "/",
+			want: "//",
 		},
 	}
 
@@ -69,22 +74,22 @@ func Test_IdempotencyKey(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "[Success] When: inside an execute call ; Should: return the execution and step",
+			name:   "[Success] When: inside an execute call ; Should: return the saga, execution and step",
 			inCall: true,
 			phase:  PhaseExecute,
-			want:   infoExecution + "/" + secondStep,
+			want:   infoSaga + "/" + infoExecution + "/" + secondStep,
 		},
 		{
 			name:   "[Success] When: inside a pivot call ; Should: return the same key",
 			inCall: true,
 			phase:  PhasePivot,
-			want:   infoExecution + "/" + secondStep,
+			want:   infoSaga + "/" + infoExecution + "/" + secondStep,
 		},
 		{
 			name:   "[Success] When: inside a compensate call ; Should: return the same key",
 			inCall: true,
 			phase:  PhaseCompensate,
-			want:   infoExecution + "/" + secondStep,
+			want:   infoSaga + "/" + infoExecution + "/" + secondStep,
 		},
 		{
 			name:   "[Fail] When: outside any call ; Should: return an empty key",

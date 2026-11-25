@@ -278,7 +278,7 @@ func tagged(r *recorder, name string) MiddlewareFunc {
 
 func probe(r *recorder) MiddlewareFunc {
 	return func(ctx context.Context, info CallInfo, call Call) error {
-		if info.IdempotencyKey() == infoExecution+"/"+payStep {
+		if info.IdempotencyKey() == "s/"+infoExecution+"/"+payStep {
 			r.add("info")
 		}
 
@@ -1291,12 +1291,12 @@ func pipelineBackgroundRow() pipelineRow {
 		wantKind:     outcomeSuccess,
 		wantAttempts: 1,
 		wantState:    &pipeState{},
-		wantTrace:    []string{"s|exec-1|pay|execute|1|exec-1/pay", "step:exec-1/pay"},
+		wantTrace:    []string{"s|exec-1|pay|execute|1|s/exec-1/pay", "step:s/exec-1/pay"},
 	}
 }
 
 func infoFieldRow(field string, pick func(CallInfo) string, want ...string) pipelineRow {
-	key := "step:" + infoExecution + "/pay"
+	key := "step:s/" + infoExecution + "/pay"
 
 	return pipelineRow{
 		name: "[Success] When: a middleware reads the CallInfo field " + field + " over three attempts ; " +
@@ -1327,9 +1327,9 @@ func infoFieldRow(field string, pick func(CallInfo) string, want ...string) pipe
 		wantAttempts: 3,
 		wantState:    &pipeState{},
 		wantTrace: []string{
-			want[0], "key:" + infoExecution + "/pay", key,
-			want[1], "key:" + infoExecution + "/pay", key,
-			want[2], "key:" + infoExecution + "/pay", key,
+			want[0], "key:s/" + infoExecution + "/pay", key,
+			want[1], "key:s/" + infoExecution + "/pay", key,
+			want[2], "key:s/" + infoExecution + "/pay", key,
 		},
 	}
 }
@@ -1342,7 +1342,7 @@ func pipelineInfoFieldRows() []pipelineRow {
 		infoFieldRow("Phase", func(i CallInfo) string { return string(i.Phase) }, "execute", "execute", "execute"),
 		infoFieldRow("Attempt", func(i CallInfo) string { return strconv.Itoa(i.Attempt) }, "1", "2", "3"),
 		infoFieldRow("IdempotencyKey", func(i CallInfo) string { return i.IdempotencyKey() },
-			"exec-1/pay", "exec-1/pay", "exec-1/pay"),
+			"s/exec-1/pay", "s/exec-1/pay", "s/exec-1/pay"),
 	}
 }
 

@@ -322,7 +322,7 @@ func Test_newServices_refusals(t *testing.T) {
 			state.City, state.Amount, state.Email = tt.city, tt.amount, tt.address
 
 			if tt.canceled != "" {
-				key := sagas.CallInfo{Execution: state.ID, Step: tt.canceled}.IdempotencyKey()
+				key := sagas.CallInfo{Saga: "trip", Execution: state.ID, Step: tt.canceled}.IdempotencyKey()
 				require.ErrorIs(t, cancelEarly(t.Context(), svc, tt.canceled, key), errNotFound)
 			}
 

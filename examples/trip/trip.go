@@ -17,7 +17,7 @@ const (
 // --8<-- [start:state]
 
 type trip struct {
-	ID       string
+	ID       string `sagas:"id"`
 	Route    string
 	City     string
 	Nights   int
@@ -28,8 +28,6 @@ type trip struct {
 	ChargeID string
 	MailID   string
 }
-
-func (t *trip) ExecutionID() string { return t.ID }
 
 // --8<-- [end:state]
 

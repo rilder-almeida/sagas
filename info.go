@@ -73,10 +73,10 @@ type CallInfo struct {
 	Attempt   int
 }
 
-// IdempotencyKey returns the key of the call, the same in every phase of a step in one execution. It equals
+// IdempotencyKey returns the key of the call, the same in every phase of a step in one execution of one saga. It equals
 // what the step method reads with the package function IdempotencyKey.
 func (c CallInfo) IdempotencyKey() string {
-	return c.Execution + "/" + c.Step
+	return c.Saga + "/" + c.Execution + "/" + c.Step
 }
 
 type idempotencyKey struct{}

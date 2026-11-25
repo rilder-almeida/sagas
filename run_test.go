@@ -178,11 +178,9 @@ func (j *scriptJournal) results(tb testing.TB) []runRecord {
 }
 
 type orderState struct {
-	ID    string
+	ID    string `sagas:"id"`
 	Hotel string
 }
-
-func (s orderState) ExecutionID() string { return s.ID }
 
 type orderStep struct {
 	Step
@@ -220,7 +218,7 @@ func Test_Saga_Run_executionID(t *testing.T) {
 
 	tests := []executionRow{
 		{
-			name:         "[Success] When: the state declares ExecutionID ; Should: store the events under that ID",
+			name:         "[Success] When: the state tags its ID field ; Should: store the events under that ID",
 			id:           orderID,
 			wantErrs:     [][]error{nil},
 			wantNotErrs:  []error{ErrJournal},
@@ -387,48 +385,48 @@ func Test_checkRun(t *testing.T) {
 		wantContains  []string
 	}{
 		{
-			name:          "[Success] When: the state has no ExecutionID ; Should: draw a random 32-char hex execution",
-			run:           func() (string, error) { return checkRun(&tripState{}) },
+			name:          "[Success] When: the state has no id tag ; Should: draw a random 32-char hex execution",
+			run:           func() (string, error) { return checkRun(&tripState{}, -1) },
 			wantExecution: hexID,
 		},
 		{
-			name:          "[Success] When: the state declares a valid ExecutionID ; Should: keep it",
-			run:           func() (string, error) { return checkRun(&orderState{ID: "order-42"}) },
+			name:          "[Success] When: the tagged field holds a valid ID ; Should: keep it",
+			run:           func() (string, error) { return checkRun(&orderState{ID: "order-42"}, 0) },
 			wantExecution: regexp.MustCompile(`^order-42$`),
 		},
 		{
 			name:         "[Fail] When: the execution ID is empty ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{}) },
+			run:          func() (string, error) { return checkRun(&orderState{}, 0) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: checkName(""),
 		},
 		{
 			name:         "[Fail] When: the execution ID holds a colon ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{ID: "order:42"}) },
+			run:          func() (string, error) { return checkRun(&orderState{ID: "order:42"}, 0) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
 			name:         "[Fail] When: the execution ID starts with a dash ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{ID: "-x"}) },
+			run:          func() (string, error) { return checkRun(&orderState{ID: "-x"}, 0) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
 			name:         "[Fail] When: s is nil ; Should: return ErrInvalidState",
-			run:          func() (string, error) { return checkRun[tripState](nil) },
+			run:          func() (string, error) { return checkRun[tripState](nil, -1) },
 			wantErrs:     []error{ErrInvalidState},
 			wantContains: []string{"state is nil"},
 		},
 		{
 			name:         "[Fail] When: the initial state holds NaN ; Should: return ErrInvalidState",
-			run:          func() (string, error) { return checkRun(&floatState{F: math.NaN()}) },
+			run:          func() (string, error) { return checkRun(&floatState{F: math.NaN()}, -1) },
 			wantErrs:     []error{ErrInvalidState},
 			wantContains: []string{"F"},
 		},
 		{
 			name:         "[Fail] When: the ID and the state are both bad ; Should: join both errors",
-			run:          func() (string, error) { return checkRun(&floatIDState{F: math.NaN(), ID: "a b"}) },
+			run:          func() (string, error) { return checkRun(&floatIDState{F: math.NaN(), ID: "a b"}, 1) },
 			wantErrs:     []error{ErrInvalidRun, ErrInvalidState},
 			wantContains: []string{nameRule, "F"},
 		},
@@ -456,10 +454,83 @@ func Test_checkRun(t *testing.T) {
 
 type floatIDState struct {
 	F  float64
-	ID string
+	ID string `sagas:"id"`
 }
 
-func (s floatIDState) ExecutionID() string { return s.ID }
+func Test_executionOf(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func() string
+		want *regexp.Regexp
+	}{
+		{
+			name: "[Success] When: the id field is tagged ; Should: return its value",
+			run:  func() string { return executionOf(&orderState{ID: "order-9", Hotel: "x"}, 0) },
+			want: regexp.MustCompile(`^order-9$`),
+		},
+		{
+			name: "[Success] When: the id field is not the first ; Should: return the value at idField",
+			run:  func() string { return executionOf(&floatIDState{F: 1, ID: "late-id"}, 1) },
+			want: regexp.MustCompile(`^late-id$`),
+		},
+		{
+			name: "[Success] When: idField is -1 ; Should: return a random 32-char hex ID",
+			run:  func() string { return executionOf(&tripState{Hotel: "x"}, -1) },
+			want: hexID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Regexp(t, tt.want, tt.run())
+		})
+	}
+}
+
+func Test_Saga_Run_randomExecution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		runs int
+	}{
+		{name: "[Success] When: two runs of an untagged state ; Should: store them under two random IDs", runs: 2},
+		{name: "[Success] When: three runs of an untagged state ; Should: store them under three random IDs", runs: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			journal := newScriptJournal(nil)
+
+			s, err := New[tripState]("trip", &tripStep{}, WithJournal(journal))
+			require.NoError(t, err)
+
+			for range tt.runs {
+				require.NoError(t, s.Run(t.Context(), &tripState{}))
+			}
+
+			seen := map[string]bool{}
+
+			for _, rec := range journal.results(t) {
+				assert.Regexp(t, hexID, rec.Execution)
+
+				seen[rec.Execution] = true
+			}
+
+			assert.Len(t, seen, tt.runs)
+		})
+	}
+}
+
+type tripStep struct{ Step }
+
+func (*tripStep) Execute(context.Context, *tripState) error { return nil }
 
 func Test_newID(t *testing.T) {
 	t.Parallel()

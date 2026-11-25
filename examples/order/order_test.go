@@ -194,7 +194,7 @@ func Test_newSaga(t *testing.T) {
 			require.NoError(t, report(&out, &o, svc.undone.take(), runErr))
 			assert.Equal(t, tt.wantReport, out.String())
 
-			key := sagas.CallInfo{Execution: o.ID, Step: "reserve"}.IdempotencyKey()
+			key := sagas.CallInfo{Saga: "order", Execution: o.ID, Step: "reserve"}.IdempotencyKey()
 			id, putErr := svc.warehouse.put(t.Context(), key)
 
 			require.NoError(t, putErr)

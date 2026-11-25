@@ -69,12 +69,12 @@ func Test_run(t *testing.T) {
 		{
 			name:      "[Success] When: the writer accepts all writes ; Should: log each attempt and the retry",
 			newWriter: bufferWriter,
-			wantOutput: `{"level":"INFO","msg":"sagas: attempt","idempotency_key":"order-1/reserve",` +
+			wantOutput: `{"level":"INFO","msg":"sagas: attempt","idempotency_key":"order/order-1/reserve",` +
 				`"saga":"order","execution":"order-1","step":"reserve","phase":"execute","attempt":1}` + "\n" +
-				`{"level":"WARN","msg":"sagas: attempt","idempotency_key":"order-1/charge",` +
+				`{"level":"WARN","msg":"sagas: attempt","idempotency_key":"order/order-1/charge",` +
 				`"saga":"order","execution":"order-1","step":"charge","phase":"execute","attempt":1,` +
 				`"error":"provider busy"}` + "\n" +
-				`{"level":"INFO","msg":"sagas: attempt","idempotency_key":"order-1/charge",` +
+				`{"level":"INFO","msg":"sagas: attempt","idempotency_key":"order/order-1/charge",` +
 				`"saga":"order","execution":"order-1","step":"charge","phase":"execute","attempt":2}` + "\n",
 		},
 		{
@@ -160,14 +160,14 @@ func Test_keyLog_Wrap(t *testing.T) {
 		{
 			name: "[Success] When: the call succeeds ; Should: log at info with the idempotency key",
 			info: sagas.CallInfo{Saga: "s", Execution: "e-1", Step: "a", Phase: sagas.PhaseExecute, Attempt: 1},
-			wantLine: `{"level":"INFO","msg":"sagas: attempt","idempotency_key":"e-1/a",` +
+			wantLine: `{"level":"INFO","msg":"sagas: attempt","idempotency_key":"s/e-1/a",` +
 				`"saga":"s","execution":"e-1","step":"a","phase":"execute","attempt":1}` + "\n",
 		},
 		{
 			name:    "[Fail] When: the call fails ; Should: log at warn with key and error, and return it",
 			info:    sagas.CallInfo{Saga: "s", Execution: "e-2", Step: "b", Phase: sagas.PhaseCompensate, Attempt: 3},
 			callErr: errRefused,
-			wantLine: `{"level":"WARN","msg":"sagas: attempt","idempotency_key":"e-2/b",` +
+			wantLine: `{"level":"WARN","msg":"sagas: attempt","idempotency_key":"s/e-2/b",` +
 				`"saga":"s","execution":"e-2","step":"b","phase":"compensate","attempt":3,"error":"refused"}` + "\n",
 		},
 	}

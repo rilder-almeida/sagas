@@ -239,7 +239,7 @@ func Test_newSaga(t *testing.T) {
 				{reserveStep, svc.stock, "STK-1"},
 				{tagStep, svc.labels, "LBL-1"},
 			} {
-				key := sagas.CallInfo{Execution: o.ID, Step: probe.step}.IdempotencyKey()
+				key := sagas.CallInfo{Saga: "deadline", Execution: o.ID, Step: probe.step}.IdempotencyKey()
 				id, putErr := probe.store.put(t.Context(), key)
 
 				require.NoError(t, putErr)

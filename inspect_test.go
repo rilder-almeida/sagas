@@ -176,13 +176,13 @@ type okStep[S any] struct{ Step }
 
 func (okStep[S]) Execute(context.Context, *S) error { return nil }
 
-type goodIDState struct{ ID string }
+type goodIDState struct {
+	ID string `sagas:"id"`
+}
 
-func (s goodIDState) ExecutionID() string { return s.ID }
-
-type badIDState struct{ ID string }
-
-func (*badIDState) ExecutionID() int { return 0 }
+type badIDState struct {
+	ID int `sagas:"id"`
+}
 
 const (
 	setName       = "set Name"
@@ -289,7 +289,7 @@ func inspectSuccessRows() []inspectRow {
 			wantReports: []StepReport{{Name: "nested-reserve", Execute: true}},
 		},
 		{
-			name:    "[Success] When: the state declares ExecutionID() string ; Should: accept it",
+			name:    `[Success] When: the state tags a string field sagas:"id" ; Should: accept it`,
 			inspect: Inspect[goodIDState], flow: &okStep[goodIDState]{},
 			wantReports: []StepReport{{Name: "ok-step", Execute: true}},
 		},
@@ -464,12 +464,12 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{neitherText, "chanState"},
 		},
 		{
-			name:         "[Fail] When: the state ExecutionID has another signature ; Should: return ErrInvalidState",
+			name:         "[Fail] When: the state tags a non-string field as the id ; Should: return ErrInvalidState",
 			inspect:      Inspect[badIDState],
 			flow:         &okStep[badIDState]{},
 			wantErrs:     []error{ErrInvalidState},
 			wantNoErrs:   []error{ErrInvalidStep},
-			wantContains: []string{"badIDState", "method ExecutionID", "func() int", "want func() string"},
+			wantContains: []string{"badIDState.ID", "id needs a string field, got int"},
 		},
 	}
 }
@@ -1286,44 +1286,6 @@ func Test_structOf(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, tt.want, structOf(tt.typ))
-		})
-	}
-}
-
-func Test_checkExecutionID(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		typ      reflect.Type
-		wantErrs []error
-		wantText []string
-	}{
-		{
-			name: "[Success] When: the state has no ExecutionID ; Should: accept it",
-			typ:  reflect.TypeFor[tripState](),
-		},
-		{
-			name: "[Success] When: ExecutionID returns a string ; Should: accept it",
-			typ:  reflect.TypeFor[goodIDState](),
-		},
-		{
-			name: "[Fail] When: ExecutionID has another signature ; Should: name the type and the signature",
-			typ:  reflect.TypeFor[badIDState](), wantErrs: []error{ErrInvalidState},
-			wantText: []string{"badIDState: method ExecutionID is func() int, want func() string"},
-		},
-		{
-			name: "[Fail] When: an unnamed type promotes a bad ExecutionID ; Should: name the type by its text",
-			typ:  reflect.TypeFor[struct{ badIDState }](), wantErrs: []error{ErrInvalidState},
-			wantText: []string{"struct { sagas.badIDState }: method ExecutionID"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			requireErrs(t, checkExecutionID(tt.typ), tt.wantErrs, tt.wantText)
 		})
 	}
 }

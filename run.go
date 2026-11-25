@@ -16,17 +16,12 @@ var ErrInvalidRun = &KindError{name: "invalid_run", message: "sagas: invalid run
 
 const idBytes = 16
 
-type executionIDer interface{ ExecutionID() string }
-
-func checkRun[S any](s *S) (string, error) {
+func checkRun[S any](s *S, idField int) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("%w: state is nil", ErrInvalidState)
 	}
 
-	execution := newID()
-	if given, ok := any(s).(executionIDer); ok {
-		execution = given.ExecutionID()
-	}
+	execution := executionOf(s, idField)
 
 	var errs []error
 	for _, rule := range checkName(execution) {
@@ -42,6 +37,14 @@ func checkRun[S any](s *S) (string, error) {
 	}
 
 	return execution, nil
+}
+
+func executionOf[S any](s *S, idField int) string {
+	if idField < 0 {
+		return newID()
+	}
+
+	return reflect.ValueOf(s).Elem().Field(idField).String()
 }
 
 func newID() string {
@@ -199,11 +202,11 @@ func (r *runner[S]) causes() []error {
 }
 
 // Run starts a new execution of the saga on st under ctx and writes the committed state back into st; completion
-// returns nil. A state with ExecutionID() string gives the execution ID, else a random one is used, and an ID that
-// the saga's journal already holds fails with ErrExecutionExists. An error before the saga-started event is stored
-// returns as is, and any later end other than a completed run returns a *RunError.
+// returns nil. The string field of the state tagged `sagas:"id"` gives the execution ID, else a random one is
+// used, and an ID that the saga's journal already holds fails with ErrExecutionExists. An error before the
+// saga-started event is stored returns as is, and any later end other than a completed run returns a *RunError.
 func (s *Saga[S]) Run(ctx context.Context, st *S) error {
-	execution, err := checkRun(st)
+	execution, err := checkRun(st, s.idField)
 	if err != nil {
 		return err
 	}

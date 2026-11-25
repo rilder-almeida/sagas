@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,36 +20,168 @@ var (
 	ErrConflict = &KindError{name: "conflict", message: "sagas: state conflict"}
 )
 
+const (
+	tagKey    = "sagas"
+	tagID     = "id"
+	tagSecret = "secret"
+)
+
 type offense struct {
 	path string
 	rule string
 }
 
 type typeWalk struct {
+	root   reflect.Type
 	onPath map[reflect.Type]bool
 	done   map[reflect.Type][]offense
 	cut    bool
 }
 
-func checkState(t reflect.Type) error {
-	name := t.Name()
-	if name == "" {
-		name = t.String()
+func typeLabel(t reflect.Type) string {
+	if name := t.Name(); name != "" {
+		return name
 	}
+
+	return t.String()
+}
+
+func checkState(t reflect.Type) error {
+	_, err := examineState(t)
+
+	return err
+}
+
+func examineState(t reflect.Type) (int, error) {
+	name := typeLabel(t)
 
 	if t.Kind() != reflect.Struct {
-		return fmt.Errorf("%w: %s: not a struct", ErrInvalidState, name)
+		return -1, fmt.Errorf("%w: %s: not a struct", ErrInvalidState, name)
 	}
 
-	w := typeWalk{onPath: map[reflect.Type]bool{}, done: map[reflect.Type][]offense{}}
+	w := typeWalk{root: t, onPath: map[reflect.Type]bool{}, done: map[reflect.Type][]offense{}}
 	offenses := w.walk(t)
 
-	errs := make([]error, 0, len(offenses))
+	idField, tagErrs := stateTags(t)
+
+	errs := make([]error, 0, len(offenses)+len(tagErrs))
 	for _, o := range offenses {
 		errs = append(errs, fmt.Errorf("%w: %s%s: %s", ErrInvalidState, name, o.path, o.rule))
 	}
 
-	return errors.Join(errs...)
+	return idField, errors.Join(append(errs, tagErrs...)...)
+}
+
+// stateTags reads the sagas tag of each top-level field of the struct type t. It returns the index of the field
+// that carries id, or -1 when none does or when any tag breaks a rule.
+func stateTags(t reflect.Type) (int, []error) {
+	if t.Kind() != reflect.Struct {
+		return -1, nil
+	}
+
+	var errs []error
+
+	id := -1
+	name := typeLabel(t)
+
+	for i := range t.NumField() {
+		field := t.Field(i)
+
+		tag := fieldTagRules(&field)
+		if tag.id && len(tag.rules) == 0 {
+			if id >= 0 {
+				tag.rules = append(tag.rules, "id is already on field "+t.Field(id).Name)
+			} else {
+				id = i
+			}
+		}
+
+		for _, rule := range tag.rules {
+			errs = append(errs, fmt.Errorf("%w: %s.%s: %s", ErrInvalidState, name, field.Name, rule))
+		}
+	}
+
+	if len(errs) > 0 {
+		return -1, errs
+	}
+
+	return id, nil
+}
+
+type fieldTag struct {
+	id    bool
+	rules []string
+}
+
+func fieldTagRules(field *reflect.StructField) fieldTag {
+	tag, ok := field.Tag.Lookup(tagKey)
+	if !ok || field.Anonymous || !field.IsExported() {
+		return fieldTag{}
+	}
+
+	var rules []string
+
+	values := strings.Split(tag, ",")
+	for _, v := range values {
+		if v != tagID && v != tagSecret {
+			rules = append(rules, fmt.Sprintf("sagas tag value %q is unknown", v))
+		}
+	}
+
+	if !slices.Contains(values, tagID) {
+		return fieldTag{rules: rules}
+	}
+
+	if slices.Contains(values, tagSecret) {
+		rules = append(rules, "id and secret cannot share a field")
+	}
+
+	if field.Type.Kind() != reflect.String {
+		rules = append(rules, fmt.Sprintf("id needs a string field, got %s", field.Type.Kind()))
+	}
+
+	return fieldTag{id: true, rules: rules}
+}
+
+// tagKeys returns the key of each pair of a struct tag, and "?" for a part that is not a key:"value" pair.
+func tagKeys(tag reflect.StructTag) []string {
+	var keys []string
+
+	rest := strings.TrimSpace(string(tag))
+	for rest != "" {
+		key, after, found := strings.Cut(rest, ":")
+		if !found || key == "" || strings.ContainsAny(key, " \t\"") {
+			return append(keys, "?")
+		}
+
+		quoted, err := strconv.QuotedPrefix(after)
+		if err != nil {
+			return append(keys, "?")
+		}
+
+		keys = append(keys, key)
+		rest = strings.TrimSpace(after[len(quoted):])
+	}
+
+	return keys
+}
+
+func tagOffense(path string, tag reflect.StructTag, top bool) []offense {
+	var offenses []offense
+
+	for _, key := range tagKeys(tag) {
+		switch {
+		case key == tagKey && top:
+		case key == tagKey:
+			offenses = append(offenses, offense{path: path, rule: "sagas tag below the top level"})
+		default:
+			offenses = append(offenses, offense{path: path, rule: "struct tag"})
+
+			return offenses
+		}
+	}
+
+	return offenses
 }
 
 func encodeField(name string, v any) ([]byte, error) {
@@ -170,6 +304,8 @@ func (w *typeWalk) walkMap(t reflect.Type) []offense {
 func (w *typeWalk) walkStruct(t reflect.Type) []offense {
 	var offenses []offense
 
+	top := t == w.root
+
 	for field := range t.Fields() {
 		path := "." + field.Name
 
@@ -178,9 +314,14 @@ func (w *typeWalk) walkStruct(t reflect.Type) []offense {
 			offenses = append(offenses, offense{path: path, rule: "embedded field"})
 		case !field.IsExported():
 			offenses = append(offenses, offense{path: path, rule: "unexported field"})
-		case field.Tag != "":
-			offenses = append(offenses, offense{path: path, rule: "struct tag"})
 		default:
+			tagged := tagOffense(path, field.Tag, top)
+			if len(tagged) > 0 {
+				offenses = append(offenses, tagged...)
+
+				continue
+			}
+
 			offenses = under(offenses, path, w.walk(field.Type))
 		}
 	}

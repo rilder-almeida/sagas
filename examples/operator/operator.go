@@ -21,15 +21,13 @@ const (
 // --8<-- [start:state]
 
 type order struct {
-	ID         string
+	ID         string `sagas:"id"`
 	Carrier    string
 	StockID    string
 	ChargeID   string
 	TrackingID string
 	MailID     string
 }
-
-func (o *order) ExecutionID() string { return o.ID }
 
 // --8<-- [end:state]
 

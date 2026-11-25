@@ -172,7 +172,7 @@ func Test_newSaga(t *testing.T) {
 			a := account{ID: tt.id, Email: "ana@example.com", Plan: tt.plan}
 			runErr := saga.Run(t.Context(), &a)
 
-			key := sagas.CallInfo{Execution: a.ID, Step: "register"}.IdempotencyKey()
+			key := sagas.CallInfo{Saga: "signup", Execution: a.ID, Step: "register"}.IdempotencyKey()
 			id, putErr := accounts.put(t.Context(), key, a.Email)
 
 			require.NoError(t, putErr)

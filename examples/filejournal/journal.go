@@ -26,13 +26,11 @@ const (
 // --8<-- [start:state]
 
 type booking struct {
-	ID       string
+	ID       string `sagas:"id"`
 	Seat     string
 	ChargeID string
 	Receipt  string
 }
-
-func (b *booking) ExecutionID() string { return b.ID }
 
 // --8<-- [end:state]
 

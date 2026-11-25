@@ -21,11 +21,9 @@ var (
 )
 
 type trip struct {
-	ID                           string
+	ID                           string `sagas:"id"`
 	Flight, Hotel, Charge, Email string
 }
-
-func (t *trip) ExecutionID() string { return t.ID }
 
 type flight struct{ sagas.Step }
 
@@ -197,7 +195,7 @@ func ExampleIdempotencyKey() {
 	}
 
 	// Output:
-	// trip-42/flight
+	// trip/trip-42/flight
 }
 
 func ExampleSlog() {

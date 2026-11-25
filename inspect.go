@@ -44,6 +44,7 @@ type inspection[S any] struct {
 	reports []StepReport
 	methods []stepMethods[S]
 	graph   graph
+	idField int
 }
 
 // Inspect runs the checks of New on flow for the state type S. It reports each step in the order it first appears
@@ -89,8 +90,10 @@ func examine[S any](flow Flow) (inspection[S], error) {
 	in.graph, graphErrs = checkGraph(in.reports, r.parents)
 	errs = append(errs, graphErrs...)
 
-	state := reflect.TypeFor[S]()
-	errs = append(errs, checkState(state), checkExecutionID(state))
+	idField, stateErr := examineState(reflect.TypeFor[S]())
+	in.idField = idField
+
+	errs = append(errs, stateErr)
 
 	return in, errors.Join(errs...)
 }
@@ -328,18 +331,4 @@ func structOf(t reflect.Type) reflect.Type {
 	}
 
 	return nil
-}
-
-func checkExecutionID(t reflect.Type) error {
-	m := reflect.New(t).MethodByName("ExecutionID")
-	if !m.IsValid() || m.Type() == reflect.TypeFor[func() string]() {
-		return nil
-	}
-
-	name := t.Name()
-	if name == "" {
-		name = t.String()
-	}
-
-	return fmt.Errorf("%w: %s: method ExecutionID is %s, want func() string", ErrInvalidState, name, m.Type())
 }

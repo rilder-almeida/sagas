@@ -66,7 +66,7 @@ func (s *store) removeIfPresent(ctx context.Context, key string) error {
 // --8<-- [start:state]
 
 type order struct {
-	ID            string
+	ID            string `sagas:"id"`
 	Item          string
 	Amount        int
 	Note          string
@@ -75,8 +75,6 @@ type order struct {
 	ChargeID      string
 	ShipmentID    string
 }
-
-func (o *order) ExecutionID() string { return o.ID }
 
 // --8<-- [end:state]
 

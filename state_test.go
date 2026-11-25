@@ -107,6 +107,48 @@ type yamlTagState struct {
 	Inner yamlTagInner
 }
 
+type idTagState struct {
+	N  int
+	ID string `sagas:"id"`
+}
+
+type secretTagState struct {
+	Token string `sagas:"secret"`
+}
+
+type unknownTagState struct {
+	X string `sagas:"pii"`
+}
+
+type secretTagInner struct {
+	X string `sagas:"secret"`
+}
+
+type nestedSecretState struct {
+	Inner secretTagInner
+}
+
+type jsonTagState struct {
+	X string `json:"x"`
+}
+
+type jsonAndIDState struct {
+	ID string `json:"id" sagas:"id"`
+}
+
+type twoIDState struct {
+	A string `sagas:"id"`
+	B string `sagas:"id"`
+}
+
+type intIDState struct {
+	N int `sagas:"id"`
+}
+
+type idSecretState struct {
+	ID string `sagas:"id,secret"`
+}
+
 type embeddedValueState struct {
 	innerState
 }
@@ -331,14 +373,64 @@ type badElemState struct {
 	S []chan int
 }
 
+type stateRow struct {
+	name      string
+	typ       reflect.Type
+	wantInMsg []string
+}
+
+func tagStateRows() []stateRow {
+	return []stateRow{
+		{
+			name: `[Success] When: one string field carries sagas:"id" ; Should: accept it`,
+			typ:  reflect.TypeFor[idTagState](),
+		},
+		{
+			name: `[Success] When: a field carries sagas:"secret" ; Should: accept it`,
+			typ:  reflect.TypeFor[secretTagState](),
+		},
+		{
+			name:      `[Fail] When: a field carries sagas:"pii" ; Should: name the field and the unknown value`,
+			typ:       reflect.TypeFor[unknownTagState](),
+			wantInMsg: []string{`unknownTagState.X: sagas tag value "pii" is unknown`},
+		},
+		{
+			name:      `[Fail] When: a nested field carries sagas:"secret" ; Should: report its path and the level`,
+			typ:       reflect.TypeFor[nestedSecretState](),
+			wantInMsg: []string{"nestedSecretState.Inner.X: sagas tag below the top level"},
+		},
+		{
+			name:      "[Fail] When: a field carries a json tag ; Should: report the field and the struct tag",
+			typ:       reflect.TypeFor[jsonTagState](),
+			wantInMsg: []string{"jsonTagState.X: struct tag"},
+		},
+		{
+			name:      `[Fail] When: a field carries a json tag next to sagas:"id" ; Should: refuse the json tag`,
+			typ:       reflect.TypeFor[jsonAndIDState](),
+			wantInMsg: []string{"jsonAndIDState.ID: struct tag"},
+		},
+		{
+			name:      `[Fail] When: two fields carry sagas:"id" ; Should: name the second field and the first`,
+			typ:       reflect.TypeFor[twoIDState](),
+			wantInMsg: []string{"twoIDState.B: id is already on field A"},
+		},
+		{
+			name:      `[Fail] When: an int field carries sagas:"id" ; Should: name the field and its kind`,
+			typ:       reflect.TypeFor[intIDState](),
+			wantInMsg: []string{"intIDState.N: id needs a string field, got int"},
+		},
+		{
+			name:      `[Fail] When: a field carries sagas:"id,secret" ; Should: name the field`,
+			typ:       reflect.TypeFor[idSecretState](),
+			wantInMsg: []string{"idSecretState.ID: id and secret cannot share a field"},
+		},
+	}
+}
+
 func Test_checkState(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name      string
-		typ       reflect.Type
-		wantInMsg []string
-	}{
+	tests := append(tagStateRows(), []stateRow{
 		{
 			name: "[Success] When: bool, every integer kind, float32, float64 and string ; Should: accept them",
 			typ:  reflect.TypeFor[scalarState](),
@@ -585,7 +677,7 @@ func Test_checkState(t *testing.T) {
 			typ:       reflect.TypeFor[badElemState](),
 			wantInMsg: []string{"badElemState.S[]: rejected kind chan"},
 		},
-	}
+	}...)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -597,6 +689,126 @@ func Test_checkState(t *testing.T) {
 			msg := errText(err)
 			assertInOrder(t, msg, tt.wantInMsg)
 			assert.Equal(t, len(tt.wantInMsg), strings.Count(msg, ErrInvalidState.Error()), msg)
+		})
+	}
+}
+
+func Test_stateTags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		typ      reflect.Type
+		wantID   int
+		wantErrs int
+	}{
+		{
+			name:   "[Success] When: no field carries a tag ; Should: return -1",
+			typ:    reflect.TypeFor[tripState](),
+			wantID: -1,
+		},
+		{
+			name:   `[Success] When: the second field carries sagas:"id" ; Should: return its index`,
+			typ:    reflect.TypeFor[idTagState](),
+			wantID: 1,
+		},
+		{
+			name:   `[Success] When: a field carries sagas:"secret" only ; Should: return -1`,
+			typ:    reflect.TypeFor[secretTagState](),
+			wantID: -1,
+		},
+		{
+			name:     `[Fail] When: two fields carry sagas:"id" ; Should: return -1 and one error`,
+			typ:      reflect.TypeFor[twoIDState](),
+			wantID:   -1,
+			wantErrs: 1,
+		},
+		{
+			name:     `[Fail] When: a field carries an unknown value and an id on an int ; Should: return both errors`,
+			typ:      reflect.TypeFor[badTagsState](),
+			wantID:   -1,
+			wantErrs: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			id, errs := stateTags(tt.typ)
+
+			assert.Equal(t, tt.wantID, id)
+			assert.Len(t, errs, tt.wantErrs)
+
+			for _, err := range errs {
+				require.ErrorIs(t, err, ErrInvalidState)
+			}
+		})
+	}
+}
+
+type badTagsState struct {
+	X string `sagas:"pii"`
+	N int    `sagas:"id"`
+}
+
+func Test_tagKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tag  reflect.StructTag
+		want []string
+	}{
+		{name: "[Success] When: the tag is empty ; Should: return no key", tag: ``},
+		{name: "[Success] When: one pair ; Should: return its key", tag: `sagas:"id"`, want: []string{"sagas"}},
+		{
+			name: "[Success] When: two pairs ; Should: return both keys in order",
+			tag:  `json:"x,omitzero" sagas:"id,secret"`,
+			want: []string{"json", "sagas"},
+		},
+		{name: "[Fail] When: a part has no colon ; Should: return the ? key", tag: `sagas`, want: []string{"?"}},
+		{name: "[Fail] When: the value is not quoted ; Should: return the ? key", tag: `sagas:id`, want: []string{"?"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tagKeys(tt.tag))
+		})
+	}
+}
+
+func Test_tagOffense(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tag  reflect.StructTag
+		top  bool
+		want []offense
+	}{
+		{name: `[Success] When: sagas tag at the top level ; Should: return no offense`, tag: `sagas:"id"`, top: true},
+		{name: "[Success] When: no tag ; Should: return no offense", tag: ``, top: false},
+		{
+			name: `[Fail] When: sagas tag below the top level ; Should: return the level offense`,
+			tag:  `sagas:"id"`,
+			want: []offense{{path: ".X", rule: "sagas tag below the top level"}},
+		},
+		{
+			name: "[Fail] When: json and yaml keys together ; Should: return one struct tag offense",
+			tag:  `json:"x" yaml:"x"`,
+			top:  true,
+			want: []offense{{path: ".X", rule: "struct tag"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tagOffense(".X", tt.tag, tt.top))
 		})
 	}
 }

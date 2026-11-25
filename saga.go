@@ -46,6 +46,7 @@ type Saga[S any] struct {
 	recovery time.Duration
 	order    []int
 	pivot    int
+	idField  int
 }
 
 type stepNode[S any] struct {
@@ -88,7 +89,7 @@ func New[S any](name string, flow Flow, opts ...Option) (*Saga[S], error) {
 func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	s := &Saga[S]{
 		name: name, journal: d.journal, recovery: d.recovery, order: in.graph.order,
-		pivot: in.graph.pivot, reports: in.reports,
+		pivot: in.graph.pivot, reports: in.reports, idField: in.idField,
 		steps: make([]stepNode[S], 0, len(in.reports)),
 	}
 	if s.recovery == 0 {
