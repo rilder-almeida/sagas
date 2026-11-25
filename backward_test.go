@@ -347,7 +347,7 @@ func failedAndUnknownRow() runRow {
 		wantFailed:    []string{"b", "c"},
 		wantErrText:   map[string]string{"b": errAlwaysFails.Error(), "c": canceledTxt},
 		wantAttempts:  map[string]int{"b": 1, "c": 1},
-		wantCauseText: map[string]string{"c": quotedB},
+		wantCauseText: map[string]string{"c": stopText},
 		wantErrs:      []error{errAlwaysFails, context.Canceled},
 		wantSteps:     map[string]stepStatus{"a": stepCompensated, "b": stepCompensated, "c": stepCompensated},
 		wantOrder:     [][2]string{{undoB, undoA}, {undoC, undoA}},
@@ -402,7 +402,7 @@ func unknownBarrierRow() runRow {
 		wantFailed:    []string{"b", "c"},
 		wantErrText:   map[string]string{"b": panicBoom, "c": canceledTxt},
 		wantAttempts:  map[string]int{"b": 1, "c": 1},
-		wantCauseText: map[string]string{"c": quotedB},
+		wantCauseText: map[string]string{"c": stopText},
 		wantErrs:      []error{context.Canceled},
 		wantText:      []string{panicBoom},
 		wantSteps: map[string]stepStatus{
@@ -443,7 +443,7 @@ func siblingBarrierRow() runRow {
 		wantFailed:    []string{"b", "c"},
 		wantErrText:   map[string]string{"b": errAlwaysFails.Error(), "c": canceledTxt},
 		wantAttempts:  map[string]int{"b": 1, "c": 1},
-		wantCauseText: map[string]string{"c": quotedB},
+		wantCauseText: map[string]string{"c": stopText},
 		wantErrs:      []error{errAlwaysFails, context.Canceled},
 		wantSteps:     map[string]stepStatus{"a": stepCompensated, "b": stepFailed, "c": stepCompensated},
 		wantOrder:     [][2]string{{cReturned, undoC}, {undoC, undoA}},
@@ -559,7 +559,7 @@ func predicateSiblingRow() runRow {
 		wantFailed:    []string{"b", "c"},
 		wantErrText:   map[string]string{"b": panicBoom, "c": canceledTxt},
 		wantAttempts:  map[string]int{"b": 0, "c": 1},
-		wantCauseText: map[string]string{"c": quotedB},
+		wantCauseText: map[string]string{"c": stopText},
 		wantErrs:      []error{context.Canceled},
 		wantText:      []string{panicBoom},
 		wantSteps:     map[string]stepStatus{"a": stepCompensated, "b": stepFailed, "c": stepCompensated},
@@ -852,7 +852,7 @@ func resendAfterRejectionRow() runRow {
 		wantStatus: noEndStatus,
 		wantKind:   ErrConcurrentWriter,
 		wantKinds:  map[string]*KindError{"d": ErrFailed, comp("c"): ErrJournal, comp("b"): ErrFailed},
-		wantFailed: []string{"d", comp("c"), comp("b")},
+		wantFailed: []string{"d", comp("b"), comp("c")},
 		wantErrText: map[string]string{
 			"d": errAlwaysFails.Error(), comp("c"): errJournalDown.Error(), comp("b"): errAlwaysFails.Error(),
 		},
@@ -935,7 +935,7 @@ func graceWaitingRow() runRow {
 		wantStatus:  noEndStatus,
 		wantKind:    ErrCompensationFailed,
 		wantKinds:   map[string]*KindError{comp("a"): ErrGraceEnded, comp("b"): ErrUnknown, "c": ErrFailed},
-		wantFailed:  []string{"c", comp("b"), comp("a")},
+		wantFailed:  []string{"c", comp("a"), comp("b")},
 		wantErrText: map[string]string{
 			comp("a"): ErrGraceEnded.Error(), comp("b"): canceledTxt, "c": errAlwaysFails.Error(),
 		},
@@ -1330,7 +1330,7 @@ func graceHaltRow() runRow {
 		wantStatus:  noEndStatus,
 		wantKind:    ErrCompensationFailed,
 		wantKinds:   map[string]*KindError{comp("a"): ErrGraceEnded, comp("b"): ErrUnknown, "c": ErrFailed},
-		wantFailed:  []string{"c", comp("b"), comp("a")},
+		wantFailed:  []string{"c", comp("a"), comp("b")},
 		wantErrText: map[string]string{
 			comp("a"): ErrGraceEnded.Error(), comp("b"): canceledTxt, "c": errAlwaysFails.Error(),
 		},
@@ -1757,7 +1757,7 @@ func graceLevelRow() runRow {
 		wantKinds: map[string]*KindError{
 			comp("x"): ErrGraceEnded, comp("a"): ErrGraceEnded, comp("b"): ErrUnknown, "c": ErrFailed,
 		},
-		wantFailed: []string{"c", comp("b"), comp("a"), comp("x")},
+		wantFailed: []string{"c", comp("x"), comp("a"), comp("b")},
 		wantErrText: map[string]string{
 			comp("x"): ErrGraceEnded.Error(), comp("a"): ErrGraceEnded.Error(), comp("b"): canceledTxt,
 			"c": errAlwaysFails.Error(),

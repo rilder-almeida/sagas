@@ -78,7 +78,7 @@ func ready(parents []int, status []stepRun) bool {
 }
 
 func (r *runner[S]) stopped() bool {
-	return len(r.failures) > 0 || r.rejected != nil || len(r.appendErrs) > 0 || r.interrupted != nil
+	return r.failed || r.rejected != nil || len(r.appendErrs) > 0 || r.interrupted != nil
 }
 
 func (r *runner[S]) record(ctx context.Context, e *Event) bool {
@@ -385,8 +385,8 @@ func (r *runner[S]) note(i int, out *outcome) Event {
 	}
 	e := Event{Kind: EventStepFailed, Step: name, Attempt: out.attempts, Err: eventErrorOf(failure)}
 	r.runs[i].status, r.runs[i].attempts, r.runs[i].err = runFailed, out.attempts, failure
-	r.failures = append(r.failures, failure)
-	r.stop(fmt.Errorf("%w: step %q", errStepStopped, name))
+	r.failed = true
+	r.stop(errStepStopped)
 
 	if out.kind == outcomeUnknown {
 		e.Kind = EventStepUnknown

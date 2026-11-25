@@ -122,14 +122,27 @@ func (e *Error) LogValue() slog.Value {
 // RunError reports a run that began and did not complete.
 type RunError struct {
 	Kind *KindError
-	// Steps holds one *Error for each action or compensation that did not succeed, in order, so one step can
-	// appear twice.
+	// Steps holds one *Error for each action or compensation that did not succeed: the action errors in step
+	// order, then the compensation errors in step order. One step can appear twice.
 	Steps []*Error
 	// Pending holds, in step order, each unknown step except a compensable one whose compensation is missing or
 	// succeeded, each step whose compensation failed, was blocked or was halted, and, after a succeeded pivot, each
 	// forward-only step that failed or did not start.
 	Pending []string
-	causes  []error
+	// Compensated holds, in step order, each step whose compensation succeeded.
+	Compensated []string
+	causes      []error
+}
+
+// StepOf returns the first error of Steps whose own Kind is kind, or nil.
+func (e *RunError) StepOf(kind *KindError) *Error {
+	for _, step := range e.Steps {
+		if step.Kind == kind {
+			return step
+		}
+	}
+
+	return nil
 }
 
 // Error returns the message of Kind followed by the texts of Unwrap.
@@ -197,7 +210,7 @@ func kindOf(kind outcomeKind, label *KindError) *KindError {
 }
 
 var (
-	errStepStopped      = errors.New("sagas: a step stopped the run")
+	errStepStopped      = errors.New("sagas: stopped because the run failed")
 	errRejectionStopped = errors.New("sagas: the journal rejected an event and stopped the run")
 	errJournalStopped   = errors.New("sagas: a journal failure stopped the run")
 )

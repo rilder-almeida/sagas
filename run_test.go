@@ -1027,6 +1027,8 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 		assertExclusive(t, err)
 
 		pending = runErr.Pending
+		assert.Equal(t, compensatedOf(res, tt), runErr.Compensated)
+
 		for _, se := range runErr.Steps {
 			failed = append(failed, keyOf(se))
 		}
@@ -1307,6 +1309,8 @@ func runRows() []runRow {
 		skippedAtGraceEndRow(),
 		lateForwardOnlyVerdictRow(),
 		lateCompensableVerdictRow(),
+		parallelFailuresRow(),
+		compensatedListRow(),
 	}
 }
 
@@ -2175,5 +2179,67 @@ func storedThenDownRow() runRow {
 		wantPending:    []string{"a", "b"},
 		wantRunOnly:    []string{"a", "b"},
 		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b")),
+	}
+}
+
+func compensatedOf(res *runRecord, tt *runRow) []string {
+	var names []string
+
+	for i := range res.Steps {
+		name := res.Steps[i].Name
+		if _, failed := tt.wantKinds[comp(name)]; !failed && tt.wantSteps[name] == stepCompensated {
+			names = append(names, res.Steps[i].Name)
+		}
+	}
+
+	return names
+}
+
+func parallelFailuresRow() runRow {
+	return runRow{
+		name:         "[Success] When: two parallel steps fail ; Should: Steps lists them in step order",
+		steps:        func(*recorder) Flow { return Parallel(once("a", failsAfter(pause)), once("b", alwaysFails)) },
+		runs:         50,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"a": ErrFailed, "b": ErrFailed},
+		wantFailed:   []string{"a", "b"},
+		wantErrText:  map[string]string{"a": errAlwaysFails.Error(), "b": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"a": 1, "b": 1},
+		wantCauseIs:  map[string]error{"a": errStepStopped},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps:    map[string]stepStatus{"a": stepFailed, "b": stepFailed},
+		wantTrail: slices.Concat(
+			seq(opened), together(startOf("a"), startOf("b")), seq(failedOf("b"), failedOf("a"), closed),
+		),
+	}
+}
+
+func compensatedListRow() runRow {
+	return runRow{
+		name: "[Success] When: a step fails and two compensations succeed, one fails ; " +
+			"Should: Compensated lists the two in step order " +
+			"and Steps lists the action error then the compensation error",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				rec.undoable("a"), rec.undoable("b"), failingUndo("d", Continue, alwaysFails), once("c", alwaysFails),
+			)
+		},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{"c": ErrFailed, comp("d"): ErrFailed},
+		wantFailed:   []string{"c", comp("d")},
+		wantErrText:  map[string]string{"c": errAlwaysFails.Error(), comp("d"): errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"c": 1, comp("d"): 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"a": stepCompensated, "b": stepCompensated, "d": stepCompensationFailed, "c": stepFailed,
+		},
+		wantPending: []string{"d"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("d"), doneOf("d"),
+			startOf("c"), failedOf("c"), compStartOf("d"), undoFailedOf("d"), compStartOf("b"), undoneOf("b"),
+			compStartOf("a"), undoneOf("a"), closed,
+		),
 	}
 }

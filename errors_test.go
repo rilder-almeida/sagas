@@ -754,7 +754,8 @@ func panicKindRow() runRow {
 
 func siblingCauseRow() runRow {
 	return runRow{
-		name: "[Fail] When: a step fails beside a running sibling ; Should: name the stopper once, without its error",
+		name: "[Fail] When: a step fails beside a running sibling ; " +
+			"Should: give the fixed stop cause, without its error",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.step("a"), Parallel(fails(), waiting("c")))
 		},
@@ -770,8 +771,8 @@ func siblingCauseRow() runRow {
 		wantPreviousIs:     map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
 		wantNotKinds:       map[string]*KindError{"c": ErrFailed},
 		wantNotCauseIs:     map[string]error{"c": errAlwaysFails},
-		wantCauseText:      map[string]string{"c": quotedB},
-		wantEventCauseText: map[string]string{"c": quotedB},
+		wantCauseText:      map[string]string{"c": stopText},
+		wantEventCauseText: map[string]string{"c": stopText},
 		wantTextCount:      map[string]int{`step "b" did not succeed`: 1},
 	}
 }
@@ -1143,6 +1144,55 @@ func Test_RunError_Is(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, tt.want, errors.Is(failedRun(t, tt.script, tt.stepErr), tt.target))
+		})
+	}
+}
+
+func Test_RunError_StepOf(t *testing.T) {
+	t.Parallel()
+
+	failedA := &Error{Kind: ErrFailed, Step: "a"}
+	unknownB := &Error{Kind: ErrUnknown, Step: "b", Compensation: true}
+	failedC := &Error{Kind: ErrFailed, Step: "c", Compensation: true}
+	wrapsGrace := &Error{Kind: ErrFailed, Step: "d", Err: fmt.Errorf("late: %w", ErrGraceEnded)}
+
+	tests := []struct {
+		name  string
+		steps []*Error
+		kind  *KindError
+		want  *Error
+	}{
+		{
+			name:  "[Success] When: one step error has the kind ; Should: return it",
+			steps: []*Error{failedA, unknownB},
+			kind:  ErrUnknown,
+			want:  unknownB,
+		},
+		{
+			name:  "[Fail] When: no step error has the kind ; Should: return nil",
+			steps: []*Error{failedA, unknownB},
+			kind:  ErrPanic,
+		},
+		{
+			name:  "[Fail] When: a step error wraps the kind in Err but has another Kind ; Should: return nil",
+			steps: []*Error{wrapsGrace},
+			kind:  ErrGraceEnded,
+		},
+		{
+			name:  "[Success] When: two step errors have the kind ; Should: return the first",
+			steps: []*Error{unknownB, failedA, failedC},
+			kind:  ErrFailed,
+			want:  failedA,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runErr := &RunError{Kind: ErrCompensationFailed, Steps: tt.steps}
+
+			assert.Equal(t, tt.want, runErr.StepOf(tt.kind))
 		})
 	}
 }

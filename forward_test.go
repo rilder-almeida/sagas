@@ -76,6 +76,32 @@ func forwardRows() []runRow {
 		ancestorsOnlyRow(),
 		skippedAncestorRow(),
 		serialVerdictRow(),
+		stoppedCauseRow(),
+	}
+}
+
+func stoppedCauseRow() runRow {
+	return runRow{
+		name: "[Success] When: a parallel step is cancelled by a sibling failure ; " +
+			"Should: its context cause is errStepStopped with text \"sagas: stopped because the run failed\" " +
+			"and no step name",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.step("a"), Parallel(fails(), waiting("c")))
+		},
+		wantStatus:         StatusCompensated,
+		wantKind:           ErrCompensated,
+		wantKinds:          map[string]*KindError{"b": ErrFailed, "c": ErrUnknown},
+		wantFailed:         []string{"b", "c"},
+		wantErrText:        map[string]string{"b": errAlwaysFails.Error(), "c": context.Canceled.Error()},
+		wantAttempts:       map[string]int{"b": 3, "c": 1},
+		wantPreviousIs:     map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
+		wantCauseIs:        map[string]error{"c": errStepStopped},
+		wantCauseText:      map[string]string{"c": stopText},
+		wantEventCauseText: map[string]string{"c": stopText},
+		wantTextCount:      map[string]int{quotedB: 1},
+		wantTrail:          afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c")), seq(closed)),
+		wantErrs:           []error{errAlwaysFails, context.Canceled},
+		wantSteps:          map[string]stepStatus{"a": stepSucceeded, "b": stepFailed, "c": stepUnknown},
 	}
 }
 
@@ -306,7 +332,7 @@ func lateCompensableSiblingRow() runRow {
 		wantFailed:     []string{"x", "y"},
 		wantErrText:    map[string]string{"x": errAlwaysFails.Error(), "y": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{"x": 1, "y": 1},
-		wantCauseText:  map[string]string{"y": `"x"`},
+		wantCauseText:  map[string]string{"y": stopText},
 		wantUnrecorded: []string{"y"},
 		wantNotErrs:    []error{ErrJournal},
 		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
@@ -1374,7 +1400,7 @@ func siblingCancelRow() runRow {
 		wantErrText:    map[string]string{"b": errAlwaysFails.Error(), "c": context.Canceled.Error()},
 		wantAttempts:   map[string]int{"b": 3, "c": 1},
 		wantPreviousIs: map[string][]error{"b": {errAlwaysFails, errAlwaysFails}},
-		wantCauseText:  map[string]string{"c": quotedB},
+		wantCauseText:  map[string]string{"c": stopText},
 		wantTrail:      afterA(together(startOf("b"), startOf("c"), failedB(), lostOf("c")), seq(closed)),
 		wantErrs:       []error{errAlwaysFails, context.Canceled},
 		wantSteps: map[string]stepStatus{

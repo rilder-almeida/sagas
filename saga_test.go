@@ -38,6 +38,7 @@ const (
 	sagaTrip = `saga "trip"`
 	noReach  = "neither before nor after"
 	quotedB  = `"b"`
+	stopText = "sagas: stopped because the run failed"
 
 	nilOptionText   = "nil Option"
 	outputNamedText = "want a type declared with a name"

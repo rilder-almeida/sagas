@@ -87,7 +87,8 @@ type runner[S any] struct {
 	store       *store[S]
 	runs        []stepRun
 	undone      []stepStatus
-	failures    []*Error
+	compErrs    []*Error
+	failed      bool
 	serial      bool
 }
 
@@ -235,7 +236,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 	r := &runner[S]{
 		saga: s, execution: start.execution, writer: newID(), journal: journal,
 		store: committed, runs: make([]stepRun, len(s.steps)), undone: make([]stepStatus, len(s.steps)),
-		serial: serial.On(ctx),
+		compErrs: make([]*Error, len(s.steps)), serial: serial.On(ctx),
 	}
 
 	grace, release := graceContext(ctx, s.recovery)
@@ -281,7 +282,39 @@ func (r *runner[S]) finish(ctx, grace context.Context, end forwardEnd, st *S) er
 
 	kind := endKind(status, r.rejected != nil, appendKind)
 
-	return &RunError{Kind: kind, Steps: r.failures, Pending: r.pending(), causes: causes}
+	return &RunError{
+		Kind: kind, Steps: r.stepErrors(), Pending: r.pending(), Compensated: r.compensated(), causes: causes,
+	}
+}
+
+func (r *runner[S]) stepErrors() []*Error {
+	var errs []*Error
+
+	for i := range r.runs {
+		if r.runs[i].err != nil {
+			errs = append(errs, r.runs[i].err)
+		}
+	}
+
+	for _, err := range r.compErrs {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errs
+}
+
+func (r *runner[S]) compensated() []string {
+	var names []string
+
+	for i, status := range r.undone {
+		if status == stepCompensated {
+			names = append(names, r.saga.steps[i].name)
+		}
+	}
+
+	return names
 }
 
 func (s runStatus) stepStatus() stepStatus {
@@ -347,7 +380,7 @@ func (r *runner[S]) status(end forwardEnd) Status {
 		return StatusCompleted
 	case end == endIncomplete:
 		return StatusIncomplete
-	case slices.ContainsFunc(r.failures, func(e *Error) bool { return e.Compensation }):
+	case slices.ContainsFunc(r.compErrs, func(e *Error) bool { return e != nil }):
 		return StatusCompensationFailed
 	default:
 		return StatusCompensated

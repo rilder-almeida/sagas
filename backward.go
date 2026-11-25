@@ -289,7 +289,7 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out *outc
 
 	b.done[i], r.undone[i] = true, stepCompensationFailed
 
-	r.failures = append(r.failures, failure)
+	r.compErrs[i], r.failed = failure, true
 
 	if resendErr == nil {
 		r.record(grace, &Event{
