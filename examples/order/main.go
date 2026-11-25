@@ -1,4 +1,4 @@
-// Command order runs three orders through parallel steps, one of them with a state conflict.
+// Command order runs three orders through parallel steps, and New refuses one, whose parallel steps produce one type.
 package main
 
 import "os"
