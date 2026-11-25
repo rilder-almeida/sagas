@@ -268,3 +268,16 @@ func concurrentOutputs(reports []StepReport, outputs []reflect.Type, g *graph) [
 
 	return errs
 }
+
+func idOutputs(reports []StepReport, fields []int, state reflect.Type, idField int) []error {
+	var errs []error
+
+	for i, field := range fields {
+		if idField >= 0 && field == idField {
+			errs = append(errs, fmt.Errorf("%w: step %q: output type %s: field %s of state %s names the execution",
+				ErrInvalidStep, reports[i].Name, state.Field(field).Type, state.Field(field).Name, state))
+		}
+	}
+
+	return errs
+}

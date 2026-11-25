@@ -103,6 +103,7 @@ func examine[S any](flow Flow) (inspection[S], error) {
 	idField, stateErr := examineState(reflect.TypeFor[S]())
 	in.idField = idField
 
+	errs = append(errs, idOutputs(in.reports, in.fields, reflect.TypeFor[S](), idField)...)
 	errs = append(errs, stateErr, refuseExecutionIDMethod[S]())
 
 	return in, errors.Join(errs...)

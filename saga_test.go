@@ -29,6 +29,10 @@ type otherState struct {
 	Car string
 }
 
+type hotelIDState struct {
+	ID Hotel `sagas:"id"`
+}
+
 const (
 	tripName = "trip"
 	sagaTrip = `saga "trip"`
@@ -330,6 +334,14 @@ func Test_New_stateType(t *testing.T) {
 			build:        sagaRefusal[noneFieldState],
 			wantErr:      ErrInvalidState,
 			wantContains: []string{"noneFieldState.Nothing", "rejected type sagas.None"},
+		},
+		{
+			name:    "[Fail] When: a step output has the type of the id field ; Should: refuse it naming the field",
+			build:   sagaRefusal[hotelIDState],
+			wantErr: ErrInvalidStep,
+			wantContains: []string{
+				`step "hotel-step"`, "output type sagas.Hotel", "field ID of state sagas.hotelIDState",
+			},
 		},
 	}
 
