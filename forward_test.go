@@ -1374,7 +1374,6 @@ func journalRows() []runRow {
 		undoableOutcomeDownRow(),
 		panicDownRow(),
 		panicOnceRow(),
-		panicStartRow(),
 		failureAppendRow(),
 		intentAppendRow(),
 		intentClosingFailsRow(),
@@ -1627,20 +1626,6 @@ func panicDownRow() runRow {
 	row.wantPanic = errJournalPanic
 
 	return row
-}
-
-func panicStartRow() runRow {
-	return runRow{
-		name: "[Fail] When: the journal panics on every append of saga-started ; " +
-			"Should: return the journal failure as is, not a *RunError, with the panic in the chain",
-		steps:         func(rec *recorder) Flow { return rec.step("a") },
-		script:        map[int]error{1: failing(errJournalPanic, forever)},
-		initial:       tripState{Hotel: hotelRitz},
-		wantErrs:      []error{ErrJournal, errJournalPanic},
-		wantState:     tripState{Hotel: hotelRitz},
-		wantPanic:     errJournalPanic,
-		wantUnstarted: true,
-	}
 }
 
 func panicOnceRow() runRow {
