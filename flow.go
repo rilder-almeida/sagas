@@ -9,7 +9,9 @@ import (
 )
 
 // Flow is a step or a group of steps in the order they run. A pointer to a type that embeds Step or Pivot is a Flow,
-// and Sequence and Parallel build the groups. One pointer is one step, wherever it appears.
+// and Sequence and Parallel build the groups. One pointer is one step, wherever it appears. A step and its Enabled get
+// the initial state plus the outputs of the steps it waits for, directly or not, and never the output of a step that
+// runs at the same time.
 type Flow interface {
 	flow()
 }
@@ -22,12 +24,14 @@ type Group struct {
 
 func (*Group) flow() {}
 
-// Sequence runs items one after another: each item starts after every step that ends the item before it.
+// Sequence runs items one after another: each item starts after every step that ends the item before it. A later item
+// reads the outputs of the earlier ones, and a later output of one type replaces the earlier one.
 func Sequence(items ...Flow) *Group {
 	return &Group{kind: "Sequence", items: slices.Clone(items)}
 }
 
-// Parallel runs items at the same time and ends after the last one ends.
+// Parallel runs items at the same time and ends after the last one ends. An item never reads an output of another item,
+// and New refuses two steps in different items that produce one output type.
 func Parallel(items ...Flow) *Group {
 	return &Group{kind: "Parallel", items: slices.Clone(items)}
 }

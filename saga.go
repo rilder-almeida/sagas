@@ -65,8 +65,11 @@ type stepNode[S any] struct {
 	compensation callFunc[S]
 }
 
-// New builds the saga called name that runs flow. It returns every problem of the definition joined, including
-// every error Inspect returns for flow.
+// New builds the saga called name that runs flow, or returns every problem joined, with every error of Inspect. An
+// output type must be named and not predeclared, held by exactly one field of S, and made by no two steps that run at
+// the same time. A known method name must have an accepted signature. A top-level field of S can carry `sagas:"id"`, on
+// one string field and without secret, or `sagas:"secret"`. New refuses any other sagas tag, any json tag, and an
+// ExecutionID method on S.
 func New[S any](name string, flow Flow, opts ...Option) (*Saga[S], error) {
 	d := &definition{given: map[string]int{}}
 	nilOptions := 0
@@ -213,7 +216,8 @@ func WithMiddleware(mw ...Middleware) Option {
 }
 
 // WithRecoveryTimeout sets the grace period after the caller's context ends. Zero, the default, means
-// DefaultRecoveryTimeout. The bound holds only when every step, compensation and the journal honor their context.
+// DefaultRecoveryTimeout. The bound holds only when every step, compensation and the journal honor their context. A
+// call that returns after the grace period can miss the journal, but Run reports it.
 func WithRecoveryTimeout(t time.Duration) Option {
 	return func(d *definition) {
 		d.recovery = t

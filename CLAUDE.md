@@ -3,7 +3,7 @@
 ## Rules
 
 - The core module imports only the standard library.
-- Positional arguments of `New` are a name and a flow. A step is a type that embeds `sagas.Step`. Saga settings are functional options.
+- Positional arguments of `New` are a name and a flow. A step is a type that embeds `sagas.Step[S, R]` or, for the pivot, `sagas.Pivot[S, R]`. Saga settings are functional options.
 - `docs/glossary.md` is the vocabulary.
 - Take the simplest code that meets each rule. Measure performance with a benchmark
   instead of guessing, and record the numbers when a change touches a hot path.

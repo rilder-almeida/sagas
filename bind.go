@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// None is the output type of a step that produces nothing. Its Execute returns only an error.
+// None is the output type of a step that produces nothing. Its Execute and any Compensate return only an error.
 type None struct{}
 
-// Step declares a step whose state is S and whose output is R. A step is a pointer to a type that embeds Step and has
-// Execute, and optionally Compensate, Enabled and Wrap. Declare step methods on the step type: New cannot see one lost
-// to a same-name field or to two embedded providers. All of them must be safe for concurrent use and idempotent, and
-// Execute, Compensate and Wrap must honor their context. A call that returns after the grace period can miss the
-// journal, but Run reports it.
+// Step declares a step of state S and output R. A step type embeds Step and has Execute(ctx, s S) (R, error), or
+// Execute(ctx, s S) error for None, and optionally Wrap. Compensate(ctx, s S) error restores the output field to its
+// value before the step, and Compensate(ctx, s S) (R, error) sets it. Both get the input and any output of Execute.
+// Enabled(ctx, s S) bool is a fast decision on s, ctx serves trace, log and cancel, and network work belongs in a step.
+// Each method sits on the step type, is idempotent, safe for concurrent use, and honors ctx.
 type Step[S, R any] struct {
 	typed[S, R]
 
@@ -33,8 +33,9 @@ type Step[S, R any] struct {
 	FailurePolicy FailurePolicy
 }
 
-// Pivot declares the pivot step, whose state is S and whose output is R. A pivot is a pointer to a type that embeds
-// Pivot and has Execute, and optionally Wrap. Its rules for methods are the rules of Step.
+// Pivot declares the pivot step of state S and output R. A pivot type embeds Pivot and has
+// Execute(ctx, s S) (R, error), or Execute(ctx, s S) error for None, and optionally Wrap. Its methods follow the rules
+// of Step. It has the settings of Step except FailurePolicy, because a pivot has no compensation.
 type Pivot[S, R any] struct {
 	typed[S, R]
 

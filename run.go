@@ -213,9 +213,9 @@ func (r *runner[S]) causes() []error {
 	return errs
 }
 
-// Run starts a new execution of the saga on st under ctx and writes the committed state back into st; completion
-// returns nil. The string field of the state tagged `sagas:"id"` gives the execution ID, else a random one is
-// used, and an ID that the saga's journal already holds fails with ErrExecutionExists. An error before the
+// Run starts a new execution of the saga on st under ctx and writes the committed state back into st. It returns nil
+// when the run completes. The string field of the state tagged `sagas:"id"` gives the execution ID, else a random one
+// is used, and an ID that the saga's journal already holds fails with ErrExecutionExists. An error before the
 // saga-started event is stored returns as is, and any later end other than a completed run returns a *RunError.
 func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 	start, err := checkRun(st, s.idField)

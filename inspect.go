@@ -11,8 +11,9 @@ import (
 	"unicode"
 )
 
-// StepReport describes one step of a flow as New sees it: its settings, the methods its type has, and After, the
-// names of the steps it waits for.
+// StepReport describes one step of a flow as New sees it: the settings Name, Description, RetryPolicy, AttemptTimeout
+// and FailurePolicy, whether it is the Pivot, which of Compensate, Enabled and Wrap its type has, and After, the names
+// of the steps it waits for. Every step has Execute, so no field reports it.
 type StepReport struct {
 	Name           string
 	Description    string
@@ -48,8 +49,9 @@ type inspection[S any] struct {
 	idField int
 }
 
-// Inspect runs the checks of New on flow for the state type S. It reports each step in the order it first appears
-// in flow, or returns every problem joined.
+// Inspect runs the checks of New on flow for the state type S. It reports each step in the order it first appears in
+// flow, or returns every problem joined. Neither sees a step method that a field of the same name or two embedded types
+// with that method hide.
 func Inspect[S any](flow Flow) ([]StepReport, error) {
 	in, err := examine[S](flow)
 	if err != nil {
