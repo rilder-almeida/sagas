@@ -401,6 +401,30 @@ type pivotBehindPlainPivot struct {
 	Name  string
 }
 
+type embedLoop struct{ *embedLoop }
+
+type twinReserve struct{ Reserve }
+
+type stepPtrOverPivot struct {
+	*Step[tripState, None]
+	pivotStep
+}
+
+type pivotPtrOverStep struct {
+	*Pivot[tripState, None]
+	Reserve
+}
+
+type twinReserves struct {
+	nestedReserve
+	twinReserve
+}
+
+type stepAndPivot struct {
+	Step[tripState, None]
+	Pivot[tripState, None]
+}
+
 func Test_embedsStep(t *testing.T) {
 	t.Parallel()
 
@@ -459,6 +483,26 @@ func Test_embedsStep(t *testing.T) {
 		{
 			name: "[Fail] When: Step comes through an embedded pointer ; Should: reject it",
 			typ:  reflect.TypeFor[*ptrReserve](), want: false,
+		},
+		{
+			name: "[Fail] When: Step and Pivot are embedded at the same depth ; Should: reject them",
+			typ:  reflect.TypeFor[*stepAndPivot](), want: false,
+		},
+		{
+			name: "[Fail] When: a *Step embed sits above a deeper Pivot embed ; Should: reject the promoted *Step",
+			typ:  reflect.TypeFor[*stepPtrOverPivot](), want: false,
+		},
+		{
+			name: "[Fail] When: a *Pivot embed sits above a deeper Step embed ; Should: reject the promoted *Pivot",
+			typ:  reflect.TypeFor[*pivotPtrOverStep](), want: false,
+		},
+		{
+			name: "[Fail] When: the same Step is reached twice at one depth ; Should: reject it as ambiguous",
+			typ:  reflect.TypeFor[*twinReserves](), want: false,
+		},
+		{
+			name: "[Fail] When: an embedded pointer loops back to its own type ; Should: stop and reject it",
+			typ:  reflect.TypeFor[*embedLoop](), want: false,
 		},
 		{
 			name: "[Fail] When: a named field is called Step ; Should: reject it",

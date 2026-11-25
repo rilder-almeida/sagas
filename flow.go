@@ -132,10 +132,16 @@ func embedsStep(t reflect.Type) (reflect.StructField, bool) {
 		return reflect.StructField{}, false
 	}
 
-	for level := []reflect.StructField{{Type: t.Elem()}}; len(level) > 0; {
-		scan := scanEmbeds(level)
+	seen := map[reflect.Type]bool{}
+
+	for level := []embedPath{{field: reflect.StructField{Type: t.Elem()}}}; len(level) > 0; {
+		scan := scanEmbeds(level, seen)
 		if len(scan.found) > 0 {
-			return scan.found[0], len(scan.found) == 1
+			if len(scan.found) != 1 || scan.found[0].pointer {
+				return reflect.StructField{}, false
+			}
+
+			return scan.found[0].field, true
 		}
 
 		level = scan.next
@@ -144,30 +150,56 @@ func embedsStep(t reflect.Type) (reflect.StructField, bool) {
 	return reflect.StructField{}, false
 }
 
-type embedScan struct {
-	found []reflect.StructField
-	next  []reflect.StructField
+type embedPath struct {
+	field   reflect.StructField
+	pointer bool
 }
 
-func scanEmbeds(level []reflect.StructField) embedScan {
+type embedScan struct {
+	found []embedPath
+	next  []embedPath
+}
+
+func scanEmbeds(level []embedPath, seen map[reflect.Type]bool) embedScan {
 	var scan embedScan
 
+	level = slices.DeleteFunc(slices.Clone(level), func(p embedPath) bool { return seen[p.field.Type] })
 	for _, parent := range level {
-		for f := range parent.Type.Fields() {
-			if !f.Anonymous || f.Type.Kind() != reflect.Struct {
-				continue
-			}
+		seen[parent.field.Type] = true
+	}
 
-			f.Index = append(slices.Clone(parent.Index), f.Index...)
-			if libraryEmbed(f.Type) != "" {
-				scan.found = append(scan.found, f)
-			} else {
-				scan.next = append(scan.next, f)
+	for _, parent := range level {
+		for f := range parent.field.Type.Fields() {
+			child, ok := embedChild(&parent, &f)
+
+			switch {
+			case !ok:
+			case libraryEmbed(child.field.Type) != "":
+				scan.found = append(scan.found, child)
+			default:
+				scan.next = append(scan.next, child)
 			}
 		}
 	}
 
 	return scan
+}
+
+func embedChild(parent *embedPath, f *reflect.StructField) (embedPath, bool) {
+	child := *f
+
+	pointer := child.Type.Kind() == reflect.Pointer
+	if pointer {
+		child.Type = child.Type.Elem()
+	}
+
+	if !child.Anonymous || child.Type.Kind() != reflect.Struct {
+		return embedPath{}, false
+	}
+
+	child.Index = append(slices.Clone(parent.field.Index), child.Index...)
+
+	return embedPath{field: child, pointer: parent.pointer || pointer}, true
 }
 
 func libraryEmbed(t reflect.Type) string {
