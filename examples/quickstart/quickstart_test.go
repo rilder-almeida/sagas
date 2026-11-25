@@ -176,7 +176,7 @@ func Test_newSaga(t *testing.T) {
 			id, putErr := accounts.put(t.Context(), key, a.Email)
 
 			require.NoError(t, putErr)
-			assert.Equal(t, tt.wantRegistered, id == a.AccountID)
+			assert.Equal(t, tt.wantRegistered, accountID(id) == a.AccountID)
 
 			if tt.wantRegistered {
 				require.NoError(t, runErr)

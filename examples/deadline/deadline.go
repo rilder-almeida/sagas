@@ -66,12 +66,18 @@ func (s *store) removeIfPresent(ctx context.Context, key string) error {
 
 // --8<-- [start:state]
 
+type (
+	stockID   string
+	invoiceID string
+	packID    string
+)
+
 type order struct {
 	ID        string `sagas:"id"`
 	Fault     string
-	StockID   string
-	InvoiceID string
-	PackID    string
+	StockID   stockID
+	InvoiceID invoiceID
+	PackID    packID
 }
 
 // --8<-- [end:state]
@@ -151,24 +157,19 @@ func (u *undone) release(ctx context.Context, s *store, name string) error {
 // --8<-- [start:steps]
 
 type reserve struct {
-	sagas.Step
+	sagas.Step[order, stockID]
 
 	stock  *store
 	undone *undone
 }
 
-func (r *reserve) Execute(ctx context.Context, o *order) error {
+func (r *reserve) Execute(ctx context.Context, _ order) (stockID, error) {
 	id, err := r.stock.put(ctx, sagas.IdempotencyKey(ctx))
-	if err != nil {
-		return err
-	}
 
-	o.StockID = id
-
-	return nil
+	return stockID(id), err
 }
 
-func (r *reserve) Compensate(ctx context.Context, _ *order) error {
+func (r *reserve) Compensate(ctx context.Context, _ order) error {
 	return r.undone.release(ctx, r.stock, "reserve")
 }
 
@@ -177,24 +178,19 @@ const faultInvoiceUndo = "invoice-undo"
 var errRefused = errors.New("invoice service refused the undo")
 
 type invoice struct {
-	sagas.Step
+	sagas.Step[order, invoiceID]
 
 	ledger *store
 	undone *undone
 }
 
-func (i *invoice) Execute(ctx context.Context, o *order) error {
+func (i *invoice) Execute(ctx context.Context, _ order) (invoiceID, error) {
 	id, err := i.ledger.put(ctx, sagas.IdempotencyKey(ctx))
-	if err != nil {
-		return err
-	}
 
-	o.InvoiceID = id
-
-	return nil
+	return invoiceID(id), err
 }
 
-func (i *invoice) Compensate(ctx context.Context, o *order) error {
+func (i *invoice) Compensate(ctx context.Context, o order) error {
 	if o.Fault == faultInvoiceUndo {
 		return sagas.Permanent(errRefused)
 	}
@@ -203,24 +199,19 @@ func (i *invoice) Compensate(ctx context.Context, o *order) error {
 }
 
 type pack struct {
-	sagas.Step
+	sagas.Step[order, packID]
 
 	dock   *store
 	undone *undone
 }
 
-func (p *pack) Execute(ctx context.Context, o *order) error {
+func (p *pack) Execute(ctx context.Context, _ order) (packID, error) {
 	id, err := p.dock.put(ctx, sagas.IdempotencyKey(ctx))
-	if err != nil {
-		return err
-	}
 
-	o.PackID = id
-
-	return nil
+	return packID(id), err
 }
 
-func (p *pack) Compensate(ctx context.Context, _ *order) error {
+func (p *pack) Compensate(ctx context.Context, _ order) error {
 	return p.undone.release(ctx, p.dock, "pack")
 }
 
@@ -232,13 +223,13 @@ const (
 var errGaveUp = errors.New("label service gave up waiting")
 
 type tag struct {
-	sagas.Step
+	sagas.Step[order, sagas.None]
 
 	labels *store
 	undone *undone
 }
 
-func (t *tag) Execute(ctx context.Context, _ *order) error {
+func (t *tag) Execute(ctx context.Context, _ order) error {
 	if _, err := t.labels.put(ctx, sagas.IdempotencyKey(ctx)); err != nil {
 		return err
 	}
@@ -248,7 +239,7 @@ func (t *tag) Execute(ctx context.Context, _ *order) error {
 	return ctx.Err()
 }
 
-func (t *tag) Compensate(ctx context.Context, o *order) error {
+func (t *tag) Compensate(ctx context.Context, o order) error {
 	if o.Fault == faultSlowUndo {
 		giveUp := time.NewTimer(giveUpAfter)
 		defer giveUp.Stop()

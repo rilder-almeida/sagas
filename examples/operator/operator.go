@@ -20,57 +20,56 @@ const (
 
 // --8<-- [start:state]
 
+type (
+	stockID    string
+	chargeID   string
+	trackingID string
+	mailID     string
+)
+
 type order struct {
 	ID         string `sagas:"id"`
 	Carrier    string
-	StockID    string
-	ChargeID   string
-	TrackingID string
-	MailID     string
+	StockID    stockID
+	ChargeID   chargeID
+	TrackingID trackingID
+	MailID     mailID
 }
 
 // --8<-- [end:state]
 
 // --8<-- [start:steps]
 
-type reserve struct{ sagas.Step }
+type reserve struct{ sagas.Step[order, stockID] }
 
-func (reserve) Execute(ctx context.Context, o *order) error {
-	o.StockID = sagas.IdempotencyKey(ctx)
-
-	return ctx.Err()
+func (reserve) Execute(ctx context.Context, _ order) (stockID, error) {
+	return stockID(sagas.IdempotencyKey(ctx)), ctx.Err()
 }
 
-type charge struct{ sagas.Step }
+type charge struct{ sagas.Pivot[order, chargeID] }
 
-func (charge) Pivot(ctx context.Context, o *order) error {
-	o.ChargeID = sagas.IdempotencyKey(ctx)
-
-	return ctx.Err()
+func (charge) Execute(ctx context.Context, _ order) (chargeID, error) {
+	return chargeID(sagas.IdempotencyKey(ctx)), ctx.Err()
 }
 
 const carrierClosed = "closed"
 
 var errCarrierClosed = errors.New("carrier is closed")
 
-type ship struct{ sagas.Step }
+type ship struct{ sagas.Step[order, trackingID] }
 
-func (ship) Execute(ctx context.Context, o *order) error {
+func (ship) Execute(ctx context.Context, o order) (trackingID, error) {
 	if o.Carrier == carrierClosed {
-		return sagas.Permanent(errCarrierClosed)
+		return "", sagas.Permanent(errCarrierClosed)
 	}
 
-	o.TrackingID = sagas.IdempotencyKey(ctx)
-
-	return ctx.Err()
+	return trackingID(sagas.IdempotencyKey(ctx)), ctx.Err()
 }
 
-type notify struct{ sagas.Step }
+type notify struct{ sagas.Step[order, mailID] }
 
-func (notify) Execute(ctx context.Context, o *order) error {
-	o.MailID = sagas.IdempotencyKey(ctx)
-
-	return ctx.Err()
+func (notify) Execute(ctx context.Context, _ order) (mailID, error) {
+	return mailID(sagas.IdempotencyKey(ctx)), ctx.Err()
 }
 
 // --8<-- [end:steps]

@@ -16,6 +16,13 @@ const (
 
 // --8<-- [start:state]
 
+type (
+	flightID string
+	hotelID  string
+	chargeID string
+	mailID   string
+)
+
 type trip struct {
 	ID       string `sagas:"id"`
 	Route    string
@@ -23,10 +30,10 @@ type trip struct {
 	Nights   int
 	Amount   int
 	Email    string
-	FlightID string
-	HotelID  string
-	ChargeID string
-	MailID   string
+	FlightID flightID
+	HotelID  hotelID
+	ChargeID chargeID
+	MailID   mailID
 }
 
 // --8<-- [end:state]
@@ -34,27 +41,21 @@ type trip struct {
 // --8<-- [start:steps]
 
 type flight struct {
-	sagas.Step
+	sagas.Step[trip, flightID]
 
 	airline *airline
 }
 
-func (f *flight) Execute(ctx context.Context, t *trip) error {
+func (f *flight) Execute(ctx context.Context, t trip) (flightID, error) {
 	id, err := f.airline.Book(ctx, sagas.IdempotencyKey(ctx), t.Route)
 	if errors.Is(err, errCanceled) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	t.FlightID = id
-
-	return nil
+	return flightID(id), err
 }
 
-func (f *flight) Compensate(ctx context.Context, _ *trip) error {
+func (f *flight) Compensate(ctx context.Context, _ trip) error {
 	err := f.airline.Cancel(ctx, sagas.IdempotencyKey(ctx))
 	if errors.Is(err, errNotFound) {
 		return nil
@@ -64,27 +65,21 @@ func (f *flight) Compensate(ctx context.Context, _ *trip) error {
 }
 
 type hotel struct {
-	sagas.Step
+	sagas.Step[trip, hotelID]
 
 	hotels *hotels
 }
 
-func (h *hotel) Execute(ctx context.Context, t *trip) error {
+func (h *hotel) Execute(ctx context.Context, t trip) (hotelID, error) {
 	id, err := h.hotels.Book(ctx, sagas.IdempotencyKey(ctx), t.City, t.Nights)
 	if errors.Is(err, errNoRooms) || errors.Is(err, errCanceled) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	t.HotelID = id
-
-	return nil
+	return hotelID(id), err
 }
 
-func (h *hotel) Compensate(ctx context.Context, _ *trip) error {
+func (h *hotel) Compensate(ctx context.Context, _ trip) error {
 	err := h.hotels.Cancel(ctx, sagas.IdempotencyKey(ctx))
 	if errors.Is(err, errNotFound) {
 		return nil
@@ -94,45 +89,33 @@ func (h *hotel) Compensate(ctx context.Context, _ *trip) error {
 }
 
 type charge struct {
-	sagas.Step
+	sagas.Pivot[trip, chargeID]
 
 	payments *payments
 }
 
-func (c *charge) Pivot(ctx context.Context, t *trip) error {
+func (c *charge) Execute(ctx context.Context, t trip) (chargeID, error) {
 	id, err := c.payments.Charge(ctx, sagas.IdempotencyKey(ctx), t.Amount)
 	if errors.Is(err, errOverLimit) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	t.ChargeID = id
-
-	return nil
+	return chargeID(id), err
 }
 
 type email struct {
-	sagas.Step
+	sagas.Step[trip, mailID]
 
 	mailer *mailer
 }
 
-func (e *email) Execute(ctx context.Context, t *trip) error {
+func (e *email) Execute(ctx context.Context, t trip) (mailID, error) {
 	id, err := e.mailer.Send(ctx, sagas.IdempotencyKey(ctx), t.Email)
 	if errors.Is(err, errNoAddress) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	t.MailID = id
-
-	return nil
+	return mailID(id), err
 }
 
 // --8<-- [end:steps]

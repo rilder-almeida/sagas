@@ -217,7 +217,7 @@ func (r *runner[S]) receive(stepCtx, grace context.Context, c *crew[S]) {
 
 func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j job[S]) {
 	if pred := r.saga.steps[j.step].pred; pred != nil {
-		if !vet(pred, reports, j) || !<-j.answer {
+		if !vet(ctx, pred, reports, j) || !<-j.answer {
 			return
 		}
 	}
@@ -228,12 +228,12 @@ func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j jo
 	})
 }
 
-func vet[S any](pred func(*S) bool, reports chan<- report, j job[S]) bool {
+func vet[S any](ctx context.Context, pred func(context.Context, S) bool, reports chan<- report, j job[S]) bool {
 	v := verdict{step: j.step, err: errGoexit}
 
 	defer func() { reports <- v }()
 
-	v.run, v.label, v.err = judge(pred, j.base)
+	v.run, v.label, v.err = judge(ctx, pred, j.base)
 
 	return v.run && v.err == nil
 }
@@ -255,7 +255,7 @@ func (r *runner[S]) act(ctx context.Context, j job[S], call callFunc[S], send fu
 	returned = true
 }
 
-func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, *KindError, error) {
+func judge[S any](ctx context.Context, pred func(context.Context, S) bool, base snapshot[S]) (bool, *KindError, error) {
 	view, err := copyState(base)
 	if err != nil {
 		return false, ErrInvalidState, err
@@ -264,7 +264,7 @@ func judge[S any](pred func(*S) bool, base snapshot[S]) (bool, *KindError, error
 	var ok bool
 
 	panicked, err := recoverPanic(func() error {
-		ok = pred(view)
+		ok = pred(ctx, *view)
 
 		return nil
 	})
@@ -336,7 +336,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 		return
 	}
 
-	res, err := r.store.commit(name, f.base, *f.out.state)
+	res, err := r.store.commit(name, f.base, r.saga.steps[f.step].field, f.out.output)
 	if err != nil {
 		kind := outcomeFailure
 		if i == r.saga.pivot {

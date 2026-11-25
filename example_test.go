@@ -20,62 +20,52 @@ var (
 	errGaveUp  = errors.New("gave up")
 )
 
+type (
+	flightRef string
+	hotelRef  string
+	chargeRef string
+	emailRef  string
+)
+
 type trip struct {
-	ID                           string `sagas:"id"`
-	Flight, Hotel, Charge, Email string
+	ID     string `sagas:"id"`
+	Flight flightRef
+	Hotel  hotelRef
+	Charge chargeRef
+	Email  emailRef
 }
 
-type flight struct{ sagas.Step }
+type flight struct{ sagas.Step[trip, flightRef] }
 
-func (*flight) Execute(ctx context.Context, t *trip) error {
-	t.Flight = sagas.IdempotencyKey(ctx)
-
-	return nil
+func (*flight) Execute(ctx context.Context, _ trip) (flightRef, error) {
+	return flightRef(sagas.IdempotencyKey(ctx)), nil
 }
 
-func (*flight) Compensate(_ context.Context, t *trip) error {
-	t.Flight = ""
-
-	return nil
-}
+func (*flight) Compensate(context.Context, trip) error { return nil }
 
 type hotel struct {
-	sagas.Step
+	sagas.Step[trip, hotelRef]
 
 	err error
 }
 
-func (h *hotel) Execute(_ context.Context, t *trip) error {
+func (h *hotel) Execute(context.Context, trip) (hotelRef, error) {
 	if h.err != nil {
-		return h.err
+		return "", h.err
 	}
 
-	t.Hotel = "booked"
-
-	return nil
+	return "booked", nil
 }
 
-func (*hotel) Compensate(_ context.Context, t *trip) error {
-	t.Hotel = ""
+func (*hotel) Compensate(context.Context, trip) error { return nil }
 
-	return nil
-}
+type charge struct{ sagas.Pivot[trip, chargeRef] }
 
-type charge struct{ sagas.Step }
+func (*charge) Execute(context.Context, trip) (chargeRef, error) { return "charged", nil }
 
-func (*charge) Pivot(_ context.Context, t *trip) error {
-	t.Charge = "charged"
+type email struct{ sagas.Step[trip, emailRef] }
 
-	return nil
-}
-
-type email struct{ sagas.Step }
-
-func (*email) Execute(_ context.Context, t *trip) error {
-	t.Email = "sent"
-
-	return nil
-}
+func (*email) Execute(context.Context, trip) (emailRef, error) { return "sent", nil }
 
 func newTrip(hotelErr error, opts ...sagas.Option) *sagas.Saga[trip] {
 	flow := sagas.Sequence(&flight{}, &hotel{err: hotelErr}, &charge{}, &email{})
@@ -220,27 +210,9 @@ func ExampleSlog() {
 	// level=INFO msg="sagas: attempt" saga=trip execution=trip-42 step=email phase=execute attempt=1
 }
 
-type seat struct {
-	sagas.Step
+type seat struct{ sagas.Step[trip, hotelRef] }
 
-	arrive chan<- struct{}
-	peer   <-chan struct{}
-	value  string
-}
-
-func (s *seat) Execute(ctx context.Context, t *trip) error {
-	close(s.arrive)
-
-	select {
-	case <-s.peer:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
-	t.Hotel = s.value
-
-	return nil
-}
+func (s *seat) Execute(context.Context, trip) (hotelRef, error) { return hotelRef(s.Name), nil }
 
 func ExampleParallel() {
 	ctx := context.Background()
@@ -255,41 +227,21 @@ func ExampleParallel() {
 		panic(err)
 	}
 
-	windowArrived, aisleArrived := make(chan struct{}), make(chan struct{})
-	window := &seat{
-		Name: "window", RetryPolicy: sagas.NoRetry(), arrive: windowArrived, peer: aisleArrived, value: "window",
-	}
-	aisle := &seat{
-		Name: "aisle", RetryPolicy: sagas.NoRetry(), arrive: aisleArrived, peer: windowArrived, value: "aisle",
-	}
-
-	clash, err := sagas.New[trip]("trip", sagas.Parallel(window, aisle))
-	if err != nil {
-		panic(err)
-	}
-
-	runErr := clash.Run(ctx, &trip{ID: tripID})
-
-	conflict, compensated := errors.Is(runErr, sagas.ErrConflict), errors.Is(runErr, sagas.ErrCompensated)
-	if _, err = fmt.Printf("conflict: %t\ncompensated: %t\n", conflict, compensated); err != nil {
-		panic(err)
+	_, err = sagas.New[trip]("trip", sagas.Parallel(&seat{Name: "window"}, &seat{Name: "aisle"}))
+	if _, werr := fmt.Println(err); werr != nil {
+		panic(werr)
 	}
 
 	// Output:
 	// trip-42: completed
-	// conflict: true
-	// compensated: true
+	// sagas: invalid step: steps "window" and "aisle": both produce sagas_test.hotelRef and may run at the same time
 }
 
-type promo struct{ sagas.Step }
+type promo struct{ sagas.Step[trip, emailRef] }
 
-func (*promo) Enabled(*trip) bool { return false }
+func (*promo) Enabled(context.Context, trip) bool { return false }
 
-func (*promo) Execute(_ context.Context, t *trip) error {
-	t.Email = "sent"
-
-	return nil
-}
+func (*promo) Execute(context.Context, trip) (emailRef, error) { return "sent", nil }
 
 func ExampleStep_enabled() {
 	saga, err := sagas.New[trip]("trip", sagas.Sequence(&flight{}, &promo{}))
@@ -345,20 +297,20 @@ func ExampleWithJournal() {
 }
 
 type abandon struct {
-	sagas.Step
+	sagas.Step[trip, sagas.None]
 
 	cancel context.CancelFunc
 	stuck  bool
 }
 
-func (a *abandon) Execute(ctx context.Context, _ *trip) error {
+func (a *abandon) Execute(ctx context.Context, _ trip) error {
 	a.cancel()
 	<-ctx.Done()
 
 	return ctx.Err()
 }
 
-func (a *abandon) Compensate(ctx context.Context, _ *trip) error {
+func (a *abandon) Compensate(ctx context.Context, _ trip) error {
 	if !a.stuck {
 		return nil
 	}
@@ -438,9 +390,9 @@ func ExampleStep_description() {
 	// charge: charge the card
 }
 
-type slow struct{ sagas.Step }
+type slow struct{ sagas.Step[trip, sagas.None] }
 
-func (*slow) Execute(ctx context.Context, _ *trip) error {
+func (*slow) Execute(ctx context.Context, _ trip) error {
 	<-ctx.Done()
 
 	return ctx.Err()

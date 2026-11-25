@@ -68,7 +68,8 @@ func Test_run(t *testing.T) {
 			newWriter: bufferWriter,
 			wantOutput: "ord-1: completed\n" +
 				"ord-2: compensated, pending: [], undone: [reserve]\n" +
-				"ord-3: compensated, pending: [], undone: [reserve], conflict in: fraud-check\n",
+				"ord-3: refused: sagas: invalid step: steps \"note-1\" and \"note-2\": both produce main.note " +
+				"and may run at the same time\n",
 		},
 		{
 			name:      "[Fail] When: the writer fails ; Should: return the write error and write nothing",
@@ -147,7 +148,6 @@ func Test_newSaga(t *testing.T) {
 	tests := []struct {
 		name       string
 		amount     int
-		annotate   bool
 		wantReport string
 		wantHeld   bool
 		wantRisk   string
@@ -167,13 +167,6 @@ func Test_newSaga(t *testing.T) {
 			wantReport: "ord-9: compensated, pending: [], undone: [reserve]\n",
 			wantCalls:  []string{"reserve execute", "fraud-check execute", "reserve compensate"},
 		},
-		{
-			name:       "[Fail] When: both steps write one field ; Should: fail the later commit and release the stock",
-			amount:     fraudLimit,
-			annotate:   true,
-			wantReport: "ord-9: compensated, pending: [], undone: [reserve], conflict in: fraud-check\n",
-			wantCalls:  []string{"reserve execute", "fraud-check execute", "reserve compensate"},
-		},
 	}
 
 	for _, tt := range tests {
@@ -183,7 +176,7 @@ func Test_newSaga(t *testing.T) {
 			svc := newServices()
 			rec := sagastest.NewRecorder()
 
-			saga, err := svc.build(tt.annotate, rec.Middleware())
+			saga, err := svc.build(nil, rec.Middleware())
 			require.NoError(t, err)
 
 			o := order{ID: "ord-9", Item: "lamp", Amount: tt.amount}
@@ -199,7 +192,7 @@ func Test_newSaga(t *testing.T) {
 
 			require.NoError(t, putErr)
 			assert.Equal(t, tt.wantHeld, id == "SKU-1")
-			assert.Equal(t, tt.wantRisk, o.Risk)
+			assert.Equal(t, risk(tt.wantRisk), o.Risk)
 
 			recorded := rec.Calls()
 			calls := make([]string, 0, len(recorded))

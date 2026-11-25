@@ -255,6 +255,33 @@ func (r *recorder) snapshot() []string {
 	return slices.Clone(r.trace)
 }
 
+func stateOutput(
+	call func(context.Context, *pipeState) error,
+) func(context.Context, *pipeState) (encodedOutput, error) {
+	return func(ctx context.Context, s *pipeState) (encodedOutput, error) {
+		if err := call(ctx, s); err != nil {
+			return encodedOutput{}, err
+		}
+
+		data, err := encodeField("state", *s)
+
+		return encodedOutput{data: data, err: err}, nil
+	}
+}
+
+func stateOf(tb testing.TB, out encodedOutput) *pipeState {
+	tb.Helper()
+
+	if out.data == nil {
+		return nil
+	}
+
+	var s pipeState
+	require.NoError(tb, decodeField("state", out.data, &s))
+
+	return &s
+}
+
 func baseOf[S any](tb testing.TB, s S) snapshot[S] {
 	tb.Helper()
 
@@ -1239,10 +1266,12 @@ func Test_requireRan(t *testing.T) {
 
 			at := &attemptState[pipeState]{base: baseOf(t, pipeState{})}
 			run := func(err error) Call {
-				return runCall(at, func(context.Context, *pipeState) error { return err }, "key")
+				return runCall(at, func(context.Context, *pipeState) (encodedOutput, error) {
+					return encodedOutput{data: []byte(callMark)}, err
+				}, "key")
 			}
 
-			var out *pipeState
+			var out encodedOutput
 
 			reached := false
 			err := requireRan(at, &callMeta{}, &out).Wrap(t.Context(), CallInfo{}, tt.call(&reached, run))
@@ -1251,13 +1280,13 @@ func Test_requireRan(t *testing.T) {
 
 			if tt.wantErr == nil {
 				require.NoError(t, err)
-				assert.Equal(t, &pipeState{}, out)
+				assert.Equal(t, callMark, string(out.data))
 
 				return
 			}
 
 			require.ErrorIs(t, err, tt.wantErr)
-			assert.Nil(t, out)
+			assert.Nil(t, out.data)
 		})
 	}
 }
@@ -1465,13 +1494,15 @@ func Test_pipeline(t *testing.T) {
 					time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
 				}
 
-				got := pipeline(&spec, tt.call(rec))(ctx, &callMeta{execution: infoExecution}, baseFor(t, &tt))
+				call := pipeline(&spec, stateOutput(tt.call(rec)))
+				got := call(ctx, &callMeta{execution: infoExecution}, baseFor(t, &tt))
 
 				time.Sleep(time.Minute)
 
 				assert.Equal(t, tt.wantKind, got.kind)
 				assert.Equal(t, tt.wantAttempts, got.attempts)
-				assert.Equal(t, tt.wantState, got.state)
+				assert.Equal(t, tt.wantState, stateOf(t, got.output))
+				require.NoError(t, got.output.err)
 				assert.Equal(t, tt.wantTrace, rec.snapshot())
 
 				assertPipelineErr(t, &tt, &got)
@@ -1494,10 +1525,8 @@ func Benchmark_pipeline(b *testing.B) {
 			spec := callSpec{
 				saga: "s", step: "pay", phase: PhaseExecute, timeout: bb.timeout, retry: RetryPolicy{Attempts: 1},
 			}
-			call := pipeline(&spec, func(_ context.Context, s *pipeState) error {
-				s.A++
-
-				return nil
+			call := pipeline(&spec, func(context.Context, *pipeState) (encodedOutput, error) {
+				return encodedOutput{}, nil
 			})
 			base := baseOf(b, pipeState{A: 1, B: "x"})
 			ctx := context.Background()

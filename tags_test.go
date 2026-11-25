@@ -141,7 +141,10 @@ func Test_tagOffense(t *testing.T) {
 
 const tagLiteral = `sagas:"id"`
 
-type valueMethodState struct{ ID string }
+type valueMethodState struct {
+	ID    string
+	Hotel Hotel
+}
 
 func (s valueMethodState) ExecutionID() string { return s.ID }
 

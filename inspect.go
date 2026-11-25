@@ -19,7 +19,6 @@ type StepReport struct {
 	RetryPolicy    RetryPolicy
 	AttemptTimeout time.Duration
 	FailurePolicy  FailurePolicy
-	Execute        bool
 	Pivot          bool
 	Compensate     bool
 	Enabled        bool
@@ -28,9 +27,10 @@ type StepReport struct {
 }
 
 type stepMethods[S any] struct {
-	call       func(context.Context, *S) error
-	compensate func(context.Context, *S) error
-	enabled    func(*S) bool
+	call       func(context.Context, *S) (encodedOutput, error)
+	compensate func(context.Context, *S) (encodedOutput, error)
+	replaces   bool
+	enabled    func(context.Context, S) bool
 	wrap       Middleware
 }
 
@@ -44,6 +44,7 @@ type inspection[S any] struct {
 	reports []StepReport
 	methods []stepMethods[S]
 	graph   graph
+	fields  []int
 	idField int
 }
 
@@ -66,14 +67,22 @@ func examine[S any](flow Flow) (inspection[S], error) {
 		errs = append(errs, fmt.Errorf("%w: saga has no steps", ErrInvalidStep))
 	}
 
-	in := inspection[S]{reports: make([]StepReport, len(r.flows)), methods: make([]stepMethods[S], len(r.flows))}
+	in := inspection[S]{
+		reports: make([]StepReport, len(r.flows)), methods: make([]stepMethods[S], len(r.flows)),
+		fields: make([]int, len(r.flows)),
+	}
 	named := make([]namedStep, len(r.flows))
+	outputs := make([]reflect.Type, len(r.flows))
 
-	for i, f := range r.flows {
-		var stepErrs []error
+	for i, b := range r.flows {
+		var (
+			stepErrs   []error
+			fieldRules ruleList
+		)
 
-		named[i] = nameStep(f)
-		in.reports[i], in.methods[i], stepErrs = inspectStep[S](f, named[i])
+		named[i], outputs[i] = nameStep(b), b.output()
+		in.fields[i], fieldRules = outputField(reflect.TypeFor[S](), outputs[i])
+		in.reports[i], in.methods[i], stepErrs = inspectStep[S](b, named[i], in.fields[i], fieldRules)
 		errs = append(errs, stepErrs...)
 	}
 
@@ -89,6 +98,7 @@ func examine[S any](flow Flow) (inspection[S], error) {
 
 	in.graph, graphErrs = checkGraph(in.reports, r.parents)
 	errs = append(errs, graphErrs...)
+	errs = append(errs, concurrentOutputs(in.reports, outputs, &in.graph)...)
 
 	idField, stateErr := examineState(reflect.TypeFor[S]())
 	in.idField = idField
@@ -98,9 +108,9 @@ func examine[S any](flow Flow) (inspection[S], error) {
 	return in, errors.Join(errs...)
 }
 
-func nameStep(f Flow) namedStep {
-	t := reflect.TypeOf(f)
-	if name := f.flowStep().Name; name != "" {
+func nameStep(b binder) namedStep {
+	t := reflect.TypeOf(b)
+	if name := b.settings().name; name != "" {
 		return namedStep{name: name, typ: t}
 	}
 
@@ -130,48 +140,31 @@ func nameOf(typeName string) string {
 	return string(name)
 }
 
-func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []error) {
-	settings := *f.flowStep()
-	v := reflect.ValueOf(f)
+func inspectStep[S any](b binder, n namedStep, field int, fieldRules ruleList) (StepReport, stepMethods[S], []error) {
+	set := b.settings()
 
 	rules := checkName(n.name)
 	if len(rules) > 0 && n.derived {
 		rules[0] += "; set Name"
 	}
 
-	var (
-		m       stepMethods[S]
-		execute func(context.Context, *S) error
-		pivot   func(context.Context, *S) error
-		wrap    func(context.Context, CallInfo, Call) error
-	)
+	m, bindRules := bindStep[S](b, field, fieldRules)
+	rules = append(rules, bindRules...)
 
-	hasExecute := method(v, "Execute", &execute, &rules)
-	hasPivot := method(v, "Pivot", &pivot, &rules)
-	hasCompensate := method(v, "Compensate", &m.compensate, &rules)
-	hasEnabled := method(v, "Enabled", &m.enabled, &rules)
-	hasWrap := method(v, "Wrap", &wrap, &rules)
-
-	ambiguous := ambiguousMethods(v.Type())
+	ambiguous := ambiguousMethods(reflect.TypeOf(b))
 	rules = append(rules, ambiguous.rules...)
-	rules = append(rules, kindRules(v, &ambiguous)...)
+
+	if !ambiguous.names["Execute"] && !reflect.ValueOf(b).MethodByName("Execute").IsValid() {
+		rules = append(rules, fmt.Sprintf("type %T has no Execute", b))
+	}
 
 	report := StepReport{
-		Name: n.name, Description: settings.Description, RetryPolicy: settings.RetryPolicy,
-		AttemptTimeout: settings.AttemptTimeout, FailurePolicy: settings.FailurePolicy,
-		Execute: hasExecute, Pivot: hasPivot, Compensate: hasCompensate, Enabled: hasEnabled, Wrap: hasWrap,
+		Name: n.name, Description: set.description, RetryPolicy: set.retry, AttemptTimeout: set.timeout,
+		FailurePolicy: set.failure, Pivot: set.pivot, Compensate: m.compensate != nil, Enabled: m.enabled != nil,
+		Wrap: m.wrap != nil,
 	}
 
 	rules = append(rules, checkSettings(&report)...)
-
-	m.call = execute
-	if hasPivot {
-		m.call = pivot
-	}
-
-	if hasWrap {
-		m.wrap = MiddlewareFunc(wrap)
-	}
 
 	errs := make([]error, 0, len(rules))
 	for _, rule := range rules {
@@ -181,37 +174,18 @@ func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []erro
 	return report, m, errs
 }
 
-func kindRules(v reflect.Value, a *ambiguity) []string {
-	execute := v.MethodByName("Execute").IsValid() || a.names["Execute"]
-	pivot := v.MethodByName("Pivot").IsValid() || a.names["Pivot"]
-
-	switch {
-	case !execute && !pivot:
-		return []string{fmt.Sprintf("type %s has neither Execute nor Pivot", v.Type())}
-	case execute && pivot:
-		return []string{fmt.Sprintf("type %s has both Execute and Pivot", v.Type())}
-	default:
-		return nil
-	}
-}
-
-func method[F any](v reflect.Value, name string, dst *F, rules *[]string) bool {
-	m := v.MethodByName(name)
-	if !m.IsValid() {
-		return false
-	}
-
-	f, ok := reflect.TypeAssert[F](m)
+func bindStep[S any](b binder, field int, fieldRules ruleList) (stepMethods[S], ruleList) {
+	sb, ok := b.(stateBinder[S])
 	if !ok {
-		*rules = append(*rules, fmt.Sprintf("method %s of type %s is %s, want %s",
-			name, v.Type(), m.Type(), reflect.TypeFor[F]()))
+		embed, _ := embedsStep(reflect.TypeOf(b))
 
-		return false
+		return stepMethods[S]{}, ruleList{fmt.Sprintf("type %T embeds %s, want the state %s",
+			b, shortType(embed), shortType(reflect.TypeFor[S]()))}
 	}
 
-	*dst = f
+	m, rules := sb.bind(b, field)
 
-	return true
+	return m, append(rules, fieldRules...)
 }
 
 type ambiguity struct {
@@ -222,7 +196,7 @@ type ambiguity struct {
 func ambiguousMethods(t reflect.Type) ambiguity {
 	a := ambiguity{names: map[string]bool{}}
 
-	for _, name := range []string{"Execute", "Pivot", "Compensate", "Enabled", "Wrap"} {
+	for _, name := range []string{"Execute", "Compensate", "Enabled", "Wrap"} {
 		if _, declared := t.MethodByName(name); declared {
 			continue
 		}

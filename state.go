@@ -138,7 +138,7 @@ func (w *typeWalk) walk(t reflect.Type) []offense {
 }
 
 func (w *typeWalk) rules(t reflect.Type) []offense {
-	if t == reflect.TypeFor[time.Duration]() || t == reflect.TypeFor[jsontext.Value]() {
+	if t == reflect.TypeFor[time.Duration]() || t == reflect.TypeFor[jsontext.Value]() || t == reflect.TypeFor[None]() {
 		return []offense{{rule: "rejected type " + t.String()}}
 	}
 
@@ -259,10 +259,12 @@ type store[S any] struct {
 	fields   [][]byte
 	versions []uint64
 	steps    []string
+	names    []string
 }
 
 func newStore[S any](initial S) (*store[S], error) {
-	if err := checkState(reflect.TypeFor[S]()); err != nil {
+	t := reflect.TypeFor[S]()
+	if err := checkState(t); err != nil {
 		return nil, err
 	}
 
@@ -271,10 +273,16 @@ func newStore[S any](initial S) (*store[S], error) {
 		return nil, err
 	}
 
+	names := make([]string, len(fields))
+	for i := range names {
+		names[i] = t.Field(i).Name
+	}
+
 	return &store[S]{
 		fields:   fields,
 		versions: make([]uint64, len(fields)),
 		steps:    make([]string, len(fields)),
+		names:    names,
 	}, nil
 }
 
@@ -287,43 +295,27 @@ type commitResult struct {
 	label   *KindError
 }
 
-func (s *store[S]) commit(step string, snap snapshot[S], attempt S) (commitResult, error) {
-	v := reflect.ValueOf(attempt)
-
-	fields, err := encodeFields(v)
-	if err != nil {
-		return commitResult{label: ErrInvalidState}, err
+func (s *store[S]) commit(step string, snap snapshot[S], field int, out encodedOutput) (commitResult, error) {
+	if out.err != nil {
+		return commitResult{label: ErrInvalidState}, out.err
 	}
 
-	var (
-		changed   []int
-		conflicts []error
-	)
-
-	for i, data := range fields {
-		switch {
-		case bytes.Equal(data, snap.fields[i]):
-		case s.versions[i] != snap.versions[i]:
-			conflicts = append(conflicts, fmt.Errorf("%w: field %s changed by step %q after step %q committed it",
-				ErrConflict, v.Type().Field(i).Name, step, s.steps[i]))
-		default:
-			changed = append(changed, i)
-		}
+	if out.data == nil || field < 0 || bytes.Equal(out.data, snap.fields[field]) {
+		return commitResult{changed: []string{}}, nil
 	}
 
-	if len(conflicts) > 0 {
-		return commitResult{label: ErrConflict}, errors.Join(conflicts...)
+	if s.versions[field] != snap.versions[field] {
+		err := fmt.Errorf("%w: field %s changed by step %q after step %q committed it",
+			ErrConflict, s.names[field], step, s.steps[field])
+
+		return commitResult{label: ErrConflict}, err
 	}
 
-	names := make([]string, 0, len(changed))
-	for _, i := range changed {
-		s.fields[i] = fields[i]
-		s.versions[i]++
-		s.steps[i] = step
-		names = append(names, v.Type().Field(i).Name)
-	}
+	s.fields[field] = out.data
+	s.versions[field]++
+	s.steps[field] = step
 
-	return commitResult{changed: names}, nil
+	return commitResult{changed: []string{s.names[field]}}, nil
 }
 
 func (s *store[S]) writeBack(dst *S) error {

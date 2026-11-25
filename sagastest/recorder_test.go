@@ -61,7 +61,7 @@ func assertSameErr(t *testing.T, want, got error) {
 }
 
 type panicProbe struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 }
 
 func newPanicProbe(name string) *panicProbe {
@@ -71,7 +71,7 @@ func newPanicProbe(name string) *panicProbe {
 	return p
 }
 
-func (*panicProbe) Execute(context.Context, *probeState) error { panic(errBoom) }
+func (*panicProbe) Execute(context.Context, probeState) error { panic(errBoom) }
 
 const (
 	keyA = "recorded/run-1/a"

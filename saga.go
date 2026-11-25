@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -51,7 +52,8 @@ type Saga[S any] struct {
 
 type stepNode[S any] struct {
 	name         string
-	pred         func(*S) bool
+	field        int
+	pred         func(context.Context, S) bool
 	policy       FailurePolicy
 	parents      []int
 	children     []int
@@ -99,7 +101,8 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	for i := range in.reports {
 		rep := &in.reports[i]
 		n := stepNode[S]{
-			name: rep.Name, policy: rep.FailurePolicy, parents: in.graph.parents[i], pred: in.methods[i].enabled,
+			name: rep.Name, field: in.fields[i], policy: rep.FailurePolicy, parents: in.graph.parents[i],
+			pred: in.methods[i].enabled,
 		}
 
 		if n.policy == "" {

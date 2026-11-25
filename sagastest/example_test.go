@@ -20,12 +20,12 @@ var (
 type shop struct{}
 
 type charge struct {
-	sagas.Step
+	sagas.Step[shop, sagas.None]
 
 	calls atomic.Int32
 }
 
-func (c *charge) Execute(context.Context, *shop) error {
+func (c *charge) Execute(context.Context, shop) error {
 	c.calls.Add(1)
 
 	return nil
@@ -107,18 +107,18 @@ func (l *ledger) check() error {
 }
 
 type ledgerCharge struct {
-	sagas.Step
+	sagas.Step[shop, sagas.None]
 
 	book *ledger
 }
 
-func (c *ledgerCharge) Execute(ctx context.Context, _ *shop) error {
+func (c *ledgerCharge) Execute(ctx context.Context, _ shop) error {
 	c.book.charge(sagas.IdempotencyKey(ctx))
 
 	return nil
 }
 
-func (c *ledgerCharge) Compensate(ctx context.Context, _ *shop) error {
+func (c *ledgerCharge) Compensate(ctx context.Context, _ shop) error {
 	c.book.refund(sagas.IdempotencyKey(ctx))
 
 	return nil

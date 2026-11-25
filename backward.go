@@ -197,7 +197,7 @@ func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome[S]
 	name := r.saga.steps[f.step].name
 	attempts := f.out.attempts
 
-	res, err := r.store.commit(name, f.base, *f.out.state)
+	res, err := r.store.commit(name, f.base, r.saga.steps[f.step].field, f.out.output)
 	if err != nil {
 		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: res.label}, false
 	}

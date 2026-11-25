@@ -11,50 +11,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type Reserve struct{ Step }
+type Reserve struct{ Step[tripState, None] }
 
-func (Reserve) Execute(context.Context, *tripState) error { return nil }
+func (Reserve) Execute(context.Context, tripState) error { return nil }
 
-type CheckFraud struct{ Step }
+type CheckFraud struct{ Step[tripState, None] }
 
-func (*CheckFraud) Execute(context.Context, *tripState) error { return nil }
+func (*CheckFraud) Execute(context.Context, tripState) error { return nil }
 
-type SendHTTPRequest struct{ Step }
+type SendHTTPRequest struct{ Step[tripState, None] }
 
-func (SendHTTPRequest) Execute(context.Context, *tripState) error { return nil }
+func (SendHTTPRequest) Execute(context.Context, tripState) error { return nil }
 
 type Notify[T any] struct {
-	Step
+	Step[tripState, None]
 
 	Value T
 }
 
-func (Notify[T]) Execute(context.Context, *tripState) error { return nil }
+func (Notify[T]) Execute(context.Context, tripState) error { return nil }
 
-type _lead struct{ Step }
+type _lead struct{ Step[tripState, None] }
 
-func (_lead) Execute(context.Context, *tripState) error { return nil }
+func (_lead) Execute(context.Context, tripState) error { return nil }
 
-type typoStep struct{ Step }
+type typoStep struct{ Step[tripState, None] }
 
-func (typoStep) Execute(context.Context, *tripState) error { return nil }
+func (typoStep) Execute(context.Context, tripState) error { return nil }
 
-func (typoStep) Compensat(context.Context, *tripState) error { return nil }
+func (typoStep) Compensat(context.Context, tripState) error { return nil }
 
-type idleStep struct{ Step }
+type idleStep struct{ Step[tripState, None] }
 
-type bothStep struct {
-	Step
-	doer
-	payer
-}
+type wrongStep struct{ Step[tripState, None] }
 
-type wrongStep struct{ Step }
-
-func (wrongStep) Execute(context.Context, tripState) error { return nil }
+func (wrongStep) Execute(context.Context, *tripState) error { return nil }
 
 type wrongEnabledStep struct {
-	Step
+	Step[tripState, None]
 	doer
 }
 
@@ -65,7 +59,7 @@ type otherWrapper struct{}
 func (otherWrapper) Wrap(ctx context.Context, _ CallInfo, call Call) error { return call(ctx) }
 
 type twoWraps struct {
-	Step
+	Step[tripState, None]
 	doer
 	wrapper
 	otherWrapper
@@ -73,50 +67,50 @@ type twoWraps struct {
 
 type otherDoer struct{}
 
-func (otherDoer) Execute(context.Context, *tripState) error { return nil }
+func (otherDoer) Execute(context.Context, tripState) error { return nil }
 
 type otherUndoer struct{}
 
-func (otherUndoer) Compensate(context.Context, *tripState) error { return nil }
+func (otherUndoer) Compensate(context.Context, tripState) error { return nil }
 
 type otherChecker struct{}
 
-func (otherChecker) Enabled(*tripState) bool { return true }
+func (otherChecker) Enabled(context.Context, tripState) bool { return true }
 
 type twoDoers struct {
-	Step
+	Step[tripState, None]
 	doer
 	otherDoer
 }
 
 type twoUndoers struct {
-	Step
+	Step[tripState, None]
 	doer
 	undoer
 	otherUndoer
 }
 
 type twoCheckers struct {
-	Step
+	Step[tripState, None]
 	doer
 	checker
 	otherChecker
 }
 
 type ifaceWrap struct {
-	Step
+	Step[tripState, None]
 	doer
 	wrapper
 	Middleware
 }
 
 type sharedA struct {
-	*Step
+	*Step[tripState, None]
 	doer
 }
 
 type sharedB struct {
-	*Step
+	*Step[tripState, None]
 	doer
 }
 
@@ -130,7 +124,7 @@ type pairWraps struct {
 }
 
 type nestedWraps struct {
-	Step
+	Step[tripState, None]
 	doer
 	pairWraps
 }
@@ -141,14 +135,14 @@ type pairDoers struct {
 }
 
 type nestedDoers struct {
-	Step
+	Step[tripState, None]
 	pairDoers
 }
 
 type deepWrap struct{ wrapper }
 
 type mixedDepth struct {
-	Step
+	Step[tripState, None]
 	doer
 	wrapper
 	otherWrapper
@@ -156,7 +150,7 @@ type mixedDepth struct {
 }
 
 type cycleA struct {
-	Step
+	Step[tripState, None]
 	doer
 	*cycleB
 }
@@ -164,7 +158,7 @@ type cycleA struct {
 type cycleB struct{ *cycleA }
 
 type ownWrap struct {
-	Step
+	Step[tripState, None]
 	doer
 	wrapper
 	otherWrapper
@@ -172,9 +166,24 @@ type ownWrap struct {
 
 func (ownWrap) Wrap(ctx context.Context, _ CallInfo, call Call) error { return call(ctx) }
 
-type okStep[S any] struct{ Step }
+type okStep[S any] struct{ Step[S, None] }
 
-func (okStep[S]) Execute(context.Context, *S) error { return nil }
+func (okStep[S]) Execute(context.Context, S) error { return nil }
+
+type hotelStep[S any] struct{ Step[S, Hotel] }
+
+func (hotelStep[S]) Execute(context.Context, S) (Hotel, error) { return "", nil }
+
+type twoHotelState struct {
+	Booked  Hotel
+	Wanted  Hotel
+	Comment string
+}
+
+type noneFieldState struct {
+	Nothing None
+	Hotel   Hotel
+}
 
 type goodIDState struct {
 	ID string `sagas:"id"`
@@ -192,7 +201,7 @@ const (
 	quotedA       = `"a"`
 	negAttempts   = "RetryPolicy.Attempts is negative"
 	badName       = "name may hold only ASCII letters"
-	neitherText   = "neither Execute nor Pivot"
+	neitherText   = "has no Execute"
 	fullName      = "full"
 	executeMethod = "Execute"
 	wrapMethod    = "Wrap"
@@ -223,75 +232,75 @@ func inspectSuccessRows() []inspectRow {
 			inspect: trip, flow: full,
 			wantReports: []StepReport{{
 				Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
-				FailurePolicy: Halt, Execute: true, Compensate: true, Enabled: true, Wrap: true,
+				FailurePolicy: Halt, Compensate: true, Enabled: true, Wrap: true,
 			}},
 		},
 		{
 			name:    "[Success] When: the type declares Execute on the value receiver ; Should: find it",
 			inspect: trip, flow: &Reserve{},
-			wantReports: []StepReport{{Name: reserveName, Execute: true}},
+			wantReports: []StepReport{{Name: reserveName}},
 		},
 		{
 			name:    "[Success] When: the type declares Execute on the pointer receiver ; Should: find it",
 			inspect: trip, flow: &CheckFraud{},
-			wantReports: []StepReport{{Name: "check-fraud", Execute: true}},
+			wantReports: []StepReport{{Name: "check-fraud"}},
 		},
 		{
 			name:    "[Success] When: the type name holds an acronym ; Should: keep the acronym as one word",
 			inspect: trip, flow: &SendHTTPRequest{},
-			wantReports: []StepReport{{Name: "send-http-request", Execute: true}},
+			wantReports: []StepReport{{Name: "send-http-request"}},
 		},
 		{
 			name:    "[Success] When: the type is generic ; Should: drop the type arguments from the name",
 			inspect: trip, flow: &Notify[int]{},
-			wantReports: []StepReport{{Name: "notify", Execute: true}},
+			wantReports: []StepReport{{Name: "notify"}},
 		},
 		{
 			name:    "[Success] When: Name is set ; Should: use it over the type name",
 			inspect: trip, flow: &Reserve{Name: bookStep},
-			wantReports: []StepReport{{Name: bookStep, Execute: true}},
+			wantReports: []StepReport{{Name: bookStep}},
 		},
 		{
 			name:    "[Success] When: two steps of one type each set Name ; Should: report both",
 			inspect: trip, flow: Sequence(&Reserve{Name: "x"}, &Reserve{Name: "y"}),
-			wantReports: []StepReport{{Name: "x", Execute: true}, {Name: "y", Execute: true, After: []string{"x"}}},
+			wantReports: []StepReport{{Name: "x"}, {Name: "y", After: []string{"x"}}},
 		},
 		{
 			name:    "[Success] When: a method is misspelled Compensat ; Should: report Compensate false",
 			inspect: trip, flow: &typoStep{},
-			wantReports: []StepReport{{Name: "typo-step", Execute: true}},
+			wantReports: []StepReport{{Name: "typo-step"}},
 		},
 		{
 			name:    "[Success] When: the type declares Wrap beside two embedded ones ; Should: report Wrap",
 			inspect: trip, flow: &ownWrap{do: okAction, wrap: okMiddleware(), otherWrapper: otherWrapper{}},
-			wantReports: []StepReport{{Name: "own-wrap", Execute: true, Wrap: true}},
+			wantReports: []StepReport{{Name: "own-wrap", Wrap: true}},
 		},
 		{
 			name:    "[Success] When: a pivot sits between a compensable step and a forward step ; Should: report it",
 			inspect: trip,
 			flow:    Sequence(undoing("a", okAction, okAction), paying("p", okAction), act("z", okAction)),
 			wantReports: []StepReport{
-				{Name: "a", Execute: true, Compensate: true},
+				{Name: "a", Compensate: true},
 				{Name: "p", Pivot: true, After: []string{"a"}},
-				{Name: "z", Execute: true, After: []string{"p"}},
+				{Name: "z", After: []string{"p"}},
 			},
 		},
 		{
 			name:        "[Success] When: two types embed each other by pointer ; Should: end the walk and report",
 			inspect:     trip,
 			flow:        &cycleA{do: okAction, cycleB: &cycleB{}},
-			wantReports: []StepReport{{Name: "cycle-a", Execute: true}},
+			wantReports: []StepReport{{Name: "cycle-a"}},
 		},
 		{
 			name:        "[Success] When: the type embeds Step through a struct by value ; Should: find its methods",
 			inspect:     trip,
 			flow:        &nestedReserve{},
-			wantReports: []StepReport{{Name: "nested-reserve", Execute: true}},
+			wantReports: []StepReport{{Name: "nested-reserve"}},
 		},
 		{
 			name:    `[Success] When: the state tags a string field sagas:"id" ; Should: accept it`,
 			inspect: Inspect[goodIDState], flow: &okStep[goodIDState]{},
-			wantReports: []StepReport{{Name: "ok-step", Execute: true}},
+			wantReports: []StepReport{{Name: "ok-step"}},
 		},
 	}
 }
@@ -320,31 +329,32 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{`step "idle-step"`, "*sagas.idleStep", neitherText},
 		},
 		{
-			name:    "[Fail] When: the type has both Execute and Pivot ; Should: name the step and the type",
-			inspect: trip, flow: &bothStep{do: okAction, pay: okAction},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "both-step"`, "*sagas.bothStep", "both Execute and Pivot"},
-		},
-		{
 			name:    "[Fail] When: Execute has the wrong signature ; Should: name the step and the method",
 			inspect: trip, flow: &wrongStep{},
 			wantErrs: []error{ErrInvalidStep},
 			wantContains: []string{
 				`step "wrong-step"`, "method Execute", "func(context.Context, sagas.tripState) error",
-				"want func(context.Context, *sagas.tripState) error",
+				"want func(context.Context, sagas.tripState) error",
 			},
 		},
 		{
-			name:    "[Fail] When: Enabled has the wrong signature ; Should: name the step and the method",
-			inspect: trip, flow: &wrongEnabledStep{do: okAction},
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "wrong-enabled-step"`, "method Enabled", "want func(*sagas.tripState) bool"},
+			name:     "[Fail] When: Enabled has the wrong signature ; Should: name the step and the method",
+			inspect:  trip,
+			flow:     &wrongEnabledStep{do: okAction},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "wrong-enabled-step"`,
+				"method Enabled",
+				"want func(context.Context, sagas.tripState) bool",
+			},
 		},
 		{
-			name:    "[Fail] When: the step is for another state type ; Should: name the method and the state",
+			name:    "[Fail] When: the step is for another state type ; Should: name both states",
 			inspect: Inspect[otherState], flow: act("a", okAction),
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{stepA, "method Execute", "want func(context.Context, *sagas.otherState) error"},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				stepA, "embeds sagas.Step[sagas.tripState, sagas.None], want the state sagas.otherState",
+			},
 		},
 		{
 			name:    "[Fail] When: FailurePolicy is set without Compensate ; Should: reject it",
@@ -464,6 +474,22 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{neitherText, "chanState"},
 		},
 		{
+			name:    "[Fail] When: two state fields have the output type ; Should: name both fields",
+			inspect: Inspect[twoHotelState], flow: &hotelStep[twoHotelState]{},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "hotel-step"`, "output type sagas.Hotel: fields Booked and Wanted of state sagas.twoHotelState",
+			},
+		},
+		{
+			name:         "[Fail] When: a state field has the type None ; Should: return ErrInvalidState naming it",
+			inspect:      Inspect[noneFieldState],
+			flow:         &okStep[noneFieldState]{},
+			wantErrs:     []error{ErrInvalidState},
+			wantNoErrs:   []error{ErrInvalidStep},
+			wantContains: []string{"noneFieldState.Nothing", "rejected type sagas.None"},
+		},
+		{
 			name:         "[Fail] When: the state tags a non-string field as the id ; Should: return ErrInvalidState",
 			inspect:      Inspect[badIDState],
 			flow:         &okStep[badIDState]{},
@@ -484,7 +510,7 @@ func inspectStepRows() []inspectRow {
 
 func inspectEmbedRows() []inspectRow {
 	trip := Inspect[tripState]
-	shared := &Step{Name: "shared"}
+	shared := &Step[tripState, None]{Name: "shared"}
 
 	return []inspectRow{
 		{
@@ -588,7 +614,7 @@ func inspectEmbedRows() []inspectRow {
 		{
 			name:     "[Fail] When: a struct value is an item ; Should: reject it naming type and place",
 			inspect:  trip,
-			flow:     Parallel(act("a", okAction), sharedA{Step: &Step{}, do: okAction}),
+			flow:     Parallel(act("a", okAction), sharedA{Step: &Step[tripState, None]{}, do: okAction}),
 			wantErrs: []error{ErrInvalidStep},
 			wantContains: []string{
 				"Parallel item at index 1 has type sagas.sharedA", "want a pointer to a struct that embeds Step",
@@ -603,8 +629,8 @@ func inspectGraphRows() []inspectRow {
 	a, b, c := s[0], s[1], s[2]
 	p, q := paying("p", okAction), paying("q", okAction)
 	undoAfter := undoing("b", okAction, okAction)
-	pivotUndo := &pivotUndoStep{Name: "p", pay: okAction, undo: okAction}
-	pivotIf := &pivotIfStep{Name: "p", pay: okAction, pred: okPredicate}
+	pivotUndo := &pivotUndoStep{Name: "p", do: okAction, undo: okAction}
+	pivotIf := &pivotIfStep{Name: "p", do: okAction, pred: okPredicate}
 	loop := Parallel(Sequence(a, b), Sequence(b, a))
 
 	return []inspectRow{
@@ -831,7 +857,7 @@ func Test_nameStep(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		flow        Flow
+		flow        binder
 		wantName    string
 		wantDerived bool
 	}{
@@ -872,12 +898,13 @@ func Test_inspectStep(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		flow           Flow
+		flow           binder
 		wantReport     StepReport
 		wantCall       bool
 		wantCompensate bool
 		wantEnabled    bool
 		wantWrap       bool
+		fieldRules     ruleList
 		wantErrs       []string
 	}{
 		{
@@ -885,7 +912,7 @@ func Test_inspectStep(t *testing.T) {
 			flow: full,
 			wantReport: StepReport{
 				Name: fullName, FailurePolicy: Halt,
-				Execute: true, Compensate: true, Enabled: true, Wrap: true,
+				Compensate: true, Enabled: true, Wrap: true,
 			},
 			wantCall: true, wantCompensate: true, wantEnabled: true, wantWrap: true,
 		},
@@ -904,9 +931,17 @@ func Test_inspectStep(t *testing.T) {
 		{
 			name:       "[Fail] When: a derived name breaks the name rule ; Should: say to set Name",
 			flow:       &_lead{},
-			wantReport: StepReport{Name: "_lead", Execute: true},
+			wantReport: StepReport{Name: "_lead"},
 			wantCall:   true,
 			wantErrs:   []string{nameRule + "; " + setName},
+		},
+		{
+			name:       "[Fail] When: the output field has a rule ; Should: report it for the step",
+			flow:       act("a", okAction),
+			wantReport: StepReport{Name: "a"},
+			wantCall:   true,
+			fieldRules: ruleList{"output rule"},
+			wantErrs:   []string{`step "a": output rule`},
 		},
 	}
 
@@ -914,7 +949,7 @@ func Test_inspectStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			report, m, errs := inspectStep[tripState](tt.flow, nameStep(tt.flow))
+			report, m, errs := inspectStep[tripState](tt.flow, nameStep(tt.flow), -1, tt.fieldRules)
 
 			assert.Equal(t, tt.wantReport, report)
 			assert.Equal(t, tt.wantCall, m.call != nil)
@@ -931,73 +966,42 @@ func Test_inspectStep(t *testing.T) {
 	}
 }
 
-func Test_kindRules(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		flow      Flow
-		ambiguous map[string]bool
-		want      []string
-	}{
-		{
-			name: "[Success] When: the type has Execute ; Should: return no rule",
-			flow: &Reserve{}, ambiguous: map[string]bool{}, want: nil,
-		},
-		{
-			name: "[Success] When: Execute is ambiguous ; Should: count it as present",
-			flow: &twoDoers{}, ambiguous: map[string]bool{executeMethod: true}, want: nil,
-		},
-		{
-			name: "[Fail] When: Execute is ambiguous and not marked ; Should: report neither",
-			flow: &twoDoers{}, ambiguous: map[string]bool{},
-			want: []string{"type *sagas.twoDoers has neither Execute nor Pivot"},
-		},
-		{
-			name: "[Fail] When: the type has neither ; Should: report neither",
-			flow: &idleStep{}, ambiguous: map[string]bool{},
-			want: []string{"type *sagas.idleStep has neither Execute nor Pivot"},
-		},
-		{
-			name: "[Fail] When: the type has both ; Should: report both",
-			flow: &bothStep{}, ambiguous: map[string]bool{},
-			want: []string{"type *sagas.bothStep has both Execute and Pivot"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, kindRules(reflect.ValueOf(tt.flow), &ambiguity{names: tt.ambiguous}))
-		})
-	}
-}
-
 func Test_method(t *testing.T) {
 	t.Parallel()
 
+	restore := reflect.TypeFor[func(context.Context, tripState) error]()
+	replace := reflect.TypeFor[func(context.Context, tripState) (Hotel, error)]()
+
 	tests := []struct {
-		name      string
-		flow      Flow
-		method    string
-		wantFound bool
-		wantRules []string
+		name     string
+		flow     Flow
+		method   string
+		accepted []reflect.Type
+		want     ruleList
 	}{
 		{
-			name: "[Success] When: the method has the wanted signature ; Should: find it and set it",
-			flow: &Reserve{}, method: executeMethod, wantFound: true,
+			name: "[Success] When: the method has an accepted shape ; Should: add no rule",
+			flow: &Reserve{}, method: executeMethod, accepted: []reflect.Type{restore},
 		},
 		{
-			name: "[Success] When: the method is missing ; Should: find nothing and add no rule",
-			flow: &idleStep{}, method: executeMethod, wantFound: false,
+			name: "[Success] When: the method is missing ; Should: add no rule",
+			flow: &Reserve{}, method: "Compensate", accepted: []reflect.Type{restore},
 		},
 		{
-			name: "[Fail] When: the method has another signature ; Should: add a rule naming both signatures",
-			flow: &wrongStep{}, method: executeMethod, wantFound: false,
-			wantRules: []string{
-				"method Execute of type *sagas.wrongStep is func(context.Context, sagas.tripState) error, " +
-					"want func(context.Context, *sagas.tripState) error",
+			name: "[Fail] When: the method has another shape ; Should: name the shape it has and the one it wants",
+			flow: &wrongStep{}, method: executeMethod, accepted: []reflect.Type{restore},
+			want: ruleList{
+				"method Execute of type *sagas.wrongStep is func(context.Context, *sagas.tripState) error, " +
+					"want func(context.Context, sagas.tripState) error",
+			},
+		},
+		{
+			name: "[Fail] When: two shapes are accepted and neither matches ; Should: name both joined by or",
+			flow: &oldShapes{}, method: "Compensate", accepted: []reflect.Type{restore, replace},
+			want: ruleList{
+				"method Compensate of type *sagas.oldShapes is func(context.Context, *sagas.tripState) error, " +
+					"want func(context.Context, sagas.tripState) error or " +
+					"func(context.Context, sagas.tripState) (sagas.Hotel, error)",
 			},
 		},
 	}
@@ -1006,16 +1010,7 @@ func Test_method(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var (
-				dst   func(context.Context, *tripState) error
-				rules []string
-			)
-
-			found := method(reflect.ValueOf(tt.flow), tt.method, &dst, &rules)
-
-			assert.Equal(t, tt.wantFound, found)
-			assert.Equal(t, tt.wantFound, dst != nil)
-			assert.Equal(t, tt.wantRules, rules)
+			assert.Equal(t, tt.want, method(tt.flow, tt.method, tt.accepted...))
 		})
 	}
 }

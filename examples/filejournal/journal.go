@@ -25,40 +25,36 @@ const (
 
 // --8<-- [start:state]
 
+type (
+	seat     string
+	chargeID string
+	receipt  string
+)
+
 type booking struct {
 	ID       string `sagas:"id"`
-	Seat     string
-	ChargeID string
-	Receipt  string
+	Seat     seat
+	ChargeID chargeID
+	Receipt  receipt
 }
 
 // --8<-- [end:state]
 
 // --8<-- [start:steps]
 
-type reserve struct{ sagas.Step }
+type reserve struct{ sagas.Step[booking, seat] }
 
-func (reserve) Execute(ctx context.Context, b *booking) error {
-	b.Seat = "12A"
+func (reserve) Execute(ctx context.Context, _ booking) (seat, error) { return "12A", ctx.Err() }
 
-	return ctx.Err()
+type charge struct{ sagas.Pivot[booking, chargeID] }
+
+func (charge) Execute(ctx context.Context, _ booking) (chargeID, error) {
+	return chargeID(sagas.IdempotencyKey(ctx)), ctx.Err()
 }
 
-type charge struct{ sagas.Step }
+type notify struct{ sagas.Step[booking, receipt] }
 
-func (charge) Pivot(ctx context.Context, b *booking) error {
-	b.ChargeID = sagas.IdempotencyKey(ctx)
-
-	return ctx.Err()
-}
-
-type notify struct{ sagas.Step }
-
-func (notify) Execute(ctx context.Context, b *booking) error {
-	b.Receipt = "sent"
-
-	return ctx.Err()
-}
+func (notify) Execute(ctx context.Context, _ booking) (receipt, error) { return "sent", ctx.Err() }
 
 // --8<-- [end:steps]
 

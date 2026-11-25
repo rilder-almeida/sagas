@@ -10,7 +10,7 @@ import (
 )
 
 func reportOf(name string, after ...string) StepReport {
-	return StepReport{Name: name, Execute: true, After: after}
+	return StepReport{Name: name, After: after}
 }
 
 func okSteps(names ...string) []*actStep {
@@ -135,7 +135,7 @@ func Test_resolve(t *testing.T) {
 	tests := []struct {
 		name        string
 		flow        Flow
-		wantSteps   []Flow
+		wantSteps   []binder
 		wantParents [][]int
 		wantErr     string
 	}{
@@ -149,39 +149,39 @@ func Test_resolve(t *testing.T) {
 		{
 			name:        "[Success] When: the flow is one step ; Should: find it with no parent",
 			flow:        a,
-			wantSteps:   []Flow{a},
+			wantSteps:   []binder{a},
 			wantParents: [][]int{{}},
 		},
 		{
 			name:        "[Success] When: a step follows two steps ; Should: link it to both in flow order",
 			flow:        Sequence(Parallel(b, a), c),
-			wantSteps:   []Flow{b, a, c},
+			wantSteps:   []binder{b, a, c},
 			wantParents: [][]int{{}, {}, {0, 1}},
 		},
 		{
 			name:        "[Success] When: a step waits for itself ; Should: link it to itself",
 			flow:        Sequence(a, a),
-			wantSteps:   []Flow{a},
+			wantSteps:   []binder{a},
 			wantParents: [][]int{{0}},
 		},
 		{
 			name:        "[Fail] When: a Sequence item is nil ; Should: report its position",
 			flow:        Sequence(a, nil),
-			wantSteps:   []Flow{a},
+			wantSteps:   []binder{a},
 			wantParents: [][]int{{}},
 			wantErr:     "Sequence item at index 1 is nil",
 		},
 		{
 			name:        "[Fail] When: an empty Sequence sits in a Sequence ; Should: report its position",
 			flow:        Sequence(a, Sequence(), b),
-			wantSteps:   []Flow{a, b},
+			wantSteps:   []binder{a, b},
 			wantParents: [][]int{{}, {0}},
 			wantErr:     "Sequence item at index 1 is an empty Sequence",
 		},
 		{
 			name:        "[Fail] When: an empty Parallel sits in a Parallel ; Should: report its position",
 			flow:        Parallel(Parallel(), a),
-			wantSteps:   []Flow{a},
+			wantSteps:   []binder{a},
 			wantParents: [][]int{{}},
 			wantErr:     "Parallel item at index 0 is an empty Parallel",
 		},
@@ -195,22 +195,22 @@ func Test_resolve(t *testing.T) {
 		},
 		{
 			name:        "[Fail] When: an item embeds *Step ; Should: report its type and position",
-			flow:        Sequence(a, &sharedA{Step: &Step{}, do: okAction}),
-			wantSteps:   []Flow{a},
+			flow:        Sequence(a, &sharedA{Step: &Step[tripState, None]{}, do: okAction}),
+			wantSteps:   []binder{a},
 			wantParents: [][]int{{}},
 			wantErr:     "Sequence item at index 1 has type *sagas.sharedA",
 		},
 		{
 			name:        "[Fail] When: a Parallel item is a nil Group ; Should: report its position",
 			flow:        Parallel(a, nilGroup),
-			wantSteps:   []Flow{a},
+			wantSteps:   []binder{a},
 			wantParents: [][]int{{}},
 			wantErr:     "Parallel item at index 1 is nil",
 		},
 		{
 			name:        "[Fail] When: a nested Parallel item is a typed nil pointer ; Should: report its position",
 			flow:        Sequence(a, Parallel(b, typedNil)),
-			wantSteps:   []Flow{a, b},
+			wantSteps:   []binder{a, b},
 			wantParents: [][]int{{}, {0}},
 			wantErr:     "Parallel item at index 1 is nil",
 		},
@@ -263,7 +263,7 @@ func Test_resolution_visit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := resolution{index: map[*Step]int{}}
+			r := resolution{index: map[Flow]int{}}
 
 			assert.Equal(t, tt.want, r.visit(tt.flow, tt.at))
 		})
@@ -312,7 +312,7 @@ func Test_resolution_group(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := resolution{index: map[*Step]int{}}
+			r := resolution{index: map[Flow]int{}}
 
 			assert.Equal(t, tt.want, r.group(tt.group))
 		})
@@ -346,7 +346,7 @@ func Test_resolution_step(t *testing.T) {
 		},
 		{
 			name:  "[Fail] When: the item embeds *Step ; Should: return no ends and keep the next index",
-			flows: []Flow{&sharedA{Step: &Step{}, do: okAction}, a},
+			flows: []Flow{&sharedA{Step: &Step[tripState, None]{}, do: okAction}, a},
 			want:  []ends{{}, {heads: []int{0}, tails: []int{0}}},
 		},
 	}
@@ -355,7 +355,7 @@ func Test_resolution_step(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := resolution{index: map[*Step]int{}}
+			r := resolution{index: map[Flow]int{}}
 			got := make([]ends, 0, len(tt.flows))
 
 			for _, f := range tt.flows {
@@ -371,17 +371,26 @@ func Test_embedsStep(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		typ  reflect.Type
-		want bool
+		name      string
+		typ       reflect.Type
+		want      bool
+		wantEmbed reflect.Type
 	}{
 		{
 			name: "[Success] When: a pointer to a struct embeds Step ; Should: accept it",
-			typ:  reflect.TypeFor[*Reserve](), want: true,
+			typ:  reflect.TypeFor[*Reserve](), want: true, wantEmbed: reflect.TypeFor[Step[tripState, None]](),
 		},
 		{
 			name: "[Success] When: Step comes through a struct embedded by value ; Should: accept it",
-			typ:  reflect.TypeFor[*nestedReserve](), want: true,
+			typ:  reflect.TypeFor[*nestedReserve](), want: true, wantEmbed: reflect.TypeFor[Step[tripState, None]](),
+		},
+		{
+			name: "[Success] When: a pointer to a struct embeds Pivot ; Should: accept it",
+			typ:  reflect.TypeFor[*pivotStep](), want: true, wantEmbed: reflect.TypeFor[Pivot[tripState, None]](),
+		},
+		{
+			name: "[Fail] When: the struct embeds *Pivot ; Should: reject it",
+			typ:  reflect.TypeFor[*struct{ *Pivot[tripState, None] }](), want: false,
 		},
 		{
 			name: "[Fail] When: the type is a struct, not a pointer ; Should: reject it",
@@ -401,7 +410,7 @@ func Test_embedsStep(t *testing.T) {
 		},
 		{
 			name: "[Fail] When: a named field is called Step ; Should: reject it",
-			typ:  reflect.TypeFor[*struct{ Step Step }](), want: false,
+			typ:  reflect.TypeFor[*struct{ Step Step[tripState, None] }](), want: false,
 		},
 	}
 
@@ -409,7 +418,10 @@ func Test_embedsStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, embedsStep(tt.typ))
+			embed, ok := embedsStep(tt.typ)
+
+			assert.Equal(t, tt.want, ok)
+			assert.Equal(t, tt.wantEmbed, embed)
 		})
 	}
 }

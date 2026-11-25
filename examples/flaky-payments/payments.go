@@ -65,10 +65,14 @@ func (s *store) removeIfPresent(ctx context.Context, key string) error {
 
 // --8<-- [start:state]
 
+type (
+	chargeID string
+)
+
 type order struct {
 	ID       string `sagas:"id"`
 	Card     string
-	ChargeID string
+	ChargeID chargeID
 }
 
 // --8<-- [end:state]
@@ -148,28 +152,22 @@ func (p *provider) take() usage {
 // --8<-- [start:steps]
 
 type pay struct {
-	sagas.Step
+	sagas.Step[order, chargeID]
 
 	provider *provider
 	breaker  *breaker
 }
 
-func (p *pay) Execute(ctx context.Context, o *order) error {
+func (p *pay) Execute(ctx context.Context, o order) (chargeID, error) {
 	id, err := p.provider.charge(ctx, sagas.IdempotencyKey(ctx), o.Card)
 	if errors.Is(err, errDeclined) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	o.ChargeID = id
-
-	return nil
+	return chargeID(id), err
 }
 
-func (p *pay) Compensate(ctx context.Context, _ *order) error {
+func (p *pay) Compensate(ctx context.Context, _ order) error {
 	return p.provider.refund(ctx, sagas.IdempotencyKey(ctx))
 }
 

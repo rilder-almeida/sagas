@@ -72,16 +72,24 @@ func (s *store) removeIfPresent(ctx context.Context, key string) error {
 
 // --8<-- [start:state]
 
+type (
+	accountID  string
+	referralID string
+	serverID   string
+	chargeID   string
+	mailID     string
+)
+
 type account struct {
 	ID         string `sagas:"id"`
 	Email      string
 	Plan       string
 	Referral   string
-	AccountID  string
-	ReferralID string
-	ServerID   string
-	ChargeID   string
-	MailID     string
+	AccountID  accountID
+	ReferralID referralID
+	ServerID   serverID
+	ChargeID   chargeID
+	MailID     mailID
 }
 
 // --8<-- [end:state]
@@ -125,85 +133,64 @@ func (u *undone) take() []string {
 // --8<-- [start:steps]
 
 type register struct {
-	sagas.Step
+	sagas.Step[account, accountID]
 
 	accounts *store
 	undone   *undone
 }
 
-func (r *register) Execute(ctx context.Context, a *account) error {
+func (r *register) Execute(ctx context.Context, a account) (accountID, error) {
 	id, err := r.accounts.put(ctx, sagas.IdempotencyKey(ctx), a.Email)
-	if err != nil {
-		return err
-	}
 
-	a.AccountID = id
-
-	return nil
+	return accountID(id), err
 }
 
-func (r *register) Compensate(ctx context.Context, _ *account) error {
+func (r *register) Compensate(ctx context.Context, _ account) error {
 	return r.undone.release(ctx, r.accounts, "register")
 }
 
 type provision struct {
-	sagas.Step
+	sagas.Step[account, serverID]
 
 	servers *store
 	undone  *undone
 }
 
-func (p *provision) Execute(ctx context.Context, a *account) error {
+func (p *provision) Execute(ctx context.Context, a account) (serverID, error) {
 	id, err := p.servers.put(ctx, sagas.IdempotencyKey(ctx), a.Plan)
 	if errors.Is(err, errNoCapacity) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	a.ServerID = id
-
-	return nil
+	return serverID(id), err
 }
 
-func (p *provision) Compensate(ctx context.Context, _ *account) error {
+func (p *provision) Compensate(ctx context.Context, _ account) error {
 	return p.undone.release(ctx, p.servers, "provision")
 }
 
 type charge struct {
-	sagas.Step
+	sagas.Pivot[account, chargeID]
 
 	payments *store
 }
 
-func (c *charge) Pivot(ctx context.Context, a *account) error {
+func (c *charge) Execute(ctx context.Context, a account) (chargeID, error) {
 	id, err := c.payments.put(ctx, sagas.IdempotencyKey(ctx), a.Plan)
-	if err != nil {
-		return err
-	}
 
-	a.ChargeID = id
-
-	return nil
+	return chargeID(id), err
 }
 
 type welcome struct {
-	sagas.Step
+	sagas.Step[account, mailID]
 
 	mails *store
 }
 
-func (w *welcome) Execute(ctx context.Context, a *account) error {
+func (w *welcome) Execute(ctx context.Context, a account) (mailID, error) {
 	id, err := w.mails.put(ctx, sagas.IdempotencyKey(ctx), a.Email)
-	if err != nil {
-		return err
-	}
 
-	a.MailID = id
-
-	return nil
+	return mailID(id), err
 }
 
 // --8<-- [end:steps]
@@ -211,26 +198,21 @@ func (w *welcome) Execute(ctx context.Context, a *account) error {
 // --8<-- [start:referral]
 
 type referral struct {
-	sagas.Step
+	sagas.Step[account, referralID]
 
 	referrals *store
 	undone    *undone
 }
 
-func (*referral) Enabled(a *account) bool { return a.Referral != "" }
+func (*referral) Enabled(_ context.Context, a account) bool { return a.Referral != "" }
 
-func (r *referral) Execute(ctx context.Context, a *account) error {
+func (r *referral) Execute(ctx context.Context, a account) (referralID, error) {
 	id, err := r.referrals.put(ctx, sagas.IdempotencyKey(ctx), a.Referral)
-	if err != nil {
-		return err
-	}
 
-	a.ReferralID = id
-
-	return nil
+	return referralID(id), err
 }
 
-func (r *referral) Compensate(ctx context.Context, _ *account) error {
+func (r *referral) Compensate(ctx context.Context, _ account) error {
 	return r.undone.release(ctx, r.referrals, "referral")
 }
 

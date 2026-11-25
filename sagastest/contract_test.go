@@ -174,7 +174,7 @@ func (l *ledger) check() error {
 }
 
 type chargeStep struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 
 	book *ledger
 }
@@ -186,11 +186,11 @@ func newCharge(book *ledger) *chargeStep {
 	return s
 }
 
-func (s *chargeStep) Execute(ctx context.Context, _ *probeState) error {
+func (s *chargeStep) Execute(ctx context.Context, _ probeState) error {
 	return s.book.charge(sagas.IdempotencyKey(ctx))
 }
 
-func (s *chargeStep) Compensate(ctx context.Context, _ *probeState) error {
+func (s *chargeStep) Compensate(ctx context.Context, _ probeState) error {
 	return s.book.refund(sagas.IdempotencyKey(ctx))
 }
 
@@ -205,10 +205,10 @@ func newDisabledCharge(book *ledger) *disabledCharge {
 	return s
 }
 
-func (*disabledCharge) Enabled(*probeState) bool { return false }
+func (*disabledCharge) Enabled(context.Context, probeState) bool { return false }
 
 type shipStep struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 
 	err error
 }
@@ -220,10 +220,10 @@ func newShip(err error) *shipStep {
 	return s
 }
 
-func (s *shipStep) Execute(context.Context, *probeState) error { return s.err }
+func (s *shipStep) Execute(context.Context, probeState) error { return s.err }
 
 type pivotStep struct {
-	sagas.Step
+	sagas.Pivot[probeState, sagas.None]
 }
 
 func newPivotStep() *pivotStep {
@@ -233,10 +233,10 @@ func newPivotStep() *pivotStep {
 	return s
 }
 
-func (*pivotStep) Pivot(context.Context, *probeState) error { return nil }
+func (*pivotStep) Execute(context.Context, probeState) error { return nil }
 
 type ledgerPivot struct {
-	sagas.Step
+	sagas.Pivot[probeState, count]
 
 	book  *ledger
 	bump  bool
@@ -251,17 +251,17 @@ func newLedgerPivot(book *ledger, attempts int, bump bool) *ledgerPivot {
 	return s
 }
 
-func (s *ledgerPivot) Pivot(ctx context.Context, st *probeState) error {
-	n := int(s.calls.Add(1))
-	if s.bump {
-		st.N = n
+func (s *ledgerPivot) Execute(ctx context.Context, _ probeState) (count, error) {
+	var n count
+	if c := count(s.calls.Add(1)); s.bump {
+		n = c
 	}
 
-	return s.book.pivot(sagas.IdempotencyKey(ctx))
+	return n, s.book.pivot(sagas.IdempotencyKey(ctx))
 }
 
 type ledgerShip struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 
 	book *ledger
 }
@@ -273,7 +273,7 @@ func newLedgerShip(book *ledger) *ledgerShip {
 	return s
 }
 
-func (s *ledgerShip) Execute(ctx context.Context, _ *probeState) error {
+func (s *ledgerShip) Execute(ctx context.Context, _ probeState) error {
 	return s.book.ship(sagas.IdempotencyKey(ctx))
 }
 
@@ -289,10 +289,10 @@ func newDisabledShip(book *ledger) *disabledShip {
 	return s
 }
 
-func (*disabledShip) Enabled(*probeState) bool { return false }
+func (*disabledShip) Enabled(context.Context, probeState) bool { return false }
 
 type notifyStep struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 }
 
 func newNotify() *notifyStep {
@@ -302,7 +302,7 @@ func newNotify() *notifyStep {
 	return s
 }
 
-func (*notifyStep) Execute(context.Context, *probeState) error { return nil }
+func (*notifyStep) Execute(context.Context, probeState) error { return nil }
 
 func Test_planOf(t *testing.T) {
 	t.Parallel()

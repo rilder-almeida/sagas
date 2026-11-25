@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"runtime"
 	"slices"
 	"strings"
@@ -617,7 +618,6 @@ func errorRows() []runRow {
 	return []runRow{
 		failedKindRow(),
 		panicKindRow(),
-		conflictKindRow(),
 		siblingCauseRow(),
 		goexitHistoryRow(),
 		droppedPredicateRow(),
@@ -700,7 +700,7 @@ func markedPanicRow() runRow {
 	return runRow{
 		name: "[Fail] When: middleware wraps a panicking action ; Should: keep the marker and report ErrPanic",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.step("a"), act("b", func(context.Context, *tripState) error { panic(errAlwaysFails) }))
+			return Sequence(rec.step("a"), act("b", func(context.Context, tripState) error { panic(errAlwaysFails) }))
 		},
 		opts:         []Option{WithMiddleware(marking())},
 		wantStatus:   StatusCompensated,
@@ -738,7 +738,7 @@ func panicKindRow() runRow {
 	return runRow{
 		name: "[Fail] When: an action panics with an error value ; Should: report ErrPanic and match the value",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.step("a"), act("b", func(context.Context, *tripState) error {
+			return Sequence(rec.step("a"), act("b", func(context.Context, tripState) error {
 				panic(errAlwaysFails)
 			}))
 		},
@@ -751,25 +751,6 @@ func panicKindRow() runRow {
 		wantKinds:    map[string]*KindError{"b": ErrPanic},
 		wantFailed:   []string{"b"},
 		wantErrText:  map[string]string{"b": "panic: " + errAlwaysFails.Error()},
-	}
-}
-
-func conflictKindRow() runRow {
-	return runRow{
-		name: "[Fail] When: two parallel steps change the same field ; Should: report ErrConflict as the kind",
-		steps: func(rec *recorder) Flow {
-			return Sequence(rec.step("a"), Parallel(rec.booking("b"), napping("c", "plaza")))
-		},
-		wantStatus:   StatusCompensated,
-		wantKind:     ErrCompensated,
-		wantAttempts: map[string]int{"c": 1},
-		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c")), seq(closed)),
-		wantErrs:     []error{ErrConflict},
-		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
-		wantState:    tripState{Hotel: hotelRitz},
-		wantKinds:    map[string]*KindError{"c": ErrConflict},
-		wantFailed:   []string{"c"},
-		wantErrText:  map[string]string{"c": `field Hotel changed by step "c" after step "b"`},
 	}
 }
 
@@ -802,7 +783,7 @@ func goexitHistoryRow() runRow {
 		name: "[Fail] When: an action ends by runtime.Goexit on attempt 2 ; Should: keep the attempts and attempt 1",
 		steps: func(rec *recorder) Flow {
 			count := counter()
-			leaves := act("b", func(context.Context, *tripState) error {
+			leaves := act("b", func(context.Context, tripState) error {
 				if count() == 1 {
 					return errFirst
 				}
@@ -831,7 +812,7 @@ func droppedPredicateRow() runRow {
 	return runRow{
 		name: "[Fail] When: an Enabled method fails after a rejection ; Should: report it and not start the step",
 		steps: func(rec *recorder) Flow {
-			late := func(*tripState) bool {
+			late := func(context.Context, tripState) bool {
 				time.Sleep(pause)
 
 				panic("late")
@@ -860,7 +841,7 @@ func droppedOutcomeRow() runRow {
 	return runRow{
 		name: "[Fail] When: a sibling fails after a rejection ; Should: report its error and append nothing for it",
 		steps: func(rec *recorder) Flow {
-			late := once("c", func(context.Context, *tripState) error {
+			late := once("c", func(context.Context, tripState) error {
 				time.Sleep(pause)
 
 				return errAlwaysFails
@@ -915,7 +896,7 @@ func callerKindRow(
 	return runRow{
 		name: name,
 		steps: func(rec *recorder) Flow {
-			wraps := once("b", func(context.Context, *tripState) error {
+			wraps := once("b", func(context.Context, tripState) error {
 				return fmt.Errorf("nested run: %w", wrapped)
 			})
 
@@ -959,7 +940,7 @@ func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs [
 	return runRow{
 		name: name,
 		steps: func(rec *recorder) Flow {
-			nests := act("b", func(ctx context.Context, _ *tripState) error {
+			nests := act("b", func(ctx context.Context, _ tripState) error {
 				s, err := New[tripState]("inner", inner)
 				if err != nil {
 					return err
@@ -986,13 +967,12 @@ func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs [
 func nestedPermanentRow() runRow {
 	return nestedRow(
 		"[Fail] When: an action returns a nested run that holds a permanent error ; Should: stop after 1 attempt",
-		act("x", func(context.Context, *tripState) error { return Permanent(errAlwaysFails) }),
+		act("x", func(context.Context, tripState) error { return Permanent(errAlwaysFails) }),
 		3, errAlwaysFails.Error(), []error{errAlwaysFails, ErrFailed},
 	)
 }
 
-const nestedConflictText = `step "x" did not succeed after 1 attempts: sagas: state conflict: ` +
-	`field Hotel changed by step "x" after step "y" committed it`
+const nestedStateText = `step "x" did not succeed after 1 attempts: sagas: invalid state: Rate: `
 
 func nestedMiddlewareRow() runRow {
 	return runRow{
@@ -1004,15 +984,15 @@ func nestedMiddlewareRow() runRow {
 		opts:         []Option{WithMiddleware(nestingMiddleware())},
 		wantStatus:   StatusCompensated,
 		wantKind:     ErrCompensated,
-		wantErrs:     []error{ErrConflict, ErrCompensated, ErrFailed},
+		wantErrs:     []error{ErrInvalidState, ErrCompensated, ErrFailed},
 		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepFailed},
 		wantKinds:    map[string]*KindError{"b": ErrFailed},
 		wantFailed:   []string{"b"},
-		wantErrText:  map[string]string{"b": nestedConflictText},
+		wantErrText:  map[string]string{"b": nestedStateText},
 		wantAttempts: map[string]int{"b": 3},
 		wantTrail:    seq(opened, startOf("a"), doneOf("a"), startOf("b"), failedB(), closed),
 
-		wantPreviousIs: map[string][]error{"b": {ErrConflict, ErrConflict}},
+		wantPreviousIs: map[string][]error{"b": {ErrInvalidState, ErrInvalidState}},
 	}
 }
 
@@ -1022,10 +1002,7 @@ func nestingMiddleware() MiddlewareFunc {
 			return call(ctx)
 		}
 
-		inner, err := New[tripState]("inner", Parallel(
-			act("y", func(_ context.Context, s *tripState) error { s.Hotel = hotelRitz; return nil }),
-			napping("x", "plaza"),
-		))
+		inner, err := New[tripState]("inner", producingRate("x", makeOf(Rate(math.NaN()))))
 		if err != nil {
 			return err
 		}
@@ -1037,7 +1014,7 @@ func nestingMiddleware() MiddlewareFunc {
 func failedRun(t *testing.T, script map[int]error, stepErr error) *RunError {
 	t.Helper()
 
-	second := once("b", func(context.Context, *tripState) error { return stepErr })
+	second := once("b", func(context.Context, tripState) error { return stepErr })
 
 	s, err := New[tripState](tripName, Sequence(once("a", okAction), second), WithJournal(newScriptJournal(script)))
 	require.NoError(t, err)

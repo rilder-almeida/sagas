@@ -201,7 +201,7 @@ func Test_newSaga(t *testing.T) {
 			id, putErr := svc.referrals.put(t.Context(), key, "FRIEND")
 
 			require.NoError(t, putErr)
-			assert.Equal(t, tt.wantCredited, id == a.ReferralID)
+			assert.Equal(t, tt.wantCredited, referralID(id) == a.ReferralID)
 			assert.Equal(t, tt.wantUndone, ran)
 		})
 	}
@@ -213,7 +213,7 @@ const (
 	stepReferral  = "referral"
 )
 
-func compensationOf(step string, svc *services) func(context.Context, *account) error {
+func compensationOf(step string, svc *services) func(context.Context, account) error {
 	switch step {
 	case stepRegister:
 		return (&register{accounts: svc.accounts, undone: svc.undone}).Compensate
@@ -282,7 +282,7 @@ func Test_undone_release(t *testing.T) {
 
 			defer cancel()
 
-			err := compensationOf(tt.step, svc)(ctx, &account{})
+			err := compensationOf(tt.step, svc)(ctx, account{})
 
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.wantUndone, svc.undone.take())

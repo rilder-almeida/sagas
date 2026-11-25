@@ -58,7 +58,7 @@ type outcome[S any] struct {
 	label    *KindError
 	cause    error
 	previous []error
-	state    *S
+	output   encodedOutput
 }
 
 type callFunc[S any] func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S]
@@ -107,8 +107,8 @@ func compose(mws []Middleware) MiddlewareFunc {
 	}
 }
 
-type callResult[S any] struct {
-	out *S
+type callResult struct {
+	out encodedOutput
 	err error
 }
 
@@ -116,7 +116,7 @@ type attemptProgress[S any] struct {
 	started bool
 	running bool
 	label   *KindError
-	last    callResult[S]
+	last    callResult
 }
 
 type attemptState[S any] struct {
@@ -143,13 +143,13 @@ func (a *attemptState[S]) start() *KindError {
 	return nil
 }
 
-func (a *attemptState[S]) finish(out *S, err error, label *KindError) {
+func (a *attemptState[S]) finish(out encodedOutput, err error, label *KindError) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.progress.running = false
 	a.progress.label = label
-	a.progress.last = callResult[S]{out: out, err: err}
+	a.progress.last = callResult{out: out, err: err}
 }
 
 func (a *attemptState[S]) refuse(label *KindError) {
@@ -227,7 +227,7 @@ func withTimeout(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
 	}
 }
 
-func requireRan[S any](at *attemptState[S], meta *callMeta, out **S) MiddlewareFunc {
+func requireRan[S any](at *attemptState[S], meta *callMeta, out *encodedOutput) MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error {
 		defer at.close()
 
@@ -270,7 +270,7 @@ func noteCallError[S any](meta *callMeta, err error, progress *attemptProgress[S
 	meta.mark(progress.label)
 }
 
-func runCall[S any](at *attemptState[S], call func(context.Context, *S) error, key string) Call {
+func runCall[S any](at *attemptState[S], call func(context.Context, *S) (encodedOutput, error), key string) Call {
 	return func(ctx context.Context) error {
 		if kind := at.start(); kind != nil {
 			at.refuse(kind)
@@ -280,26 +280,48 @@ func runCall[S any](at *attemptState[S], call func(context.Context, *S) error, k
 
 		ctx = withIdempotencyKey(ctx, key)
 
-		var label *KindError
+		var (
+			label *KindError
+			out   encodedOutput
+		)
 
 		fresh, err := copyState(at.base)
 		if err != nil {
 			label, err = ErrInvalidState, Permanent(err)
-		} else if panicked, callErr := recoverPanic(func() error { return call(ctx, fresh) }); callErr != nil {
-			fresh, err = nil, callErr
-
-			if panicked {
-				label = ErrPanic
-			}
+		} else {
+			out, label, err = invoke(ctx, call, fresh)
 		}
 
-		at.finish(fresh, err, label)
+		at.finish(out, err, label)
 
 		return err
 	}
 }
 
-func pipeline[S any](given *callSpec, call func(context.Context, *S) error) callFunc[S] {
+func invoke[S any](
+	ctx context.Context, call func(context.Context, *S) (encodedOutput, error), fresh *S,
+) (encodedOutput, *KindError, error) {
+	var out encodedOutput
+
+	panicked, err := recoverPanic(func() error {
+		var callErr error
+
+		out, callErr = call(ctx, fresh)
+
+		return callErr
+	})
+
+	switch {
+	case panicked:
+		return encodedOutput{}, ErrPanic, err
+	case err != nil:
+		return encodedOutput{}, nil, err
+	default:
+		return out, nil, nil
+	}
+}
+
+func pipeline[S any](given *callSpec, call func(context.Context, *S) (encodedOutput, error)) callFunc[S] {
 	spec := new(*given)
 
 	var timeoutCause error
@@ -309,7 +331,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 	}
 
 	return func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome[S] {
-		var state *S
+		var output encodedOutput
 
 		info := CallInfo{Saga: spec.saga, Execution: meta.execution, Step: spec.step, Phase: spec.phase}
 		key := info.IdempotencyKey()
@@ -320,7 +342,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 			attemptInfo := info
 			attemptInfo.Attempt = meta.attempt
 
-			layers := compose(attemptLayers(spec, meta, at, &state, timeoutCause))
+			layers := compose(attemptLayers(spec, meta, at, &output, timeoutCause))
 
 			return layers.Wrap(ctx, attemptInfo, runCall(at, call, key))
 		}
@@ -329,7 +351,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) error) call
 
 		out := outcome[S]{kind: classify(err), attempts: meta.attempt}
 		if err == nil {
-			out.state = state
+			out.output = output
 
 			return out
 		}
@@ -351,7 +373,7 @@ func (s *callSpec) timesOut() bool {
 }
 
 func attemptLayers[S any](
-	spec *callSpec, meta *callMeta, at *attemptState[S], state **S, timeoutCause error,
+	spec *callSpec, meta *callMeta, at *attemptState[S], output *encodedOutput, timeoutCause error,
 ) []Middleware {
 	layers := make([]Middleware, 0, len(spec.middleware)+coreLayers)
 
@@ -359,7 +381,7 @@ func attemptLayers[S any](
 		layers = append(layers, withTimeout(meta, spec.timeout, timeoutCause))
 	}
 
-	layers = append(layers, recoverer(meta), requireRan(at, meta, state))
+	layers = append(layers, recoverer(meta), requireRan(at, meta, output))
 	layers = append(layers, spec.middleware...)
 
 	if spec.wrap != nil {

@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1144,15 +1145,19 @@ func baseState() testState {
 	}
 }
 
-func probeState() testState {
-	return testState{
-		Seats:  -1,
-		Charge: chargeState{Total: -1},
-		Tags:   map[string]int{"probe": 1},
-		Items:  []string{"probe"},
-		At:     -1,
-		Link:   &linkState{Next: &linkState{}},
-	}
+const (
+	seatsAt = iota
+	chargeAt
+	tagsAt
+	itemsAt
+	atAt
+	linkAt
+)
+
+func probeValues() []any {
+	return []any{-1, chargeState{Total: -1}, map[string]int{"probe": 1}, []string{"probe"}, int64(-1), &linkState{
+		Next: &linkState{},
+	}}
 }
 
 func errText(err error) string {
@@ -1163,23 +1168,39 @@ func errText(err error) string {
 	return err.Error()
 }
 
+type fieldChange struct {
+	field int
+	value any
+}
+
+func commitChange[S any](st *store[S], step string, snap snapshot[S], c fieldChange) (commitResult, error) {
+	out, isOutput := c.value.(encodedOutput)
+	if !isOutput {
+		name := ""
+		if c.field >= 0 {
+			name = st.names[c.field]
+		}
+
+		data, err := encodeField(name, c.value)
+		out = encodedOutput{data: data, err: err}
+	}
+
+	return st.commit(step, snap, c.field, out)
+}
+
 func assertMoved(t *testing.T, st *store[testState], snap snapshot[testState], want []string) {
 	t.Helper()
 
-	_, err := st.commit(probeStep, snap, probeState())
-	if len(want) == 0 {
-		require.NoError(t, err)
+	for i, value := range probeValues() {
+		_, err := commitChange(st, probeStep, snap, fieldChange{field: i, value: value})
+		if !slices.Contains(want, st.names[i]) {
+			require.NoError(t, err)
 
-		return
-	}
+			continue
+		}
 
-	require.ErrorIs(t, err, ErrConflict)
-
-	msg := err.Error()
-	assert.Equal(t, len(want), strings.Count(msg, `changed by step "probe"`), msg)
-
-	for _, field := range want {
-		assert.Contains(t, msg, "field "+field+` changed by step "probe"`)
+		require.ErrorIs(t, err, ErrConflict)
+		assert.Contains(t, err.Error(), "field "+st.names[i]+` changed by step "probe"`)
 	}
 }
 
@@ -1458,14 +1479,17 @@ func Test_store_commit(t *testing.T) {
 
 	require.NoError(t, checkState(reflect.TypeFor[testState]()))
 
-	reserved := func(s *testState) { s.Seats = 5 }
+	reserved := fieldChange{field: seatsAt, value: 5}
 	committed := baseState()
-	reserved(&committed)
+	committed.Seats = 5
+
+	loop := &linkState{}
+	loop.Next = loop
 
 	tests := []struct {
 		name                     string
-		earlier                  []func(*testState)
-		secondMutate             func(*testState)
+		earlier                  []fieldChange
+		second                   fieldChange
 		secondSnapshotAfterFirst bool
 		wantChanged              []string
 		wantErr                  error
@@ -1475,11 +1499,11 @@ func Test_store_commit(t *testing.T) {
 		wantState                testState
 	}{
 		{
-			name:         "[Success] When: parallel snapshots change disjoint fields ; Should: commit both",
-			earlier:      []func(*testState){reserved},
-			secondMutate: func(s *testState) { s.Charge.Total = 10 },
-			wantChanged:  []string{chargeField},
-			wantMoved:    []string{seatsField, chargeField},
+			name:        "[Success] When: parallel snapshots change disjoint fields ; Should: commit both",
+			earlier:     []fieldChange{reserved},
+			second:      fieldChange{field: chargeAt, value: chargeState{Total: 10}},
+			wantChanged: []string{chargeField},
+			wantMoved:   []string{seatsField, chargeField},
 			wantState: func() testState {
 				s := committed
 				s.Charge.Total = 10
@@ -1488,19 +1512,19 @@ func Test_store_commit(t *testing.T) {
 			}(),
 		},
 		{
-			name:         "[Fail] When: parallel snapshots change one field ; Should: return ErrConflict, both steps",
-			earlier:      []func(*testState){reserved},
-			secondMutate: func(s *testState) { s.Seats = 6 },
-			wantErr:      ErrConflict,
-			wantLabel:    ErrConflict,
-			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantMoved:    []string{seatsField},
-			wantState:    committed,
+			name:      "[Fail] When: parallel snapshots change one field ; Should: return ErrConflict, both steps",
+			earlier:   []fieldChange{reserved},
+			second:    fieldChange{field: seatsAt, value: 6},
+			wantErr:   ErrConflict,
+			wantLabel: ErrConflict,
+			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
+			wantMoved: []string{seatsField},
+			wantState: committed,
 		},
 		{
 			name:                     "[Success] When: the same field changes in sequence ; Should: commit both",
-			earlier:                  []func(*testState){reserved},
-			secondMutate:             func(s *testState) { s.Seats = 6 },
+			earlier:                  []fieldChange{reserved},
+			second:                   fieldChange{field: seatsAt, value: 6},
 			secondSnapshotAfterFirst: true,
 			wantChanged:              []string{seatsField},
 			wantMoved:                []string{seatsField},
@@ -1512,37 +1536,40 @@ func Test_store_commit(t *testing.T) {
 			}(),
 		},
 		{
-			name:    "[Fail] When: a conflict and a free change in one commit ; Should: write neither",
-			earlier: []func(*testState){reserved},
-			secondMutate: func(s *testState) {
-				s.Items = append(s.Items, "x")
-				s.Seats = 6
-			},
-			wantErr:   ErrConflict,
-			wantLabel: ErrConflict,
-			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantMoved: []string{seatsField},
-			wantState: committed,
+			name:        "[Success] When: the output equals the snapshot ; Should: return an empty list, keep versions",
+			earlier:     []fieldChange{reserved},
+			second:      fieldChange{field: seatsAt, value: 2},
+			wantChanged: []string{},
+			wantMoved:   []string{seatsField},
+			wantState:   committed,
 		},
 		{
-			name:         "[Success] When: the attempt changes nothing ; Should: return an empty list, keep versions",
-			earlier:      []func(*testState){reserved},
-			secondMutate: func(*testState) {},
-			wantChanged:  []string{},
-			wantMoved:    []string{seatsField},
-			wantState:    committed,
+			name:        "[Success] When: the step hands no bytes ; Should: return an empty list, write nothing",
+			earlier:     []fieldChange{reserved},
+			second:      fieldChange{field: seatsAt, value: encodedOutput{}},
+			wantChanged: []string{},
+			wantMoved:   []string{seatsField},
+			wantState:   committed,
+		},
+		{
+			name:        "[Success] When: the step has no output field ; Should: return an empty list, write nothing",
+			earlier:     []fieldChange{reserved},
+			second:      fieldChange{field: -1, value: 6},
+			wantChanged: []string{},
+			wantMoved:   []string{seatsField},
+			wantState:   committed,
 		},
 		{
 			name: "[Success] When: float, map, nil slice and time change in parallel ; Should: never conflict",
-			earlier: []func(*testState){func(s *testState) {
-				s.Charge.Total = 2.5
-				s.Tags["g"] = 7
-				s.Items = append(s.Items, "x")
-				s.At++
-			}},
-			secondMutate: func(s *testState) { s.Link = &linkState{} },
-			wantChanged:  []string{linkField},
-			wantMoved:    []string{chargeField, "Tags", itemsField, "At", linkField},
+			earlier: []fieldChange{
+				{field: chargeAt, value: chargeState{Total: 2.5}},
+				{field: tagsAt, value: map[string]int{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7}},
+				{field: itemsAt, value: []string{"x"}},
+				{field: atAt, value: baseState().At + 1},
+			},
+			second:      fieldChange{field: linkAt, value: &linkState{}},
+			wantChanged: []string{linkField},
+			wantMoved:   []string{chargeField, "Tags", itemsField, "At", linkField},
 			wantState: func() testState {
 				s := baseState()
 				s.Charge.Total = 2.5
@@ -1555,29 +1582,26 @@ func Test_store_commit(t *testing.T) {
 			}(),
 		},
 		{
-			name:    "[Fail] When: the second step writes NaN ; Should: return ErrInvalidState, name the path",
-			earlier: []func(*testState){func(s *testState) { s.Tags["a"] = 10 }},
-			secondMutate: func(s *testState) {
-				s.Seats = 6
-				s.Charge.Total = math.NaN()
-			},
+			name:                     "[Fail] When: the output holds a NaN ; Should: return ErrInvalidState naming it",
+			earlier:                  []fieldChange{{field: tagsAt, value: map[string]int{"a": 10}}},
+			second:                   fieldChange{field: chargeAt, value: chargeState{Total: math.NaN()}},
 			secondSnapshotAfterFirst: true,
 			wantErr:                  ErrInvalidState,
 			wantLabel:                ErrInvalidState,
 			wantInMsg:                []string{"sagas: invalid state: Charge: ", "Total"},
 			wantState: func() testState {
 				s := baseState()
-				s.Tags["a"] = 10
+				s.Tags = map[string]int{"a": 10}
 
 				return s
 			}(),
 		},
 		{
-			name:         "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
-			earlier:      []func(*testState){reserved},
-			secondMutate: func(s *testState) { s.Items = []string{} },
-			wantChanged:  []string{itemsField},
-			wantMoved:    []string{seatsField, itemsField},
+			name:        "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
+			earlier:     []fieldChange{reserved},
+			second:      fieldChange{field: itemsAt, value: []string{}},
+			wantChanged: []string{itemsField},
+			wantMoved:   []string{seatsField, itemsField},
 			wantState: func() testState {
 				s := committed
 				s.Items = []string{}
@@ -1586,43 +1610,19 @@ func Test_store_commit(t *testing.T) {
 			}(),
 		},
 		{
-			name:    "[Success] When: three fields change out of order ; Should: list them in declaration order",
-			earlier: []func(*testState){reserved},
-			secondMutate: func(s *testState) {
-				s.Link = &linkState{}
-				s.Items = []string{"x"}
-				s.Charge.Total = 10
-			},
-			secondSnapshotAfterFirst: true,
-			wantChanged:              []string{chargeField, itemsField, linkField},
-			wantMoved:                []string{chargeField, itemsField, linkField},
-			wantState: func() testState {
-				s := committed
-				s.Charge.Total = 10
-				s.Items = []string{"x"}
-				s.Link = &linkState{}
-
-				return s
-			}(),
+			name:      "[Fail] When: a field goes A to B to A after the snapshot ; Should: return ErrConflict",
+			earlier:   []fieldChange{reserved, {field: seatsAt, value: 2}},
+			second:    fieldChange{field: seatsAt, value: 6},
+			wantErr:   ErrConflict,
+			wantLabel: ErrConflict,
+			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
+			wantMoved: []string{seatsField},
+			wantState: baseState(),
 		},
 		{
-			name:         "[Fail] When: a field goes A to B to A after the snapshot ; Should: return ErrConflict",
-			earlier:      []func(*testState){reserved, func(s *testState) { s.Seats = 2 }},
-			secondMutate: func(s *testState) { s.Seats = 6 },
-			wantErr:      ErrConflict,
-			wantLabel:    ErrConflict,
-			wantInMsg:    []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantMoved:    []string{seatsField},
-			wantState:    baseState(),
-		},
-		{
-			name:    "[Fail] When: the second step makes Link a self-loop ; Should: return ErrInvalidState, no write",
-			earlier: []func(*testState){reserved},
-			secondMutate: func(s *testState) {
-				s.Seats = 6
-				s.Link = &linkState{}
-				s.Link.Next = s.Link
-			},
+			name:                     "[Fail] When: the output holds a loop ; Should: return ErrInvalidState",
+			earlier:                  []fieldChange{reserved},
+			second:                   fieldChange{field: linkAt, value: loop},
 			secondSnapshotAfterFirst: true,
 			wantErr:                  ErrInvalidState,
 			wantLabel:                ErrInvalidState,
@@ -1640,14 +1640,8 @@ func Test_store_commit(t *testing.T) {
 
 			early := st.snapshot()
 
-			for _, mutate := range tt.earlier {
-				snap := st.snapshot()
-				attempt, copyErr := copyState(snap)
-				require.NoError(t, copyErr)
-
-				mutate(attempt)
-
-				_, commitErr := st.commit(firstStep, snap, *attempt)
+			for _, change := range tt.earlier {
+				_, commitErr := commitChange(st, firstStep, st.snapshot(), change)
 				require.NoError(t, commitErr)
 			}
 
@@ -1656,12 +1650,7 @@ func Test_store_commit(t *testing.T) {
 				second = st.snapshot()
 			}
 
-			attempt, err := copyState(second)
-			require.NoError(t, err)
-
-			tt.secondMutate(attempt)
-
-			res, err := st.commit(secondStep, second, *attempt)
+			res, err := commitChange(st, secondStep, second, tt.second)
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Same(t, tt.wantLabel, res.label)
 			assertInOrder(t, errText(err), tt.wantInMsg)
@@ -1710,23 +1699,16 @@ func Test_store_writeBack(t *testing.T) {
 			st, err := newStore(baseState())
 			require.NoError(t, err)
 
-			snap := st.snapshot()
-			attempt, err := copyState(snap)
-			require.NoError(t, err)
-
-			attempt.Seats = 5
-			_, err = st.commit(firstStep, snap, *attempt)
+			_, err = commitChange(st, firstStep, st.snapshot(), fieldChange{field: seatsAt, value: 5})
 			require.NoError(t, err)
 
 			require.ErrorIs(t, st.writeBack(tt.dst), tt.wantErr)
 
 			later := st.snapshot()
-			next, err := copyState(later)
+			_, err = commitChange(st, secondStep, later, fieldChange{field: seatsAt, value: 7})
 			require.NoError(t, err)
 
-			next.Seats = 7
-			next.Tags["a"] = 100
-			_, err = st.commit(secondStep, later, *next)
+			_, err = commitChange(st, secondStep, later, fieldChange{field: tagsAt, value: map[string]int{"a": 100}})
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.want, tt.dst)
@@ -1766,14 +1748,18 @@ func newBenchLarge() benchLarge {
 
 func BenchmarkStore_commit(b *testing.B) {
 	b.Run("small", func(b *testing.B) {
-		benchCommit(b, benchSmall{A: 1, B: 2.5, C: "seat", D: true}, func(s *benchSmall) { s.A++ })
+		benchCommit(b, benchSmall{A: 1, B: 2.5, C: "seat", D: true}, func(s *benchSmall) fieldChange {
+			return fieldChange{field: 0, value: s.A + 1}
+		})
 	})
 	b.Run("large", func(b *testing.B) {
-		benchCommit(b, newBenchLarge(), func(s *benchLarge) { s.Count++ })
+		benchCommit(b, newBenchLarge(), func(s *benchLarge) fieldChange {
+			return fieldChange{field: 2, value: s.Count + 1}
+		})
 	})
 }
 
-func benchCommit[S any](b *testing.B, initial S, change func(*S)) {
+func benchCommit[S any](b *testing.B, initial S, change func(*S) fieldChange) {
 	b.Helper()
 
 	require.NoError(b, checkState(reflect.TypeFor[S]()))
@@ -1789,9 +1775,7 @@ func benchCommit[S any](b *testing.B, initial S, change func(*S)) {
 		attempt, copyErr := copyState(snap)
 		require.NoError(b, copyErr)
 
-		change(attempt)
-
-		_, commitErr := st.commit("bench", snap, *attempt)
+		_, commitErr := commitChange(st, "bench", snap, change(attempt))
 		require.NoError(b, commitErr)
 	}
 }

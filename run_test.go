@@ -178,23 +178,21 @@ func (j *scriptJournal) results(tb testing.TB) []runRecord {
 }
 
 type orderState struct {
-	Hotel string
+	Hotel Hotel
 	ID    string `sagas:"id"`
 }
 
 type orderStep struct {
-	Step
+	Step[orderState, Hotel]
 
 	executes *atomic.Int64
 }
 
-func (o *orderStep) Execute(_ context.Context, s *orderState) error {
+func (o *orderStep) Execute(context.Context, orderState) (Hotel, error) {
 	o.executes.Add(1)
 	time.Sleep(pause)
 
-	s.Hotel = hotelRitz
-
-	return nil
+	return hotelRitz, nil
 }
 
 const orderID = "order-7"
@@ -367,7 +365,7 @@ func Test_Saga_Run_withoutJournal(t *testing.T) {
 					st := orderState{ID: orderID}
 
 					require.NoError(t, s.Run(t.Context(), &st))
-					assert.Equal(t, hotelRitz, st.Hotel)
+					assert.Equal(t, Hotel(hotelRitz), st.Hotel)
 				}
 			})
 		})
@@ -808,40 +806,40 @@ func isClosed(ch <-chan struct{}) bool {
 	}
 }
 
-func (r *recorder) do(name string) func(context.Context, *tripState) error {
-	return func(context.Context, *tripState) error {
+func (r *recorder) do(name string) func(context.Context, tripState) error {
+	return func(context.Context, tripState) error {
 		r.add(name)
 
 		return nil
 	}
 }
 
-func (r *recorder) book(name, hotel string) func(context.Context, *tripState) error {
-	return func(_ context.Context, s *tripState) error {
+func (r *recorder) book(name string, hotel Hotel) func(context.Context, tripState) (Hotel, error) {
+	return func(context.Context, tripState) (Hotel, error) {
 		r.add(name)
 
-		s.Hotel = hotel
-
-		return nil
+		return hotel, nil
 	}
 }
 
 func (r *recorder) step(name string) *actStep { return act(name, r.do(name)) }
 
-func (r *recorder) booking(name string) *actStep { return act(name, r.book(name, hotelRitz)) }
+func (r *recorder) booking(name string) *makeStep {
+	return producing(name, r.book(name, hotelRitz))
+}
 
-func (r *recorder) stepIf(name string, pred func(*tripState) bool) *ifStep {
+func (r *recorder) stepIf(name string, pred func(context.Context, tripState) bool) *ifStep {
 	return gated(name, r.do(name), pred)
 }
 
-func (r *recorder) bookingIf(name, hotel string, pred func(*tripState) bool) *ifStep {
-	return gated(name, r.book(name, hotel), pred)
+func (r *recorder) bookingIf(name string, hotel Hotel, pred func(context.Context, tripState) bool) *ifMakeStep {
+	return &ifMakeStep{Name: name, make: r.book(name, hotel), pred: pred}
 }
 
 func (r *recorder) pivot() *pivotStep { return paying("p", r.do("p")) }
 
-func (r *recorder) when(verdict bool, name string) func(*tripState) bool {
-	return func(*tripState) bool {
+func (r *recorder) when(verdict bool, name string) func(context.Context, tripState) bool {
+	return func(context.Context, tripState) bool {
 		r.add("if:" + name)
 
 		return verdict
@@ -1212,8 +1210,8 @@ func runRows() []runRow {
 	}
 }
 
-func (r *recorder) lateYes(name string) func(*tripState) bool {
-	return func(*tripState) bool {
+func (r *recorder) lateYes(name string) func(context.Context, tripState) bool {
+	return func(context.Context, tripState) bool {
 		time.Sleep(pause)
 		r.add("if:" + name)
 
@@ -1408,7 +1406,7 @@ func finishedBeforeGraceEndRow() runRow {
 		name: "[Fail] When: the saga-finished append fails after a caller cancel and before any grace end ; " +
 			"Should: keep ErrCompensated and match neither ErrGraceEnded nor the caller cause",
 		steps: func(rec *recorder) Flow {
-			slowUndo := func(context.Context, *tripState) error {
+			slowUndo := func(context.Context, tripState) error {
 				time.Sleep(pause)
 				rec.add(undoA)
 
@@ -1606,13 +1604,24 @@ func undoIntentRejectedRow() runRow {
 	}
 }
 
-func rejectedUndoFlow(undo func(context.Context, *tripState) error) func(*recorder) Flow {
+func rejectedUndoFlow(d Flow) func(*recorder) Flow {
 	return func(rec *recorder) Flow {
 		return Sequence(Parallel(
 			Sequence(rec.undoable("x"), rec.undoable("b")),
-			Sequence(rec.undoable("y"), failingUndo("d", Continue, undo)),
+			Sequence(rec.undoable("y"), d),
 		), once("c", alwaysFails))
 	}
+}
+
+func lateUndoneHotel() *replaceStep {
+	d := replaceOnce("d", makeOf[Hotel](""), func(context.Context, tripState) (Hotel, error) {
+		time.Sleep(pause)
+
+		return undoneHotel, nil
+	})
+	d.FailurePolicy = Continue
+
+	return d
 }
 
 func rejectedUndoTrail() [][]string {
@@ -1677,13 +1686,7 @@ func undoRunningRejectedRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation succeeds after the journal rejected an event ; " +
 			"Should: commit and append nothing for it, and list it and the unstarted ones in Pending",
-		steps: rejectedUndoFlow(func(_ context.Context, s *tripState) error {
-			time.Sleep(pause)
-
-			s.Hotel = undoneHotel
-
-			return nil
-		}),
+		steps:        rejectedUndoFlow(lateUndoneHotel()),
 		script:       map[int]error{13: ErrConcurrentWriter},
 		wantStatus:   statusUnfinished,
 		wantKind:     ErrConcurrentWriter,
@@ -1706,7 +1709,7 @@ func turnAfterRejectionRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation's turn comes after a rejection and the grace end ; " +
 			"Should: neither run nor fail it, and list the unstarted compensations in Pending",
-		steps:        rejectedUndoFlow(lateFailure),
+		steps:        rejectedUndoFlow(failingUndo("d", Continue, lateFailure)),
 		opts:         []Option{WithRecoveryTimeout(pause)},
 		script:       map[int]error{13: ErrConcurrentWriter},
 		cancelAfter:  pause,
@@ -1981,7 +1984,7 @@ func forwardStoredOutcomeRow() runRow {
 		name: "[Fail] When: the journal stores the outcome of a compensable step and then returns an error, and a " +
 			"sibling fails later ; Should: resend the outcome first and compensate, not end ErrConcurrentWriter",
 		steps: func(rec *recorder) Flow {
-			c := once("c", func(context.Context, *tripState) error {
+			c := once("c", func(context.Context, tripState) error {
 				time.Sleep(pause)
 
 				return errAlwaysFails

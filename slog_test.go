@@ -172,7 +172,7 @@ func Test_Slog_Wrap(t *testing.T) {
 						middleware: []Middleware{mw},
 					}
 					meta := &callMeta{execution: tt.info.Execution}
-					err = pipeline(spec, call)(t.Context(), meta, baseOf(t, pipeState{})).err
+					err = pipeline(spec, stateOutput(call))(t.Context(), meta, baseOf(t, pipeState{})).err
 				}
 
 				assertSlogErr(t, err, tt.wantErr)

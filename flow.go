@@ -4,15 +4,14 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 )
 
-// Flow is a step or a group of steps in the order they run. A pointer to a type that embeds Step is a Flow, and
-// Sequence and Parallel build the groups. One pointer is one step, wherever it appears.
+// Flow is a step or a group of steps in the order they run. A pointer to a type that embeds Step or Pivot is a Flow,
+// and Sequence and Parallel build the groups. One pointer is one step, wherever it appears.
 type Flow interface {
-	flowStep() *Step
+	flow()
 }
-
-func (s *Step) flowStep() *Step { return s }
 
 // Group is a Flow of several items that Sequence or Parallel builds.
 type Group struct {
@@ -20,7 +19,7 @@ type Group struct {
 	items []Flow
 }
 
-func (*Group) flowStep() *Step { return nil }
+func (*Group) flow() {}
 
 // Sequence runs items one after another: each item starts after every step that ends the item before it.
 func Sequence(items ...Flow) *Group {
@@ -38,14 +37,14 @@ type ends struct {
 }
 
 type resolution struct {
-	flows   []Flow
+	flows   []binder
 	parents [][]int
-	index   map[*Step]int
+	index   map[Flow]int
 	errs    []error
 }
 
 func resolve(flow Flow) resolution {
-	r := resolution{index: map[*Step]int{}}
+	r := resolution{index: map[Flow]int{}}
 
 	if !isNilValue(flow) {
 		r.visit(flow, "flow")
@@ -104,45 +103,83 @@ func (r *resolution) group(g *Group) ends {
 }
 
 func (r *resolution) step(f Flow, at string) ends {
-	if t := reflect.TypeOf(f); !embedsStep(t) {
-		r.errs = append(r.errs,
-			fmt.Errorf("%w: %s has type %s, want a pointer to a struct that embeds Step", ErrInvalidStep, at, t))
+	b, ok := f.(binder)
+	if _, embeds := embedsStep(reflect.TypeOf(f)); !ok || !embeds {
+		r.errs = append(r.errs, fmt.Errorf("%w: %s has type %s, want a pointer to a struct that embeds Step or Pivot "+
+			"by value", ErrInvalidStep, at, reflect.TypeOf(f)))
 
 		return ends{}
 	}
 
-	s := f.flowStep()
-
-	i, seen := r.index[s]
+	i, seen := r.index[f]
 	if !seen {
 		i = len(r.flows)
-		r.index[s] = i
-		r.flows = append(r.flows, f)
+		r.index[f] = i
+		r.flows = append(r.flows, b)
 		r.parents = append(r.parents, []int{})
 	}
 
 	return ends{heads: []int{i}, tails: []int{i}}
 }
 
-func embedsStep(t reflect.Type) bool {
+func embedsStep(t reflect.Type) (reflect.Type, bool) {
 	if t.Kind() != reflect.Pointer || t.Elem().Kind() != reflect.Struct {
-		return false
+		return nil, false
 	}
 
 	f, ok := t.Elem().FieldByName("Step")
-	if !ok || !f.Anonymous || f.Type != reflect.TypeFor[Step]() {
-		return false
+	if !ok {
+		f, ok = t.Elem().FieldByName("Pivot")
+	}
+
+	if !ok || !f.Anonymous || f.Type.Kind() != reflect.Struct {
+		return nil, false
+	}
+
+	if !reflect.PointerTo(f.Type).Implements(reflect.TypeFor[binder]()) {
+		return nil, false
 	}
 
 	outer := t.Elem()
 	for _, i := range f.Index[:len(f.Index)-1] {
 		outer = outer.Field(i).Type
 		if outer.Kind() != reflect.Struct {
-			return false
+			return nil, false
 		}
 	}
 
-	return true
+	return f.Type, true
+}
+
+func shortType(t reflect.Type) string {
+	var b strings.Builder
+
+	s, start := t.String(), 0
+
+	for i := 0; i <= len(s); i++ {
+		if i < len(s) && !strings.ContainsRune("[], *", rune(s[i])) {
+			continue
+		}
+
+		token := s[start:i]
+		if j := strings.LastIndexByte(token, '/'); j >= 0 {
+			token = token[j+1:]
+		}
+
+		b.WriteString(token)
+
+		if i < len(s) {
+			b.WriteByte(s[i])
+
+			if s[i] == ',' {
+				b.WriteByte(' ')
+			}
+		}
+
+		start = i + 1
+	}
+
+	return b.String()
 }
 
 func (r *resolution) link(child int, parents []int) {

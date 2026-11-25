@@ -72,14 +72,21 @@ func (s *store) removeIfPresent(ctx context.Context, key string) error {
 
 // --8<-- [start:state]
 
+type (
+	accountID string
+	serverID  string
+	chargeID  string
+	mailID    string
+)
+
 type account struct {
 	ID        string `sagas:"id"`
 	Email     string
 	Plan      string
-	AccountID string
-	ServerID  string
-	ChargeID  string
-	MailID    string
+	AccountID accountID
+	ServerID  serverID
+	ChargeID  chargeID
+	MailID    mailID
 }
 
 // --8<-- [end:state]
@@ -87,83 +94,62 @@ type account struct {
 // --8<-- [start:steps]
 
 type register struct {
-	sagas.Step
+	sagas.Step[account, accountID]
 
 	accounts *store
 }
 
-func (r *register) Execute(ctx context.Context, a *account) error {
+func (r *register) Execute(ctx context.Context, a account) (accountID, error) {
 	id, err := r.accounts.put(ctx, sagas.IdempotencyKey(ctx), a.Email)
-	if err != nil {
-		return err
-	}
 
-	a.AccountID = id
-
-	return nil
+	return accountID(id), err
 }
 
-func (r *register) Compensate(ctx context.Context, _ *account) error {
+func (r *register) Compensate(ctx context.Context, _ account) error {
 	return r.accounts.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type provision struct {
-	sagas.Step
+	sagas.Step[account, serverID]
 
 	servers *store
 }
 
-func (p *provision) Execute(ctx context.Context, a *account) error {
+func (p *provision) Execute(ctx context.Context, a account) (serverID, error) {
 	id, err := p.servers.put(ctx, sagas.IdempotencyKey(ctx), a.Plan)
 	if errors.Is(err, errNoCapacity) {
-		return sagas.Permanent(err)
+		return "", sagas.Permanent(err)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	a.ServerID = id
-
-	return nil
+	return serverID(id), err
 }
 
-func (p *provision) Compensate(ctx context.Context, _ *account) error {
+func (p *provision) Compensate(ctx context.Context, _ account) error {
 	return p.servers.removeIfPresent(ctx, sagas.IdempotencyKey(ctx))
 }
 
 type charge struct {
-	sagas.Step
+	sagas.Pivot[account, chargeID]
 
 	payments *store
 }
 
-func (c *charge) Pivot(ctx context.Context, a *account) error {
+func (c *charge) Execute(ctx context.Context, a account) (chargeID, error) {
 	id, err := c.payments.put(ctx, sagas.IdempotencyKey(ctx), a.Plan)
-	if err != nil {
-		return err
-	}
 
-	a.ChargeID = id
-
-	return nil
+	return chargeID(id), err
 }
 
 type welcome struct {
-	sagas.Step
+	sagas.Step[account, mailID]
 
 	mails *store
 }
 
-func (w *welcome) Execute(ctx context.Context, a *account) error {
+func (w *welcome) Execute(ctx context.Context, a account) (mailID, error) {
 	id, err := w.mails.put(ctx, sagas.IdempotencyKey(ctx), a.Email)
-	if err != nil {
-		return err
-	}
 
-	a.MailID = id
-
-	return nil
+	return mailID(id), err
 }
 
 // --8<-- [end:steps]

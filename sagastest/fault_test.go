@@ -19,13 +19,15 @@ var (
 
 const runID = "run-1"
 
+type count int
+
 type probeState struct {
-	N  int
+	N  count
 	ID string `sagas:"id"`
 }
 
 type probeStep struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 
 	calls atomic.Int32
 	err   error
@@ -40,14 +42,14 @@ func newProbe(name string, retry sagas.RetryPolicy, err error) *probeStep {
 	return p
 }
 
-func (p *probeStep) Execute(context.Context, *probeState) error {
+func (p *probeStep) Execute(context.Context, probeState) error {
 	p.calls.Add(1)
 
 	return p.err
 }
 
 type undoProbe struct {
-	sagas.Step
+	sagas.Step[probeState, sagas.None]
 
 	execs atomic.Int32
 	undos atomic.Int32
@@ -61,20 +63,20 @@ func newUndo(name string, err error) *undoProbe {
 	return p
 }
 
-func (p *undoProbe) Execute(context.Context, *probeState) error {
+func (p *undoProbe) Execute(context.Context, probeState) error {
 	p.execs.Add(1)
 
 	return p.err
 }
 
-func (p *undoProbe) Compensate(context.Context, *probeState) error {
+func (p *undoProbe) Compensate(context.Context, probeState) error {
 	p.undos.Add(1)
 
 	return nil
 }
 
 type pivotProbe struct {
-	sagas.Step
+	sagas.Pivot[probeState, sagas.None]
 
 	pivots atomic.Int32
 }
@@ -86,7 +88,7 @@ func newPivot(name string) *pivotProbe {
 	return p
 }
 
-func (p *pivotProbe) Pivot(context.Context, *probeState) error {
+func (p *pivotProbe) Execute(context.Context, probeState) error {
 	p.pivots.Add(1)
 
 	return nil

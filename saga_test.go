@@ -13,9 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type tripState struct {
+type (
 	Hotel string
 	Rate  float64
+)
+
+type tripState struct {
+	Hotel Hotel
+	Rate  Rate
 }
 
 type otherState struct {
@@ -28,16 +33,19 @@ const (
 	noReach  = "neither before nor after"
 	quotedB  = `"b"`
 
-	nilOptionText = "nil Option"
+	nilOptionText   = "nil Option"
+	outputNamedText = "want a type declared with a name"
 )
+
+type Car string
 
 var errAlwaysFails = errors.New("sagas: test: the action always fails")
 
-func okAction(context.Context, *tripState) error { return nil }
+func okAction(context.Context, tripState) error { return nil }
 
-func alwaysFails(context.Context, *tripState) error { return errAlwaysFails }
+func alwaysFails(context.Context, tripState) error { return errAlwaysFails }
 
-func twoSecondCall(ctx context.Context, _ *tripState) error {
+func twoSecondCall(ctx context.Context, _ tripState) error {
 	select {
 	case <-time.After(2 * time.Second):
 		return nil
@@ -52,7 +60,7 @@ func callOnce(tb testing.TB, call callFunc[tripState]) outcome[tripState] {
 	return call(context.Background(), &callMeta{execution: infoExecution}, baseOf(tb, tripState{}))
 }
 
-func okPredicate(*tripState) bool { return true }
+func okPredicate(context.Context, tripState) bool { return true }
 
 func okMiddleware() MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error { return call(ctx) }
@@ -68,11 +76,35 @@ func oneStep() (*Saga[tripState], error) {
 	return New[tripState](tripName, act("a", okAction))
 }
 
+type stringOutput struct{ Step[tripState, string] }
+
+func (stringOutput) Execute(context.Context, tripState) (string, error) { return "", nil }
+
+type sliceOutput struct{ Step[tripState, []Hotel] }
+
+func (sliceOutput) Execute(context.Context, tripState) ([]Hotel, error) { return nil, nil }
+
+type carOutput struct{ Step[tripState, Car] }
+
+func (carOutput) Execute(context.Context, tripState) (Car, error) { return "", nil }
+
+type otherStateStep struct{ Step[otherState, None] }
+
+func (otherStateStep) Execute(context.Context, otherState) error { return nil }
+
+func makeOf[R any](v R) func(context.Context, tripState) (R, error) {
+	return func(context.Context, tripState) (R, error) { return v, nil }
+}
+
 func Test_New(t *testing.T) {
 	t.Parallel()
 
 	journal := NewMemoryJournal()
 	a := act("a", okAction)
+	threeEnds := Parallel(
+		Sequence(act("a1", okAction), producing("a2", makeHotel)),
+		Sequence(act("b1", okAction), producing("b2", makeHotel)),
+	)
 
 	tests := []struct {
 		name         string
@@ -170,6 +202,68 @@ func Test_New(t *testing.T) {
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{`saga ""`, nilOptionText, neitherText},
 		},
+		{
+			name:         "[Fail] When: two concurrent steps produce one type ; Should: refuse it naming both steps",
+			saga:         tripName,
+			flow:         threeEnds,
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`steps "a2" and "b2"`, "sagas.Hotel"},
+		},
+		{
+			name: "[Fail] When: two parallel steps produce one output type ; Should: refuse the saga naming both steps",
+			saga: tripName, flow: Sequence(a, Parallel(producing("b", makeHotel), napping("c", "plaza"))),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`steps "b" and "c"`, "sagas.Hotel"},
+		},
+		{
+			name: "[Success] When: two steps in sequence produce one type ; Should: build",
+			saga: tripName, flow: Sequence(producing("a", makeHotel), producing("b", backHotel)),
+		},
+		{
+			name:     "[Fail] When: a known method has a shape the embed refuses ; Should: name the accepted shapes",
+			saga:     tripName,
+			flow:     &oldShapes{make: makeHotel},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "old-shapes"`, "method Compensate",
+				"want func(context.Context, sagas.tripState) error or func(context.Context, sagas.tripState) " +
+					"(sagas.Hotel, error)",
+			},
+		},
+		{
+			name: "[Fail] When: the step has no Execute ; Should: refuse it naming the step",
+			saga: tripName, flow: &idleStep{},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "idle-step"`, neitherText},
+		},
+		{
+			name: "[Fail] When: the embed state type differs from the saga state ; Should: name both types",
+			saga: tripName, flow: &otherStateStep{},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				`step "other-state-step"`,
+				"embeds sagas.Step[sagas.otherState, sagas.None]",
+				"want the state sagas.tripState",
+			},
+		},
+		{
+			name: "[Fail] When: the output type is predeclared ; Should: refuse it naming the type",
+			saga: tripName, flow: &stringOutput{Name: "a"},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{stepA, "output type string", outputNamedText},
+		},
+		{
+			name: "[Fail] When: the output type has no name ; Should: refuse it naming the type",
+			saga: tripName, flow: &sliceOutput{Name: "a"},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{stepA, "output type []sagas.Hotel", outputNamedText},
+		},
+		{
+			name: "[Fail] When: no state field has the output type ; Should: name the type and the state",
+			saga: tripName, flow: &carOutput{Name: "a"},
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{stepA, "output type sagas.Car", "no field in state sagas.tripState"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -187,16 +281,38 @@ func Test_New(t *testing.T) {
 	}
 }
 
+func newErr[S any]() error {
+	_, err := New[S](tripName, &hotelStep[S]{})
+
+	return err
+}
+
 func Test_New_stateType(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name         string
+		build        func() error
+		wantErr      error
 		wantContains []string
 	}{
 		{
 			name:         "[Fail] When: the state keeps the old execution ID method ; Should: refuse it, name the tag",
+			build:        newErr[valueMethodState],
+			wantErr:      ErrInvalidState,
 			wantContains: []string{"valueMethodState", tagLiteral},
+		},
+		{
+			name:         "[Fail] When: two state fields have the output type ; Should: refuse the step naming both",
+			build:        newErr[twoHotelState],
+			wantErr:      ErrInvalidStep,
+			wantContains: []string{"output type sagas.Hotel: fields Booked and Wanted of state sagas.twoHotelState"},
+		},
+		{
+			name:         "[Fail] When: a state field has the type None ; Should: refuse the state naming the field",
+			build:        newErr[noneFieldState],
+			wantErr:      ErrInvalidState,
+			wantContains: []string{"noneFieldState.Nothing", "rejected type sagas.None"},
 		},
 	}
 
@@ -204,10 +320,7 @@ func Test_New_stateType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := New[valueMethodState](tripName, &okStep[valueMethodState]{})
-
-			assert.Nil(t, s)
-			requireErrs(t, err, []error{ErrInvalidState}, tt.wantContains)
+			requireErrs(t, tt.build(), []error{tt.wantErr}, tt.wantContains)
 		})
 	}
 }
@@ -219,9 +332,9 @@ func Test_New_stepSettings(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		settings     Step
-		execute      func(context.Context, *tripState) error
-		changed      Step
+		settings     Step[tripState, None]
+		execute      func(context.Context, tripState) error
+		changed      Step[tripState, None]
 		wantAttempts int
 		wantElapsed  time.Duration
 		wantErr      error
@@ -229,22 +342,28 @@ func Test_New_stepSettings(t *testing.T) {
 	}{
 		{
 			name:     "[Fail] When: RetryPolicy is NoRetry and Execute fails ; Should: run it once",
-			settings: Step{RetryPolicy: NoRetry()}, execute: alwaysFails,
+			settings: Step[tripState, None]{RetryPolicy: NoRetry()}, execute: alwaysFails,
 			wantAttempts: 1, wantErr: errAlwaysFails, wantErrTries: 1,
 		},
 		{
-			name:     "[Fail] When: RetryPolicy gives two attempts ; Should: stop an always failing step after two",
-			settings: Step{RetryPolicy: RetryPolicy{Attempts: 2, NoJitter: true}}, execute: alwaysFails,
-			wantAttempts: 2, wantElapsed: 200 * time.Millisecond, wantErr: errAlwaysFails, wantErrTries: 2,
+			name: "[Fail] When: RetryPolicy gives two attempts ; Should: stop an always failing step after two",
+			settings: Step[tripState, None]{
+				RetryPolicy: RetryPolicy{Attempts: 2, NoJitter: true},
+			},
+			execute:      alwaysFails,
+			wantAttempts: 2,
+			wantElapsed:  200 * time.Millisecond,
+			wantErr:      errAlwaysFails,
+			wantErrTries: 2,
 		},
 		{
 			name:     "[Fail] When: RetryPolicy sets every field ; Should: wait its exact delays",
-			settings: Step{RetryPolicy: given}, execute: alwaysFails,
+			settings: Step[tripState, None]{RetryPolicy: given}, execute: alwaysFails,
 			wantAttempts: 5, wantElapsed: 6500 * time.Millisecond, wantErr: errAlwaysFails, wantErrTries: 5,
 		},
 		{
 			name:         "[Fail] When: RetryPolicy is zero apart from NoJitter ; Should: wait the default delays",
-			settings:     Step{RetryPolicy: RetryPolicy{NoJitter: true}},
+			settings:     Step[tripState, None]{RetryPolicy: RetryPolicy{NoJitter: true}},
 			execute:      alwaysFails,
 			wantAttempts: DefaultAttempts,
 			wantElapsed:  600 * time.Millisecond,
@@ -253,7 +372,7 @@ func Test_New_stepSettings(t *testing.T) {
 		},
 		{
 			name:         "[Fail] When: the multiplier is exactly one ; Should: wait a constant delay",
-			settings:     Step{RetryPolicy: RetryPolicy{Multiplier: 1, NoJitter: true}},
+			settings:     Step[tripState, None]{RetryPolicy: RetryPolicy{Multiplier: 1, NoJitter: true}},
 			execute:      alwaysFails,
 			wantAttempts: DefaultAttempts,
 			wantElapsed:  400 * time.Millisecond,
@@ -261,24 +380,31 @@ func Test_New_stepSettings(t *testing.T) {
 			wantErrTries: DefaultAttempts,
 		},
 		{
-			name:     "[Fail] When: AttemptTimeout is shorter than Execute ; Should: end it with DeadlineExceeded",
-			settings: Step{RetryPolicy: NoRetry(), AttemptTimeout: time.Second}, execute: twoSecondCall,
-			wantAttempts: 1, wantElapsed: time.Second, wantErr: context.DeadlineExceeded, wantErrTries: 1,
+			name: "[Fail] When: AttemptTimeout is shorter than Execute ; Should: end it with DeadlineExceeded",
+			settings: Step[tripState, None]{
+				RetryPolicy:    NoRetry(),
+				AttemptTimeout: time.Second,
+			},
+			execute:      twoSecondCall,
+			wantAttempts: 1,
+			wantElapsed:  time.Second,
+			wantErr:      context.DeadlineExceeded,
+			wantErrTries: 1,
 		},
 		{
 			name:     "[Success] When: AttemptTimeout is longer than Execute ; Should: let it finish",
-			settings: Step{AttemptTimeout: time.Minute}, execute: twoSecondCall,
+			settings: Step[tripState, None]{AttemptTimeout: time.Minute}, execute: twoSecondCall,
 			wantAttempts: 1, wantElapsed: 2 * time.Second,
 		},
 		{
 			name:     "[Success] When: AttemptTimeout is zero ; Should: set no limit",
-			settings: Step{}, execute: twoSecondCall,
+			settings: Step[tripState, None]{}, execute: twoSecondCall,
 			wantAttempts: 1, wantElapsed: 2 * time.Second,
 		},
 		{
 			name:     "[Fail] When: the step value changes after New ; Should: run with the settings New copied",
-			settings: Step{RetryPolicy: NoRetry()}, execute: alwaysFails,
-			changed: Step{
+			settings: Step[tripState, None]{RetryPolicy: NoRetry()}, execute: alwaysFails,
+			changed: Step[tripState, None]{
 				Name: "x", RetryPolicy: RetryPolicy{Attempts: 9, NoJitter: true}, AttemptTimeout: time.Nanosecond,
 			},
 			wantAttempts: 1, wantErr: errAlwaysFails, wantErrTries: 1,
@@ -439,7 +565,7 @@ func Test_WithRecoveryTimeout(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				j := &graceJournal{}
-				waits := once("a", func(ctx context.Context, _ *tripState) error {
+				waits := once("a", func(ctx context.Context, _ tripState) error {
 					<-ctx.Done()
 
 					return ctx.Err()
@@ -626,17 +752,17 @@ func Test_stepNode_buildCalls(t *testing.T) {
 			t.Parallel()
 
 			rec := &recorder{}
-			methods := &stepMethods[tripState]{call: func(context.Context, *tripState) error {
+			methods := &stepMethods[tripState]{call: func(context.Context, *tripState) (encodedOutput, error) {
 				rec.add("do")
 
-				return nil
+				return encodedOutput{}, nil
 			}}
 
 			if tt.undo {
-				methods.compensate = func(context.Context, *tripState) error {
+				methods.compensate = func(context.Context, *tripState) (encodedOutput, error) {
 					rec.add("undo")
 
-					return nil
+					return encodedOutput{}, nil
 				}
 			}
 
@@ -784,7 +910,7 @@ func (g fuzzGraph) items() []Flow {
 
 		switch {
 		case g.pivot[i] && g.comp[i]:
-			steps[i] = &pivotUndoStep{Name: name, pay: okAction, undo: okAction}
+			steps[i] = &pivotUndoStep{Name: name, do: okAction, undo: okAction}
 		case g.pivot[i]:
 			steps[i] = paying(name, okAction)
 		case g.comp[i]:

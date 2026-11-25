@@ -40,25 +40,23 @@ var errJournalDown = errors.New("journal down")
 func fails() *actStep { return act("b", alwaysFails) }
 
 func exits(name string) *actStep {
-	return act(name, func(context.Context, *tripState) error {
+	return act(name, func(context.Context, tripState) error {
 		runtime.Goexit()
 
 		return nil
 	})
 }
 
-func napping(name, hotel string) *actStep {
-	return act(name, func(_ context.Context, s *tripState) error {
+func napping(name string, hotel Hotel) *makeStep {
+	return producing(name, func(context.Context, tripState) (Hotel, error) {
 		time.Sleep(pause)
 
-		s.Hotel = hotel
-
-		return nil
+		return hotel, nil
 	})
 }
 
 func waiting(name string) *actStep {
-	return act(name, func(ctx context.Context, _ *tripState) error {
+	return act(name, func(ctx context.Context, _ tripState) error {
 		<-ctx.Done()
 
 		return ctx.Err()
@@ -71,6 +69,7 @@ func forwardRows() []runRow {
 		sharedStepRow(),
 		skippedStepRow(),
 		predicateTrueRow(),
+		predicateSeesRunRow(),
 		noPivotZonesRow(),
 		pivotZonesRow(),
 		concurrentRunsRow(),
@@ -231,12 +230,10 @@ func lateSiblingAfterOwnFailureRow() runRow {
 		name: "[Fail] When: a forward-only step fails on its own before the grace end and its sibling succeeds " +
 			"after it ; Should: end ErrIncomplete and match the caller cause through the sibling's lost append",
 		steps: func(rec *recorder) Flow {
-			y := act("y", func(ctx context.Context, s *tripState) error {
-				s.Hotel = hotelRitz
-
-				return lateSuccess(ctx, s)
+			y := producing("y", func(ctx context.Context, s tripState) (Hotel, error) {
+				return hotelRitz, lateSuccess(ctx, s)
 			})
-			z := once("z", func(context.Context, *tripState) error {
+			z := once("z", func(context.Context, tripState) error {
 				time.Sleep(pause * 3 / 2)
 
 				return errAlwaysFails
@@ -279,10 +276,8 @@ func forwardOnlyCommitFailsRow() runRow {
 		name: "[Fail] When: a forward-only step succeeds and its state does not encode ; " +
 			"Should: fail it with ErrInvalidState and end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
-			z := act("z", func(_ context.Context, s *tripState) error {
-				s.Rate = math.NaN()
-
-				return nil
+			z := producingRate("z", func(context.Context, tripState) (Rate, error) {
+				return Rate(math.NaN()), nil
 			})
 
 			return Sequence(rec.undoable("a"), rec.pivot(), z)
@@ -304,7 +299,7 @@ func forwardOnlyCommitFailsRow() runRow {
 	}
 }
 
-func lateSuccess(context.Context, *tripState) error {
+func lateSuccess(context.Context, tripState) error {
 	time.Sleep(3 * pause)
 
 	return nil
@@ -315,10 +310,8 @@ func pivotLateSuccessRow() runRow {
 		name: "[Fail] When: the pivot succeeds after the grace period ends ; " +
 			"Should: commit it, count it unknown when its outcome append fails and end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
-			p := paying("p", func(ctx context.Context, s *tripState) error {
-				s.Hotel = hotelRitz
-
-				return lateSuccess(ctx, s)
+			p := payingMade("p", func(ctx context.Context, s tripState) (Hotel, error) {
+				return hotelRitz, lateSuccess(ctx, s)
 			})
 
 			return Sequence(rec.undoable("a"), p, rec.step("z"))
@@ -344,10 +337,8 @@ func forwardOnlyLateSuccessRow() runRow {
 		name: "[Fail] When: the last forward-only step succeeds after the grace period ends ; " +
 			"Should: commit it, count it unknown when its outcome append fails and end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
-			z := act("z", func(ctx context.Context, s *tripState) error {
-				s.Hotel = hotelRitz
-
-				return lateSuccess(ctx, s)
+			z := producing("z", func(ctx context.Context, s tripState) (Hotel, error) {
+				return hotelRitz, lateSuccess(ctx, s)
 			})
 
 			return Sequence(rec.undoable("a"), rec.pivot(), z)
@@ -372,10 +363,8 @@ func pivotCommitFailsRow() runRow {
 		name: "[Fail] When: the pivot succeeds and its state does not encode ; " +
 			"Should: count it unknown, commit and compensate nothing, list it and the forward-only steps in Pending",
 		steps: func(rec *recorder) Flow {
-			p := paying("p", func(_ context.Context, s *tripState) error {
-				s.Hotel, s.Rate = hotelRitz, math.NaN()
-
-				return nil
+			p := payingRate("p", func(context.Context, tripState) (Rate, error) {
+				return Rate(math.NaN()), nil
 			})
 
 			return Sequence(rec.undoable("a"), p, Parallel(rec.step("y"), rec.step("z")))
@@ -463,7 +452,7 @@ func forwardOnlyOwnFailureRow() runRow {
 		name: "[Fail] When: a forward-only step fails with its own error after a caller cancel and before the " +
 			"grace end ; Should: end ErrIncomplete without matching the caller cause",
 		steps: func(rec *recorder) Flow {
-			z := once("z", func(context.Context, *tripState) error {
+			z := once("z", func(context.Context, tripState) error {
 				time.Sleep(pause)
 
 				return errAlwaysFails
@@ -490,7 +479,7 @@ func forwardOnlyOwnFailureRow() runRow {
 	}
 }
 
-func lateFailure(context.Context, *tripState) error {
+func lateFailure(context.Context, tripState) error {
 	time.Sleep(3 * pause)
 
 	return errAlwaysFails
@@ -528,7 +517,7 @@ func pivotRetriedRow() runRow {
 			"Should: retry the pivot on the grace context and complete",
 		steps: func(rec *recorder) Flow {
 			count := counter()
-			p := paying("p", func(ctx context.Context, _ *tripState) error {
+			p := paying("p", func(ctx context.Context, _ tripState) error {
 				if count() == 1 {
 					<-ctx.Done()
 
@@ -652,12 +641,10 @@ func forwardOnlyFailureRow() runRow {
 		name: "[Fail] When: a forward-only step fails beside a running sibling ; " +
 			"Should: let the sibling finish, start nothing after, compensate nothing, end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
-			sibling := act("y", func(ctx context.Context, s *tripState) error {
+			sibling := producing("y", func(ctx context.Context, _ tripState) (Hotel, error) {
 				time.Sleep(pause)
 
-				s.Hotel = hotelRitz
-
-				return ctx.Err()
+				return hotelRitz, ctx.Err()
 			})
 
 			return Sequence(rec.undoable("a"), rec.pivot(), Parallel(sibling, once("z", alwaysFails)), rec.step("w"))
@@ -751,7 +738,7 @@ func cancelBeforePivotRow() runRow {
 		name: "[Fail] When: the caller cancels before the pivot starts ; " +
 			"Should: not start the pivot and still run the compensations on the grace context",
 		steps: func(rec *recorder) Flow {
-			slowUndo := func(ctx context.Context, _ *tripState) error {
+			slowUndo := func(ctx context.Context, _ tripState) error {
 				time.Sleep(pause / 2)
 				rec.add(undoA)
 
@@ -792,7 +779,7 @@ func cancelBeforePivotLaunchRow() runRow {
 		name: "[Fail] When: the caller cancels while the step before the pivot runs and it succeeds ; " +
 			"Should: not start the pivot and compensate that step",
 		steps: func(rec *recorder) Flow {
-			slow := func(context.Context, *tripState) error {
+			slow := func(context.Context, tripState) error {
 				time.Sleep(pause)
 				rec.add("a")
 
@@ -818,7 +805,7 @@ func cancelDuringPivotRow() runRow {
 		name: "[Success] When: the caller cancels while the pivot runs ; " +
 			"Should: still launch and complete the forward-only steps",
 		steps: func(rec *recorder) Flow {
-			p := paying("p", func(context.Context, *tripState) error {
+			p := paying("p", func(context.Context, tripState) error {
 				time.Sleep(pause)
 				rec.add("p")
 
@@ -845,7 +832,7 @@ func cancelDuringForwardPredicateRow() runRow {
 		name: "[Success] When: the caller cancels while a forward-only Enabled method runs ; " +
 			"Should: still start and complete that step",
 		steps: func(rec *recorder) Flow {
-			slow := func(*tripState) bool {
+			slow := func(context.Context, tripState) bool {
 				time.Sleep(pause)
 
 				return true
@@ -871,7 +858,7 @@ func noCallerCancelRow() runRow {
 		name: "[Success] When: the pivot runs longer than the grace period and the caller never cancels ; " +
 			"Should: start no grace clock and complete",
 		steps: func(rec *recorder) Flow {
-			p := paying("p", func(ctx context.Context, _ *tripState) error {
+			p := paying("p", func(ctx context.Context, _ tripState) error {
 				time.Sleep(2 * DefaultRecoveryTimeout)
 				rec.add("p")
 
@@ -1030,7 +1017,7 @@ func completedGraphRow() runRow {
 			both.Add(2)
 
 			branch := func(name string) Flow {
-				return act(name, func(context.Context, *tripState) error {
+				return act(name, func(context.Context, tripState) error {
 					rec.add(name)
 					both.Done()
 					both.Wait()
@@ -1104,6 +1091,21 @@ func predicateTrueRow() runRow {
 	}
 }
 
+func predicateSeesRunRow() runRow {
+	return runRow{
+		name: "[Success] When: Enabled reads its context and state ; Should: see the run context and the parent output",
+		steps: func(rec *recorder) Flow {
+			sees := func(ctx context.Context, s tripState) bool { return ctx.Done() != nil && s.Hotel == hotelRitz }
+
+			return Sequence(rec.booking("a"), rec.bookingIf("b", "plaza", sees))
+		},
+		wantStatus: StatusCompleted,
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed),
+		wantState:  tripState{Hotel: "plaza"},
+	}
+}
+
 func noPivotZonesRow() runRow {
 	return runRow{
 		name: "[Success] When: the saga has no pivot ; Should: record the compensable zone for every step",
@@ -1162,7 +1164,6 @@ func failureRows() []runRow {
 		predicatePanicRow(),
 		predicateGoexitRow(),
 		siblingCancelRow(),
-		conflictRow(),
 		stoppedBeforeStartRow(),
 	}
 }
@@ -1227,7 +1228,7 @@ func predicatePanicRow() runRow {
 	return runRow{
 		name: "[Fail] When: an Enabled method panics ; Should: fail the step without a started event",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
+			return Sequence(rec.step("a"), rec.stepIf("b", func(context.Context, tripState) bool { panic("boom") }))
 		},
 		wantStatus:   StatusCompensated,
 		wantKind:     ErrCompensated,
@@ -1245,7 +1246,7 @@ func predicateGoexitRow() runRow {
 	return runRow{
 		name: "[Fail] When: an Enabled method ends by runtime.Goexit ; Should: fail the step without a started event",
 		steps: func(rec *recorder) Flow {
-			leave := func(*tripState) bool {
+			leave := func(context.Context, tripState) bool {
 				runtime.Goexit()
 
 				return true
@@ -1290,31 +1291,11 @@ func siblingCancelRow() runRow {
 	}
 }
 
-func conflictRow() runRow {
-	return runRow{
-		name: "[Fail] When: two parallel steps change the same field ; Should: fail the later one with ErrConflict",
-		steps: func(rec *recorder) Flow {
-			return Sequence(rec.step("a"), Parallel(rec.booking("b"), napping("c", "plaza")))
-		},
-		wantStatus:   StatusCompensated,
-		wantKind:     ErrCompensated,
-		wantKinds:    map[string]*KindError{"c": ErrConflict},
-		wantFailed:   []string{"c"},
-		wantErrText:  map[string]string{"c": `field Hotel changed by step "c" after step "b"`},
-		wantAttempts: map[string]int{"c": 1},
-		wantTrail:    afterA(together(startOf("b"), startOf("c"), doneOf("b"), failedOf("c")), seq(closed)),
-		wantErrs:     []error{ErrConflict},
-		wantText:     []string{`"b"`, `"c"`},
-		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded, "c": stepFailed},
-		wantState:    tripState{Hotel: hotelRitz},
-	}
-}
-
 func stoppedBeforeStartRow() runRow {
 	return runRow{
 		name: "[Fail] When: a step fails before another step's Enabled says go ; Should: not start that step",
 		steps: func(rec *recorder) Flow {
-			late := func(*tripState) bool {
+			late := func(context.Context, tripState) bool {
 				time.Sleep(pause)
 
 				return true
@@ -1389,7 +1370,7 @@ func predicateAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: an Enabled method fails and its append fails ; Should: keep the step not started",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.step("a"), rec.stepIf("b", func(*tripState) bool { panic("boom") }))
+			return Sequence(rec.step("a"), rec.stepIf("b", func(context.Context, tripState) bool { panic("boom") }))
 		},
 		script:       map[int]error{4: errJournalDown},
 		wantStatus:   StatusCompensated,
@@ -1581,12 +1562,15 @@ func finishedRejectedRow() runRow {
 	}
 }
 
+type judgeKey struct{}
+
 func Test_judge(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
-		pred      func(*tripState) bool
+		pred      func(context.Context, tripState) bool
+		base      tripState
 		corrupt   bool
 		wantRun   bool
 		wantPanic bool
@@ -1595,23 +1579,31 @@ func Test_judge(t *testing.T) {
 	}{
 		{
 			name:    "[Success] When: the predicate returns true ; Should: report go",
-			pred:    func(*tripState) bool { return true },
+			pred:    func(context.Context, tripState) bool { return true },
+			wantRun: true,
+		},
+		{
+			name: "[Success] When: the predicate reads its context and state ; Should: see the step context and base",
+			pred: func(ctx context.Context, s tripState) bool {
+				return ctx.Value(judgeKey{}) == tripName && s.Hotel == hotelRitz
+			},
+			base:    tripState{Hotel: hotelRitz},
 			wantRun: true,
 		},
 		{
 			name: "[Success] When: the predicate returns false ; Should: report skip",
-			pred: func(*tripState) bool { return false },
+			pred: func(context.Context, tripState) bool { return false },
 		},
 		{
 			name:      "[Fail] When: the predicate panics ; Should: return a PanicError and no go",
-			pred:      func(*tripState) bool { panic(errBoom) },
+			pred:      func(context.Context, tripState) bool { panic(errBoom) },
 			wantPanic: true,
 			wantErrIs: errBoom,
 			wantLabel: ErrPanic,
 		},
 		{
 			name:      "[Fail] When: the base does not decode ; Should: return ErrInvalidState, skip the predicate",
-			pred:      func(*tripState) bool { panic("never called") },
+			pred:      func(context.Context, tripState) bool { panic("never called") },
 			corrupt:   true,
 			wantErrIs: ErrInvalidState,
 			wantLabel: ErrInvalidState,
@@ -1622,12 +1614,12 @@ func Test_judge(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			base := baseOf(t, tripState{})
+			base := baseOf(t, tt.base)
 			if tt.corrupt {
 				base.fields[0] = []byte("{")
 			}
 
-			run, label, err := judge(tt.pred, base)
+			run, label, err := judge(context.WithValue(t.Context(), judgeKey{}, tripName), tt.pred, base)
 
 			assert.Equal(t, tt.wantRun, run)
 			assert.Same(t, tt.wantLabel, label)

@@ -19,10 +19,15 @@ const (
 
 // --8<-- [start:state]
 
+type (
+	stockID  string
+	chargeID string
+)
+
 type order struct {
 	ID       string `sagas:"id"`
-	StockID  string
-	ChargeID string
+	StockID  stockID
+	ChargeID chargeID
 }
 
 // --8<-- [end:state]
@@ -55,29 +60,25 @@ func (p *provider) charge(key string) error {
 
 // --8<-- [start:steps]
 
-type reserve struct{ sagas.Step }
+type reserve struct{ sagas.Step[order, stockID] }
 
-func (reserve) Execute(ctx context.Context, o *order) error {
-	o.StockID = sagas.IdempotencyKey(ctx)
-
-	return ctx.Err()
+func (reserve) Execute(ctx context.Context, _ order) (stockID, error) {
+	return stockID(sagas.IdempotencyKey(ctx)), ctx.Err()
 }
 
 type charge struct {
-	sagas.Step
+	sagas.Step[order, chargeID]
 
 	provider *provider
 }
 
-func (c *charge) Execute(ctx context.Context, o *order) error {
+func (c *charge) Execute(ctx context.Context, _ order) (chargeID, error) {
 	key := sagas.IdempotencyKey(ctx)
 	if err := c.provider.charge(key); err != nil {
-		return err
+		return "", err
 	}
 
-	o.ChargeID = key
-
-	return ctx.Err()
+	return chargeID(key), ctx.Err()
 }
 
 // --8<-- [end:steps]
