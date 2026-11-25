@@ -420,16 +420,22 @@ type fieldWrite struct {
 }
 
 type rebuild struct {
-	index  map[string]int
-	writes [][]fieldWrite
+	index   map[string]int
+	secret  []bool
+	writes  [][]fieldWrite
+	secrets SecretStore
 }
 
 func rebuildState[S any](ctx context.Context, events []Event, secrets SecretStore, through int) (*S, error) {
 	t := reflect.TypeFor[S]()
-	b := rebuild{index: make(map[string]int, t.NumField()), writes: make([][]fieldWrite, t.NumField())}
+	b := rebuild{
+		index: make(map[string]int, t.NumField()), secret: make([]bool, t.NumField()),
+		writes: make([][]fieldWrite, t.NumField()), secrets: secrets,
+	}
 
 	for i := range t.NumField() {
-		b.index[t.Field(i).Name] = i
+		field := t.Field(i)
+		b.index[field.Name], b.secret[i] = i, fieldTagRules(&field).secret
 	}
 
 	for i := range events {
@@ -437,7 +443,7 @@ func rebuildState[S any](ctx context.Context, events []Event, secrets SecretStor
 			break
 		}
 
-		if err := b.apply(ctx, &events[i], secrets); err != nil {
+		if err := b.apply(ctx, &events[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -452,7 +458,7 @@ func rebuildState[S any](ctx context.Context, events []Event, secrets SecretStor
 	return copyState(snapshot[S]{fields: fields})
 }
 
-func (b *rebuild) apply(ctx context.Context, e *Event, secrets SecretStore) error {
+func (b *rebuild) apply(ctx context.Context, e *Event) error {
 	own := func(w fieldWrite) bool { return w.step == e.Step }
 
 	if e.Kind == EventCompensationSucceeded && len(e.Values) == 0 {
@@ -467,7 +473,7 @@ func (b *rebuild) apply(ctx context.Context, e *Event, secrets SecretStore) erro
 			return fmt.Errorf("%w: seq %d: unknown field %s", ErrInvalidState, e.Seq, v.Field)
 		}
 
-		data, err := valueData(ctx, e, &v, secrets)
+		data, err := b.value(ctx, e, f, &v)
 		if err != nil {
 			return err
 		}
@@ -482,10 +488,10 @@ func (b *rebuild) apply(ctx context.Context, e *Event, secrets SecretStore) erro
 	return nil
 }
 
-func valueData(ctx context.Context, e *Event, v *FieldValue, secrets SecretStore) ([]byte, error) {
-	if len(v.Value) > 0 {
+func (b *rebuild) value(ctx context.Context, e *Event, f int, v *FieldValue) ([]byte, error) {
+	if !b.secret[f] {
 		return v.Value, nil
 	}
 
-	return secrets.Get(ctx, e.Execution, e.Seq, v.Field)
+	return b.secrets.Get(ctx, secretKeyOf(e, v.Field))
 }

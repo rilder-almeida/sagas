@@ -11,26 +11,29 @@ import (
 
 const (
 	secretExecution = "exec-1"
+	secretWriter    = "w1"
 	cardField       = "Card"
 	cardJSON        = `"4111"`
 )
 
 type secretPut struct {
-	execution string
-	seq       int
-	field     string
-	value     string
+	key   SecretKey
+	value string
+}
+
+func cardKey(seq int) SecretKey {
+	return SecretKey{Execution: secretExecution, Writer: secretWriter, Seq: seq, Field: cardField}
 }
 
 func cardPut(seq int, value string) secretPut {
-	return secretPut{execution: secretExecution, seq: seq, field: cardField, value: value}
+	return secretPut{key: cardKey(seq), value: value}
 }
 
 func putAll(t *testing.T, s *MemorySecretStore, puts []secretPut) {
 	t.Helper()
 
 	for _, p := range puts {
-		require.NoError(t, s.Put(t.Context(), p.execution, p.seq, p.field, jsontext.Value(p.value)))
+		require.NoError(t, s.Put(t.Context(), p.key, jsontext.Value(p.value)))
 	}
 }
 
@@ -70,7 +73,7 @@ func Test_NewMemorySecretStore(t *testing.T) {
 			s := NewMemorySecretStore()
 			putAll(t, s, tt.puts)
 
-			got, err := s.Get(t.Context(), secretExecution, 1, cardField)
+			got, err := s.Get(t.Context(), cardKey(1))
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.want, got)
 		})
@@ -140,13 +143,13 @@ func Test_MemorySecretStore_Put(t *testing.T) {
 			}
 
 			value := jsontext.Value(tt.put.value)
-			require.ErrorIs(t, s.Put(ctx, tt.put.execution, tt.put.seq, tt.put.field, value), tt.wantErr)
+			require.ErrorIs(t, s.Put(ctx, tt.put.key, value), tt.wantErr)
 
 			if tt.scribble {
 				value[1] = 'x'
 			}
 
-			got, err := s.Get(t.Context(), tt.put.execution, tt.put.seq, tt.put.field)
+			got, err := s.Get(t.Context(), tt.put.key)
 			require.ErrorIs(t, err, tt.wantGet)
 			assert.Equal(t, tt.want, got)
 		})
@@ -160,7 +163,7 @@ func Test_MemorySecretStore_Get(t *testing.T) {
 		name      string
 		zero      bool
 		puts      []secretPut
-		key       secretPut
+		key       SecretKey
 		done      bool
 		scribble  bool
 		want      jsontext.Value
@@ -170,45 +173,51 @@ func Test_MemorySecretStore_Get(t *testing.T) {
 		{
 			name: "[Success] When: the key holds a value ; Should: return it",
 			puts: []secretPut{cardPut(1, cardJSON), cardPut(2, `"5500"`)},
-			key:  cardPut(2, ""),
+			key:  cardKey(2),
 			want: jsontext.Value(`"5500"`),
 		},
 		{
 			name:     "[Success] When: the caller changes the returned value ; Should: keep the stored one",
 			puts:     []secretPut{cardPut(1, cardJSON)},
-			key:      cardPut(1, ""),
+			key:      cardKey(1),
 			scribble: true,
 			want:     jsontext.Value(cardJSON),
 		},
 		{
 			name:      "[Fail] When: the seq holds no value ; Should: return ErrNoSecret naming the key",
 			puts:      []secretPut{cardPut(1, cardJSON)},
-			key:       cardPut(2, ""),
+			key:       cardKey(2),
 			wantErr:   ErrNoSecret,
-			wantInMsg: `sagas: no secret: execution "exec-1" seq 2 field "Card"`,
+			wantInMsg: `sagas: no secret: execution "exec-1" writer "w1" seq 2 field "Card"`,
 		},
 		{
 			name:    "[Fail] When: another field holds the value ; Should: return ErrNoSecret",
 			puts:    []secretPut{cardPut(1, cardJSON)},
-			key:     secretPut{execution: secretExecution, seq: 1, field: "Pin"},
+			key:     SecretKey{Execution: secretExecution, Writer: secretWriter, Seq: 1, Field: "Pin"},
 			wantErr: ErrNoSecret,
 		},
 		{
 			name:    "[Fail] When: another execution holds the value ; Should: return ErrNoSecret",
 			puts:    []secretPut{cardPut(1, cardJSON)},
-			key:     secretPut{execution: "exec-2", seq: 1, field: cardField},
+			key:     SecretKey{Execution: "exec-2", Writer: secretWriter, Seq: 1, Field: cardField},
+			wantErr: ErrNoSecret,
+		},
+		{
+			name:    "[Fail] When: another writer of the execution holds the value ; Should: return ErrNoSecret",
+			puts:    []secretPut{cardPut(1, cardJSON)},
+			key:     SecretKey{Execution: secretExecution, Writer: "w2", Seq: 1, Field: cardField},
 			wantErr: ErrNoSecret,
 		},
 		{
 			name:    "[Fail] When: the store is a zero value ; Should: return ErrNoSecret",
 			zero:    true,
-			key:     cardPut(1, ""),
+			key:     cardKey(1),
 			wantErr: ErrNoSecret,
 		},
 		{
 			name:    "[Fail] When: the context is done ; Should: return its error",
 			puts:    []secretPut{cardPut(1, cardJSON)},
-			key:     cardPut(1, ""),
+			key:     cardKey(1),
 			done:    true,
 			wantErr: context.Canceled,
 		},
@@ -230,7 +239,7 @@ func Test_MemorySecretStore_Get(t *testing.T) {
 				ctx = doneContext(t)
 			}
 
-			got, err := s.Get(ctx, tt.key.execution, tt.key.seq, tt.key.field)
+			got, err := s.Get(ctx, tt.key)
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Equal(t, tt.want, got)
 
@@ -241,7 +250,7 @@ func Test_MemorySecretStore_Get(t *testing.T) {
 			if tt.scribble {
 				got[1] = 'x'
 
-				again, againErr := s.Get(t.Context(), tt.key.execution, tt.key.seq, tt.key.field)
+				again, againErr := s.Get(t.Context(), tt.key)
 				require.NoError(t, againErr)
 				assert.Equal(t, tt.want, again)
 			}

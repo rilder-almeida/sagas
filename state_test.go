@@ -1965,6 +1965,19 @@ func throughOf(t *testing.T, events []Event, step string, pastEnd int) int {
 	return events[len(events)-1].Seq + pastEnd
 }
 
+func throughJSON(t *testing.T, events []Event) []Event {
+	t.Helper()
+
+	data, err := json.Marshal(events)
+	require.NoError(t, err)
+
+	var out []Event
+	require.NoError(t, json.Unmarshal(data, &out))
+	require.Equal(t, jsontext.Value("null"), out[0].Values[2].Value, "the secret marker did not turn into null")
+
+	return out
+}
+
 func Test_rebuildState(t *testing.T) {
 	t.Parallel()
 
@@ -1974,17 +1987,23 @@ func Test_rebuildState(t *testing.T) {
 		tip         Tip
 		secondCard  Card
 		freshStore  bool
+		roundTrip   bool
 		throughStep string
 		pastEnd     int
 		wantSeen    bool
-		otherType   bool
 		wantErr     error
-		wantInMsg   string
+		wantMsg     string
 	}{
 		{
 			name: "[Success] When: a completed run is rebuilt through its last seq ; " +
 				"Should: equal the state that Run wrote back, secrets included",
 			initial: ledgerState{Rooms: Rooms{"old"}, Card: "4111"},
+		},
+		{
+			name: "[Success] When: the events went through a plain JSON round trip ; " +
+				"Should: read each secret field from the store although its value reads back as null",
+			initial:   ledgerState{Rooms: Rooms{"old"}, Card: "4111"},
+			roundTrip: true,
 		},
 		{
 			name: "[Success] When: a run is rebuilt through the success of its first step ; " +
@@ -2011,17 +2030,11 @@ func Test_rebuildState(t *testing.T) {
 			pastEnd: 10,
 		},
 		{
-			name:       "[Fail] When: the secret store misses a value ; Should: return ErrNoSecret",
+			name:       "[Fail] When: the secret store misses a value ; Should: return ErrNoSecret naming the key",
 			initial:    ledgerState{Card: "4111"},
 			freshStore: true,
 			wantErr:    ErrNoSecret,
-		},
-		{
-			name: "[Fail] When: an event names a field the state type does not have ; " +
-				"Should: return ErrInvalidState naming the field",
-			otherType: true,
-			wantErr:   ErrInvalidState,
-			wantInMsg: "sagas: invalid state: seq 1: unknown field ID",
+			wantMsg:    `sagas: no secret: execution "ledger-1" writer "[0-9a-f]{32}" seq 1 field "Card"`,
 		},
 	}
 
@@ -2043,35 +2056,61 @@ func Test_rebuildState(t *testing.T) {
 			require.NoError(t, err)
 
 			through := throughOf(t, events, tt.throughStep, tt.pastEnd)
-			want := st
+			want := &st
 
 			if tt.wantSeen {
-				want = seen
+				want = &seen
+			}
+
+			if tt.roundTrip {
+				events = throughJSON(t, events)
 			}
 
 			if tt.freshStore {
 				secrets = NewMemorySecretStore()
 			}
 
-			if tt.otherType {
-				_, otherErr := rebuildState[otherState](t.Context(), events, secrets, through)
-				require.ErrorIs(t, otherErr, tt.wantErr)
-				require.EqualError(t, otherErr, tt.wantInMsg)
-
-				return
+			if tt.wantErr != nil {
+				want = nil
 			}
 
 			got, err := rebuildState[ledgerState](t.Context(), events, secrets, through)
 			require.ErrorIs(t, err, tt.wantErr)
+			assert.Regexp(t, "^"+tt.wantMsg+"$", errText(err))
+			assert.Equal(t, want, got, "run error: %v", runErr)
+		})
+	}
+}
 
-			if tt.wantErr != nil {
-				assert.Nil(t, got)
+func Test_rebuildState_unknownField(t *testing.T) {
+	t.Parallel()
 
-				return
-			}
+	tests := []struct {
+		name    string
+		wantMsg string
+	}{
+		{
+			name: "[Fail] When: an event names a field that the rebuilt state type does not have ; " +
+				"Should: return ErrInvalidState naming the seq and the field",
+			wantMsg: "sagas: invalid state: seq 1: unknown field ID",
+		},
+	}
 
-			require.NotNil(t, got)
-			assert.Equal(t, want, *got, "run error: %v", runErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			journal := NewMemoryJournal()
+			s := rebuildSaga(t, new(ledgerState), "", 0, WithJournal(journal))
+			require.NoError(t, s.Run(t.Context(), &ledgerState{ID: ledgerID}))
+
+			events, err := journal.Events(t.Context(), ledgerID)
+			require.NoError(t, err)
+
+			got, err := rebuildState[otherState](t.Context(), events, NewMemorySecretStore(), len(events))
+			require.ErrorIs(t, err, ErrInvalidState)
+			require.EqualError(t, err, tt.wantMsg)
+			assert.Nil(t, got)
 		})
 	}
 }

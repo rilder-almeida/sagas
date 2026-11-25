@@ -57,7 +57,7 @@ type StepZone struct {
 // EventKind says what an Event records. The empty string means not set and is never a real event.
 type EventKind string
 
-// saga-finished ends a completed or compensated run, and saga-suspended a compensation-failed or incomplete one.
+// saga-finished ends a completed or compensated run. saga-suspended ends any other run, which waits for repair.
 const (
 	EventSagaStarted           EventKind = "saga-started"
 	EventStepStarted           EventKind = "step-started"

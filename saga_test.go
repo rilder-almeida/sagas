@@ -591,7 +591,10 @@ func Test_WithSecretStore(t *testing.T) {
 
 			secrets := NewMemorySecretStore()
 
-			s, err := New[ledgerState]("ledger", &cardStep{Name: "card"}, tt.opts(secrets)...)
+			journal := NewMemoryJournal()
+
+			s, err := New[ledgerState]("ledger", &cardStep{Name: "card"},
+				append(tt.opts(secrets), WithJournal(journal))...)
 			require.ErrorIs(t, err, tt.wantErr)
 
 			if s == nil {
@@ -600,7 +603,11 @@ func Test_WithSecretStore(t *testing.T) {
 
 			require.NoError(t, s.Run(t.Context(), &ledgerState{ID: ledgerID, Card: "4111"}))
 
-			got, getErr := secrets.Get(t.Context(), ledgerID, 1, cardField)
+			events, err := journal.Events(t.Context(), ledgerID)
+			require.NoError(t, err)
+
+			key := SecretKey{Execution: ledgerID, Writer: events[0].Writer, Seq: 1, Field: cardField}
+			got, getErr := secrets.Get(t.Context(), key)
 			require.ErrorIs(t, getErr, tt.wantGet)
 
 			if tt.wantGet == nil {

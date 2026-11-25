@@ -141,10 +141,14 @@ func (r *runner[S]) resend(ctx context.Context) error {
 	return r.send(ctx, &closing, nil)
 }
 
+func secretKeyOf(e *Event, field string) SecretKey {
+	return SecretKey{Execution: e.Execution, Writer: e.Writer, Seq: e.Seq, Field: field}
+}
+
 func (r *runner[S]) deliver(ctx context.Context, e *Event, secrets []FieldValue) error {
 	_, err := recoverPanic(func() error {
 		for _, v := range secrets {
-			if err := r.secrets.Put(ctx, e.Execution, e.Seq, v.Field, v.Value); err != nil {
+			if err := r.secrets.Put(ctx, secretKeyOf(e, v.Field), v.Value); err != nil {
 				return err
 			}
 		}

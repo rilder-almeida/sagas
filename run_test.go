@@ -1020,6 +1020,7 @@ type runRow struct {
 	initial            tripState
 	wantState          tripState
 	wantPanic          error
+	wantUnstarted      bool
 }
 
 func Test_Saga_Run(t *testing.T) {
@@ -1058,6 +1059,16 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	err := got.err
 
 	requireErrs(t, err, tt.wantErrs, tt.wantText)
+
+	if tt.wantUnstarted {
+		_, isRunErr := errors.AsType[*RunError](err)
+		assert.False(t, isRunErr, "a run that never started returned a *RunError: %v", err)
+		assert.Empty(t, res.events)
+		assert.Equal(t, tt.wantState, got.state)
+		assertPanic(t, err, tt.wantPanic)
+
+		return
+	}
 
 	for _, no := range tt.wantNotErrs {
 		require.NotErrorIs(t, err, no)
@@ -2383,6 +2394,7 @@ type scriptSecrets struct {
 	fails  map[int]int
 	failed map[int]int
 	panics map[int]bool
+	stored []SecretKey
 }
 
 var (
@@ -2390,17 +2402,18 @@ var (
 	errSecretsPanic = errors.New("sagas: test: the secret store panics")
 )
 
-func (s *scriptSecrets) Put(ctx context.Context, execution string, seq int, field string, value jsontext.Value) error {
+func (s *scriptSecrets) Put(ctx context.Context, key SecretKey, value jsontext.Value) error {
 	s.mu.Lock()
-	times, scripted := s.fails[seq]
-	fail := scripted && (times == forever || s.failed[seq] < times)
+	defer s.mu.Unlock()
+
+	times, scripted := s.fails[key.Seq]
+	fail := scripted && (times == forever || s.failed[key.Seq] < times)
 
 	if fail {
-		s.failed[seq]++
+		s.failed[key.Seq]++
 	}
-	s.mu.Unlock()
 
-	if s.panics[seq] {
+	if s.panics[key.Seq] {
 		panic(errSecretsPanic)
 	}
 
@@ -2408,7 +2421,18 @@ func (s *scriptSecrets) Put(ctx context.Context, execution string, seq int, fiel
 		return errSecretsDown
 	}
 
-	return s.MemorySecretStore.Put(ctx, execution, seq, field, value)
+	s.stored = append(s.stored, key)
+
+	return s.MemorySecretStore.Put(ctx, key, value)
+}
+
+func (s *scriptSecrets) storedAt(key SecretKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.ContainsFunc(s.stored, func(k SecretKey) bool {
+		return k.Execution == key.Execution && k.Seq == key.Seq && k.Field == key.Field
+	})
 }
 
 type secretReadingJournal struct {
@@ -2424,7 +2448,7 @@ func (j *secretReadingJournal) Append(ctx context.Context, e *Event) error {
 			continue
 		}
 
-		if _, err := j.secrets.Get(ctx, e.Execution, e.Seq, v.Field); err != nil {
+		if _, err := j.secrets.Get(ctx, secretKeyOf(e, v.Field)); err != nil {
 			j.misses = append(j.misses, fmt.Sprintf("seq %d %s: %v", e.Seq, v.Field, err))
 		}
 	}
@@ -2457,22 +2481,49 @@ func ledgerStarted(rooms string) []FieldValue {
 }
 
 func ledgerPut(seq int, field, value string) secretPut {
-	return secretPut{execution: ledgerID, seq: seq, field: field, value: value}
+	return secretPut{key: SecretKey{Execution: ledgerID, Seq: seq, Field: field}, value: value}
 }
 
-func assertSecrets(t *testing.T, secrets SecretStore, held, missing []secretPut) {
+func assertSecrets(t *testing.T, secrets *scriptSecrets, writer string, held, missing []secretPut) {
 	t.Helper()
 
 	for _, p := range held {
-		got, err := secrets.Get(t.Context(), p.execution, p.seq, p.field)
+		key := p.key
+		key.Writer = writer
+
+		got, err := secrets.Get(t.Context(), key)
 		require.NoError(t, err)
 		assert.Equal(t, jsontext.Value(p.value), got)
 	}
 
 	for _, p := range missing {
-		_, err := secrets.Get(t.Context(), p.execution, p.seq, p.field)
-		require.ErrorIs(t, err, ErrNoSecret)
+		assert.False(t, secrets.storedAt(p.key), "a value is stored at %+v", p.key)
 	}
+}
+
+type ledgerRerun struct {
+	initial ledgerState
+	wantErr error
+}
+
+func rerunLedger(t *testing.T, s *Saga[ledgerState], rerun *ledgerRerun) {
+	t.Helper()
+
+	if rerun == nil {
+		return
+	}
+
+	st := rerun.initial
+	st.ID = ledgerID
+	require.ErrorIs(t, s.Run(t.Context(), &st), rerun.wantErr)
+}
+
+func writerOf(events []Event) string {
+	if len(events) == 0 {
+		return ""
+	}
+
+	return events[0].Writer
 }
 
 func Test_Saga_Run_fieldValues(t *testing.T) {
@@ -2486,6 +2537,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		tip         Tip
 		putFails    map[int]int
 		putPanics   map[int]bool
+		rerun       *ledgerRerun
 		wantErrs    []error
 		wantText    []string
 		wantHidden  []string
@@ -2512,6 +2564,16 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 				ledgerPut(1, cardField, cardJSON), ledgerPut(1, tipField, "0"),
 				ledgerPut(seqCard, cardField, `"5500"`), ledgerPut(seqTip, tipField, "0"),
 			},
+		},
+		{
+			name: "[Success] When: a second run of the same execution shares the journal and the secret store ; " +
+				"Should: refuse it with ErrExecutionExists and keep the secret of the first run",
+			initial:     ledgerState{Card: "4111"},
+			card:        "5500",
+			rerun:       &ledgerRerun{initial: ledgerState{Card: "9999"}, wantErr: ErrExecutionExists},
+			wantHidden:  []string{"4111", "9999"},
+			wantEvents:  8,
+			wantSecrets: []secretPut{ledgerPut(1, cardField, cardJSON), ledgerPut(seqCard, cardField, `"5500"`)},
 		},
 		{
 			name: "[Success] When: a step returns the rooms the state already held ; " +
@@ -2619,6 +2681,8 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 				require.ErrorIs(t, err, want)
 			}
 
+			rerunLedger(t, s, tt.rerun)
+
 			events := storedEvents(t, journal.MemoryJournal, ledgerID)
 			require.Len(t, events, tt.wantEvents)
 			assert.Empty(t, journal.misses)
@@ -2631,7 +2695,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 				assert.Equal(t, want, events[seq-1].Values, "event %d", seq)
 			}
 
-			assertSecrets(t, secrets.MemorySecretStore, tt.wantSecrets, tt.wantMissing)
+			assertSecrets(t, secrets, writerOf(events), tt.wantSecrets, tt.wantMissing)
 		})
 	}
 }
