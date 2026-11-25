@@ -178,8 +178,8 @@ func (j *scriptJournal) results(tb testing.TB) []runRecord {
 }
 
 type orderState struct {
-	ID    string `sagas:"id"`
 	Hotel string
+	ID    string `sagas:"id"`
 }
 
 type orderStep struct {
@@ -391,24 +391,24 @@ func Test_checkRun(t *testing.T) {
 		},
 		{
 			name:          "[Success] When: the tagged field holds a valid ID ; Should: keep it",
-			run:           func() (string, error) { return checkRun(&orderState{ID: "order-42"}, 0) },
+			run:           func() (string, error) { return checkRun(&orderState{ID: "order-42"}, 1) },
 			wantExecution: regexp.MustCompile(`^order-42$`),
 		},
 		{
 			name:         "[Fail] When: the execution ID is empty ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{}, 0) },
+			run:          func() (string, error) { return checkRun(&orderState{}, 1) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: checkName(""),
 		},
 		{
 			name:         "[Fail] When: the execution ID holds a colon ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{ID: "order:42"}, 0) },
+			run:          func() (string, error) { return checkRun(&orderState{ID: "order:42"}, 1) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
 			name:         "[Fail] When: the execution ID starts with a dash ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{ID: "-x"}, 0) },
+			run:          func() (string, error) { return checkRun(&orderState{ID: "-x"}, 1) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
@@ -467,7 +467,7 @@ func Test_executionOf(t *testing.T) {
 	}{
 		{
 			name: "[Success] When: the id field is tagged ; Should: return its value",
-			run:  func() string { return executionOf(&orderState{ID: "order-9", Hotel: "x"}, 0) },
+			run:  func() string { return executionOf(&orderState{ID: "order-9", Hotel: "x"}, 1) },
 			want: regexp.MustCompile(`^order-9$`),
 		},
 		{
