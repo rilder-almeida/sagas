@@ -14,17 +14,17 @@ import (
 // StepReport describes one step of a flow as New sees it: its settings, the methods its type has, and After, the
 // names of the steps it waits for.
 type StepReport struct {
-	Name                string
-	Description         string
-	Retry               RetryPolicy
-	AttemptTimeout      time.Duration
-	CompensationFailure CompensationFailurePolicy
-	Execute             bool
-	Pivot               bool
-	Compensate          bool
-	Enabled             bool
-	Wrap                bool
-	After               []string
+	Name           string
+	Description    string
+	RetryPolicy    RetryPolicy
+	AttemptTimeout time.Duration
+	FailurePolicy  FailurePolicy
+	Execute        bool
+	Pivot          bool
+	Compensate     bool
+	Enabled        bool
+	Wrap           bool
+	After          []string
 }
 
 type stepMethods[S any] struct {
@@ -154,8 +154,8 @@ func inspectStep[S any](f Flow, n namedStep) (StepReport, stepMethods[S], []erro
 	rules = append(rules, kindRules(v, &ambiguous)...)
 
 	report := StepReport{
-		Name: n.name, Description: settings.Description, Retry: settings.Retry,
-		AttemptTimeout: settings.AttemptTimeout, CompensationFailure: settings.CompensationFailure,
+		Name: n.name, Description: settings.Description, RetryPolicy: settings.RetryPolicy,
+		AttemptTimeout: settings.AttemptTimeout, FailurePolicy: settings.FailurePolicy,
 		Execute: hasExecute, Pivot: hasPivot, Compensate: hasCompensate, Enabled: hasEnabled, Wrap: hasWrap,
 	}
 

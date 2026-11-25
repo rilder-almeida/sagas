@@ -158,7 +158,7 @@ func Test_newSaga(t *testing.T) {
 	tests := []struct {
 		name         string
 		grace        time.Duration
-		policy       sagas.CompensationFailurePolicy
+		policy       sagas.FailurePolicy
 		fault        string
 		wantReport   string
 		wantHeld     []string
@@ -181,7 +181,7 @@ func Test_newSaga(t *testing.T) {
 		{
 			name:       "[Fail] When: a compensation fails under block ; Should: block the steps that wait on it",
 			grace:      longGrace,
-			policy:     sagas.CompensationBlock,
+			policy:     sagas.Block,
 			fault:      faultInvoiceUndo,
 			wantReport: "t-1: compensation_failed, pending: [reserve invoice], undone: [pack tag]\n",
 			wantHeld:   []string{invoiceStep, reserveStep},
@@ -189,7 +189,7 @@ func Test_newSaga(t *testing.T) {
 		{
 			name:       "[Fail] When: a compensation fails under continue ; Should: undo every other step",
 			grace:      longGrace,
-			policy:     sagas.CompensationContinue,
+			policy:     sagas.Continue,
 			fault:      faultInvoiceUndo,
 			wantReport: "t-1: compensation_failed, pending: [invoice], undone: [pack reserve tag]\n",
 			wantHeld:   []string{invoiceStep},
@@ -197,7 +197,7 @@ func Test_newSaga(t *testing.T) {
 		{
 			name:       "[Fail] When: a compensation fails under halt ; Should: halt every compensation not started",
 			grace:      longGrace,
-			policy:     sagas.CompensationHalt,
+			policy:     sagas.Halt,
 			fault:      faultInvoiceUndo,
 			wantReport: "t-1: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n",
 			wantHeld:   []string{invoiceStep, packStep, reserveStep},

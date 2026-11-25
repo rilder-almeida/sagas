@@ -1542,7 +1542,7 @@ func undoIntentRejectedRow() runRow {
 		name: "[Fail] When: the journal rejects a compensation intent ; " +
 			"Should: end ErrConcurrentWriter, fail no compensation and list the unstarted ones in Pending",
 		steps: func(rec *recorder) Flow {
-			b := failingUndo("b", CompensationContinue, rec.do(undoB))
+			b := failingUndo("b", Continue, rec.do(undoB))
 
 			return Sequence(rec.undoable("a"), b, once("c", alwaysFails))
 		},
@@ -1566,7 +1566,7 @@ func rejectedUndoFlow(undo func(context.Context, *tripState) error) func(*record
 	return func(rec *recorder) Flow {
 		return Sequence(Parallel(
 			Sequence(rec.undoable("x"), rec.undoable("b")),
-			Sequence(rec.undoable("y"), failingUndo("d", CompensationContinue, undo)),
+			Sequence(rec.undoable("y"), failingUndo("d", Continue, undo)),
 		), once("c", alwaysFails))
 	}
 }
@@ -1971,7 +1971,7 @@ func backwardStoredIntentRow() runRow {
 			"Should: resend the intent first and record the next compensation, not end ErrConcurrentWriter",
 		steps: func(rec *recorder) Flow {
 			return Sequence(
-				rec.undoable("a"), failingUndo("b", CompensationContinue, rec.do(undoB)), once("c", alwaysFails),
+				rec.undoable("a"), failingUndo("b", Continue, rec.do(undoB)), once("c", alwaysFails),
 			)
 		},
 		script:       map[int]error{8: errStoreThenFail},

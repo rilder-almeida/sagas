@@ -270,7 +270,7 @@ const (
 
 func newPay(s *services) *pay {
 	return &pay{
-		Retry:          sagas.RetryPolicy{Attempts: attempts, Initial: retryDelay, NoJitter: true},
+		RetryPolicy:    sagas.RetryPolicy{Attempts: attempts, Initial: retryDelay, NoJitter: true},
 		AttemptTimeout: attemptTimeout,
 		provider:       s.provider,
 		breaker:        s.breaker,

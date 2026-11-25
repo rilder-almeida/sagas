@@ -190,7 +190,7 @@ const (
 	reserveName   = "reserve"
 	stepA         = `step "a"`
 	quotedA       = `"a"`
-	negAttempts   = "Retry.Attempts is negative"
+	negAttempts   = "RetryPolicy.Attempts is negative"
 	badName       = "name may hold only ASCII letters"
 	neitherText   = "neither Execute nor Pivot"
 	fullName      = "full"
@@ -212,9 +212,9 @@ type inspectRow struct {
 func inspectSuccessRows() []inspectRow {
 	trip := Inspect[tripState]
 	full := &fullStep{
-		Name: fullName, Description: "books the room", Retry: NoRetry(), AttemptTimeout: time.Second,
-		CompensationFailure: CompensationHalt,
-		do:                  okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
+		Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
+		FailurePolicy: Halt,
+		do:            okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
 	}
 
 	return []inspectRow{
@@ -222,8 +222,8 @@ func inspectSuccessRows() []inspectRow {
 			name:    "[Success] When: a step sets every field and has every method ; Should: report all of them",
 			inspect: trip, flow: full,
 			wantReports: []StepReport{{
-				Name: fullName, Description: "books the room", Retry: NoRetry(), AttemptTimeout: time.Second,
-				CompensationFailure: CompensationHalt, Execute: true, Compensate: true, Enabled: true, Wrap: true,
+				Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
+				FailurePolicy: Halt, Execute: true, Compensate: true, Enabled: true, Wrap: true,
 			}},
 		},
 		{
@@ -299,13 +299,13 @@ func inspectSuccessRows() []inspectRow {
 func inspectStepRows() []inspectRow {
 	trip := Inspect[tripState]
 	compensable := act("a", okAction)
-	compensable.CompensationFailure = CompensationHalt
+	compensable.FailurePolicy = Halt
 	timed := act("a", okAction)
 	timed.AttemptTimeout = -time.Second
 	retried := act("a", okAction)
-	retried.Retry = RetryPolicy{Attempts: -1}
+	retried.RetryPolicy = RetryPolicy{Attempts: -1}
 	unknown := undoing("a", okAction, okAction)
-	unknown.CompensationFailure = "stop"
+	unknown.FailurePolicy = "stop"
 
 	var (
 		typedNil *Reserve
@@ -347,13 +347,13 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{stepA, "method Execute", "want func(context.Context, *sagas.otherState) error"},
 		},
 		{
-			name:    "[Fail] When: CompensationFailure is set without Compensate ; Should: reject it",
+			name:    "[Fail] When: FailurePolicy is set without Compensate ; Should: reject it",
 			inspect: trip, flow: compensable,
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{stepA, "CompensationFailure without Compensate"},
+			wantContains: []string{stepA, "FailurePolicy without Compensate"},
 		},
 		{
-			name:    "[Fail] When: CompensationFailure is unknown ; Should: name the policy",
+			name:    "[Fail] When: FailurePolicy is unknown ; Should: name the policy",
 			inspect: trip, flow: unknown,
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{stepA, `"stop"`},
@@ -365,7 +365,7 @@ func inspectStepRows() []inspectRow {
 			wantContains: []string{stepA, "AttemptTimeout is negative"},
 		},
 		{
-			name:    "[Fail] When: Retry has a negative field ; Should: name the field",
+			name:    "[Fail] When: RetryPolicy has a negative field ; Should: name the field",
 			inspect: trip, flow: retried,
 			wantErrs:     []error{ErrInvalidStep},
 			wantContains: []string{stepA, negAttempts},
@@ -859,7 +859,7 @@ func Test_inspectStep(t *testing.T) {
 
 	full := &fullStep{
 		Name: fullName, do: okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
-		CompensationFailure: CompensationHalt,
+		FailurePolicy: Halt,
 	}
 
 	tests := []struct {
@@ -876,7 +876,7 @@ func Test_inspectStep(t *testing.T) {
 			name: "[Success] When: a step has every method ; Should: report and return all of them",
 			flow: full,
 			wantReport: StepReport{
-				Name: fullName, CompensationFailure: CompensationHalt,
+				Name: fullName, FailurePolicy: Halt,
 				Execute: true, Compensate: true, Enabled: true, Wrap: true,
 			},
 			wantCall: true, wantCompensate: true, wantEnabled: true, wantWrap: true,

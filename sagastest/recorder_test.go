@@ -66,7 +66,7 @@ type panicProbe struct {
 
 func newPanicProbe(name string) *panicProbe {
 	p := &panicProbe{}
-	p.Name, p.Retry = name, sagas.NoRetry()
+	p.Name, p.RetryPolicy = name, sagas.NoRetry()
 
 	return p
 }

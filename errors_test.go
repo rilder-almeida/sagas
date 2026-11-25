@@ -637,7 +637,7 @@ func errorRows() []runRow {
 func waitingSibling() func(*recorder) Flow {
 	return func(rec *recorder) Flow {
 		waits := waiting("c")
-		waits.Retry = NoRetry()
+		waits.RetryPolicy = NoRetry()
 
 		return Sequence(rec.step("a"), Parallel(rec.step("b"), waits))
 	}
@@ -890,7 +890,7 @@ func callerCauseRow() runRow {
 		name: "[Fail] When: the caller cancels with a cause while a step runs ; Should: match the cause and report it",
 		steps: func(rec *recorder) Flow {
 			waits := waiting("b")
-			waits.Retry = NoRetry()
+			waits.RetryPolicy = NoRetry()
 
 			return Sequence(rec.step("a"), waits)
 		},
@@ -967,7 +967,7 @@ func nestedRow(name string, inner Flow, attempts int, errText string, wantErrs [
 
 				return s.Run(ctx, &tripState{})
 			})
-			nests.Retry = RetryPolicy{Attempts: attempts}
+			nests.RetryPolicy = RetryPolicy{Attempts: attempts}
 
 			return Sequence(rec.step("a"), nests)
 		},

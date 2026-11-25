@@ -33,7 +33,7 @@ func (c *charge) Execute(context.Context, *shop) error {
 
 func ExampleFail() {
 	step := &charge{}
-	step.Retry = sagas.NoRetry()
+	step.RetryPolicy = sagas.NoRetry()
 
 	saga, err := sagas.New[shop]("shop", step, sagas.WithMiddleware(sagastest.Fail("charge", errBoom)))
 	if err != nil {
@@ -146,7 +146,7 @@ func ExampleCompensations() {
 	setup := func(mw ...sagas.Middleware) sagastest.Case[shop] {
 		book := &ledger{charged: map[string]bool{}, refunded: map[string]bool{}}
 		step := &ledgerCharge{book: book}
-		step.Name, step.Retry = "charge", sagas.NoRetry()
+		step.Name, step.RetryPolicy = "charge", sagas.NoRetry()
 
 		saga, err := sagas.New[shop]("shop", step, sagas.WithMiddleware(mw...))
 		if err != nil {

@@ -288,19 +288,19 @@ func newServices() *services {
 	}
 }
 
-func (s *services) build(grace time.Duration, policy sagas.CompensationFailurePolicy) (*sagas.Saga[order], error) {
+func (s *services) build(grace time.Duration, policy sagas.FailurePolicy) (*sagas.Saga[order], error) {
 	return newSaga(s, grace, policy, sagas.WithJournal(s.gate), sagas.WithMiddleware(s.gate))
 }
 
 // --8<-- [start:saga]
 
 func newSaga(
-	s *services, grace time.Duration, policy sagas.CompensationFailurePolicy, opts ...sagas.Option,
+	s *services, grace time.Duration, policy sagas.FailurePolicy, opts ...sagas.Option,
 ) (*sagas.Saga[order], error) {
 	return sagas.New[order]("deadline", sagas.Sequence(
 		&reserve{stock: s.stock, undone: s.undone},
 		sagas.Parallel(
-			&invoice{CompensationFailure: policy, ledger: s.ledger, undone: s.undone},
+			&invoice{FailurePolicy: policy, ledger: s.ledger, undone: s.undone},
 			sagas.Sequence(
 				&pack{dock: s.dock, undone: s.undone},
 				&tag{labels: s.labels, undone: s.undone},
@@ -316,7 +316,7 @@ func newSaga(
 type scenario struct {
 	name   string
 	grace  time.Duration
-	policy sagas.CompensationFailurePolicy
+	policy sagas.FailurePolicy
 	fault  string
 }
 
@@ -342,9 +342,9 @@ func graceRuns() []scenario {
 
 func policyRuns() []scenario {
 	return []scenario{
-		{name: "block", grace: longGrace, policy: sagas.CompensationBlock, fault: faultInvoiceUndo},
-		{name: "continue", grace: longGrace, policy: sagas.CompensationContinue, fault: faultInvoiceUndo},
-		{name: "halt", grace: longGrace, policy: sagas.CompensationHalt, fault: faultInvoiceUndo},
+		{name: "block", grace: longGrace, policy: sagas.Block, fault: faultInvoiceUndo},
+		{name: "continue", grace: longGrace, policy: sagas.Continue, fault: faultInvoiceUndo},
+		{name: "halt", grace: longGrace, policy: sagas.Halt, fault: faultInvoiceUndo},
 	}
 }
 

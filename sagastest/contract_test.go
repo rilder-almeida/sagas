@@ -181,7 +181,7 @@ type chargeStep struct {
 
 func newCharge(book *ledger) *chargeStep {
 	s := &chargeStep{book: book}
-	s.Name, s.Retry = stepCharge, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepCharge, sagas.NoRetry()
 
 	return s
 }
@@ -200,7 +200,7 @@ type disabledCharge struct {
 
 func newDisabledCharge(book *ledger) *disabledCharge {
 	s := &disabledCharge{book: book}
-	s.Name, s.Retry = stepCharge, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepCharge, sagas.NoRetry()
 
 	return s
 }
@@ -215,7 +215,7 @@ type shipStep struct {
 
 func newShip(err error) *shipStep {
 	s := &shipStep{err: err}
-	s.Name, s.Retry = stepShip, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepShip, sagas.NoRetry()
 
 	return s
 }
@@ -228,7 +228,7 @@ type pivotStep struct {
 
 func newPivotStep() *pivotStep {
 	s := &pivotStep{}
-	s.Name, s.Retry = stepPivot, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepPivot, sagas.NoRetry()
 
 	return s
 }
@@ -246,7 +246,7 @@ type ledgerPivot struct {
 func newLedgerPivot(book *ledger, attempts int, bump bool) *ledgerPivot {
 	s := &ledgerPivot{book: book, bump: bump}
 	s.Name = stepPivot
-	s.Retry = sagas.RetryPolicy{Attempts: attempts, Initial: time.Millisecond, NoJitter: true}
+	s.RetryPolicy = sagas.RetryPolicy{Attempts: attempts, Initial: time.Millisecond, NoJitter: true}
 
 	return s
 }
@@ -268,7 +268,7 @@ type ledgerShip struct {
 
 func newLedgerShip(book *ledger) *ledgerShip {
 	s := &ledgerShip{book: book}
-	s.Name, s.Retry = stepShip, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepShip, sagas.NoRetry()
 
 	return s
 }
@@ -284,7 +284,7 @@ type disabledShip struct {
 func newDisabledShip(book *ledger) *disabledShip {
 	s := &disabledShip{}
 	s.book = book
-	s.Name, s.Retry = stepShip, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepShip, sagas.NoRetry()
 
 	return s
 }
@@ -297,7 +297,7 @@ type notifyStep struct {
 
 func newNotify() *notifyStep {
 	s := &notifyStep{}
-	s.Name, s.Retry = stepNotify, sagas.NoRetry()
+	s.Name, s.RetryPolicy = stepNotify, sagas.NoRetry()
 
 	return s
 }

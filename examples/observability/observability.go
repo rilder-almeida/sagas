@@ -123,7 +123,7 @@ const (
 
 func newSaga(logger *slog.Logger) (*sagas.Saga[order], error) {
 	retry := sagas.RetryPolicy{Attempts: attempts, Initial: retryDelay, NoJitter: true}
-	flow := sagas.Sequence(&reserve{}, &charge{Retry: retry, provider: newProvider()})
+	flow := sagas.Sequence(&reserve{}, &charge{RetryPolicy: retry, provider: newProvider()})
 
 	return sagas.New[order]("order", flow, sagas.WithMiddleware(keyLog{logger: logger}))
 }

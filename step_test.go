@@ -96,7 +96,7 @@ func paying(name string, pay func(context.Context, *tripState) error) *pivotStep
 
 func once(name string, do func(context.Context, *tripState) error) *actStep {
 	s := act(name, do)
-	s.Retry = NoRetry()
+	s.RetryPolicy = NoRetry()
 
 	return s
 }
@@ -168,39 +168,39 @@ func Test_checkRetry(t *testing.T) {
 			policy: NoRetry(),
 		},
 		{
-			name:   "[Fail] When: Attempts is negative ; Should: name Retry.Attempts",
+			name:   "[Fail] When: Attempts is negative ; Should: name RetryPolicy.Attempts",
 			policy: RetryPolicy{Attempts: -1},
 			want:   []string{negAttempts},
 		},
 		{
-			name:   "[Fail] When: Initial is negative ; Should: name Retry.Initial",
+			name:   "[Fail] When: Initial is negative ; Should: name RetryPolicy.Initial",
 			policy: RetryPolicy{Initial: -1},
-			want:   []string{"Retry.Initial is negative"},
+			want:   []string{"RetryPolicy.Initial is negative"},
 		},
 		{
-			name:   "[Fail] When: Max is negative ; Should: name Retry.Max",
+			name:   "[Fail] When: Max is negative ; Should: name RetryPolicy.Max",
 			policy: RetryPolicy{Max: -1},
-			want:   []string{"Retry.Max is negative"},
+			want:   []string{"RetryPolicy.Max is negative"},
 		},
 		{
-			name:   "[Fail] When: Multiplier is negative ; Should: name Retry.Multiplier",
+			name:   "[Fail] When: Multiplier is negative ; Should: name RetryPolicy.Multiplier",
 			policy: RetryPolicy{Multiplier: -1},
-			want:   []string{"Retry.Multiplier is negative"},
+			want:   []string{"RetryPolicy.Multiplier is negative"},
 		},
 		{
-			name:   "[Fail] When: Multiplier is between zero and one ; Should: name Retry.Multiplier",
+			name:   "[Fail] When: Multiplier is between zero and one ; Should: name RetryPolicy.Multiplier",
 			policy: RetryPolicy{Multiplier: 0.5},
-			want:   []string{"Retry.Multiplier is below 1"},
+			want:   []string{"RetryPolicy.Multiplier is below 1"},
 		},
 		{
-			name:   "[Fail] When: the default Max is below Initial ; Should: name Retry.Max",
+			name:   "[Fail] When: the default Max is below Initial ; Should: name RetryPolicy.Max",
 			policy: RetryPolicy{Initial: time.Minute},
-			want:   []string{"Retry.Max is below Retry.Initial after defaults"},
+			want:   []string{"RetryPolicy.Max is below RetryPolicy.Initial after defaults"},
 		},
 		{
 			name:   "[Fail] When: two fields are bad ; Should: report one text each",
 			policy: RetryPolicy{Attempts: -1, Multiplier: -1},
-			want:   []string{negAttempts, "Retry.Multiplier is negative"},
+			want:   []string{negAttempts, "RetryPolicy.Multiplier is negative"},
 		},
 	}
 
@@ -227,28 +227,28 @@ func Test_checkSettings(t *testing.T) {
 		{
 			name: "[Success] When: the policy is continue on a step with Compensate ; Should: report nothing",
 			report: StepReport{
-				CompensationFailure: CompensationContinue,
-				AttemptTimeout:      time.Second,
-				Compensate:          true,
+				FailurePolicy:  Continue,
+				AttemptTimeout: time.Second,
+				Compensate:     true,
 			},
 		},
 		{
 			name:   "[Success] When: the policy is halt on a step with Compensate ; Should: report nothing",
-			report: StepReport{CompensationFailure: CompensationHalt, Compensate: true},
+			report: StepReport{FailurePolicy: Halt, Compensate: true},
 		},
 		{
 			name:   "[Success] When: the policy is block on a step with Compensate ; Should: report nothing",
-			report: StepReport{CompensationFailure: CompensationBlock, Compensate: true},
+			report: StepReport{FailurePolicy: Block, Compensate: true},
 		},
 		{
 			name:   "[Fail] When: the policy is unknown ; Should: name it",
-			report: StepReport{CompensationFailure: "stop", Compensate: true},
+			report: StepReport{FailurePolicy: "stop", Compensate: true},
 			want:   []string{`unknown compensation failure policy "stop"`},
 		},
 		{
 			name:   "[Fail] When: the policy is set without Compensate ; Should: report it",
-			report: StepReport{CompensationFailure: CompensationHalt},
-			want:   []string{"CompensationFailure without Compensate"},
+			report: StepReport{FailurePolicy: Halt},
+			want:   []string{"FailurePolicy without Compensate"},
 		},
 		{
 			name:   "[Fail] When: AttemptTimeout is negative ; Should: report it",
@@ -257,15 +257,15 @@ func Test_checkSettings(t *testing.T) {
 		},
 		{
 			name:   "[Fail] When: the retry policy has a negative field ; Should: name the field",
-			report: StepReport{Retry: RetryPolicy{Attempts: -1}},
+			report: StepReport{RetryPolicy: RetryPolicy{Attempts: -1}},
 			want:   []string{negAttempts},
 		},
 		{
 			name:   "[Fail] When: three settings are bad ; Should: report one text each",
-			report: StepReport{CompensationFailure: "stop", AttemptTimeout: -1, Retry: RetryPolicy{Max: -1}},
+			report: StepReport{FailurePolicy: "stop", AttemptTimeout: -1, RetryPolicy: RetryPolicy{Max: -1}},
 			want: []string{
-				"AttemptTimeout is negative", "Retry.Max is negative",
-				`unknown compensation failure policy "stop"`, "CompensationFailure without Compensate",
+				"AttemptTimeout is negative", "RetryPolicy.Max is negative",
+				`unknown compensation failure policy "stop"`, "FailurePolicy without Compensate",
 			},
 		},
 	}

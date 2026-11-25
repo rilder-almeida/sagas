@@ -36,11 +36,11 @@ func haltedA() string                 { return trailOf(EventCompensationHalted, 
 
 func failingUndo(
 	name string,
-	policy CompensationFailurePolicy,
+	policy FailurePolicy,
 	undo func(context.Context, *tripState) error,
 ) *undoStep {
 	s := undoOnce(name, okAction, undo)
-	s.CompensationFailure = policy
+	s.FailurePolicy = policy
 
 	return s
 }
@@ -71,7 +71,7 @@ func blockedOnCtx(ctx context.Context, _ *tripState) error {
 
 func undoOnce(name string, do, undo func(context.Context, *tripState) error) *undoStep {
 	s := undoing(name, do, undo)
-	s.Retry = NoRetry()
+	s.RetryPolicy = NoRetry()
 
 	return s
 }
@@ -120,8 +120,8 @@ func backwardRows() []runRow {
 		graceTurnAfterReadRow(),
 		graceHaltAfterReadRow(),
 		haltBeforeGraceEndRow(),
-		policyCopyRow(CompensationContinue, CompensationBlock, stepCompensated),
-		policyCopyRow(CompensationBlock, CompensationContinue, stepBlocked),
+		policyCopyRow(Continue, Block, stepCompensated),
+		policyCopyRow(Block, Continue, stepBlocked),
 	}
 }
 
@@ -389,7 +389,7 @@ func predicateSiblingRow() runRow {
 	}
 }
 
-func policyRow(name string, policy CompensationFailurePolicy, a stepStatus, tail, pending []string) runRow {
+func policyRow(name string, policy FailurePolicy, a stepStatus, tail, pending []string) runRow {
 	return runRow{
 		name: name,
 		steps: func(rec *recorder) Flow {
@@ -411,22 +411,22 @@ func policyRow(name string, policy CompensationFailurePolicy, a stepStatus, tail
 
 func blockRow() runRow {
 	return policyRow(
-		"[Fail] When: a compensation with CompensationBlock fails ; Should: block the earlier compensation",
-		CompensationBlock, stepBlocked, []string{blockedOf("a"), closed}, []string{"a", "b"},
+		"[Fail] When: a compensation with Block fails ; Should: block the earlier compensation",
+		Block, stepBlocked, []string{blockedOf("a"), closed}, []string{"a", "b"},
 	)
 }
 
 func continueRow() runRow {
 	return policyRow(
-		"[Fail] When: a compensation with CompensationContinue fails ; Should: still run the earlier compensation",
-		CompensationContinue, stepCompensated, []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"},
+		"[Fail] When: a compensation with Continue fails ; Should: still run the earlier compensation",
+		Continue, stepCompensated, []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"},
 	)
 }
 
 func haltRow() runRow {
 	return policyRow(
-		"[Fail] When: a compensation with CompensationHalt fails ; Should: halt the earlier compensation",
-		CompensationHalt, stepHalted, []string{haltedA(), closed}, []string{"a", "b"},
+		"[Fail] When: a compensation with Halt fails ; Should: halt the earlier compensation",
+		Halt, stepHalted, []string{haltedA(), closed}, []string{"a", "b"},
 	)
 }
 
@@ -439,7 +439,7 @@ func blockAcrossRow() runRow {
 					"a",
 				),
 				rec.step("x"),
-				failingUndo("b", CompensationBlock, alwaysFails),
+				failingUndo("b", Block, alwaysFails),
 				once("c", alwaysFails),
 			)
 		},
@@ -472,7 +472,7 @@ func blockThenHaltRow() runRow {
 			}
 
 			return Sequence(rec.undoable("a"), Parallel(
-				failingUndo("b", CompensationBlock, alwaysFails), failingUndo("d", CompensationHalt, late),
+				failingUndo("b", Block, alwaysFails), failingUndo("d", Halt, late),
 			), once("c", alwaysFails))
 		},
 		wantStatus: StatusCompensationFailed,
@@ -510,7 +510,7 @@ func haltAtOnceRow() runRow {
 			}
 
 			return Sequence(rec.undoable("a"), Parallel(
-				undoOnce("b", okAction, slow), failingUndo("d", CompensationHalt, alwaysFails),
+				undoOnce("b", okAction, slow), failingUndo("d", Halt, alwaysFails),
 			), once("c", alwaysFails))
 		},
 		wantStatus:   StatusCompensationFailed,
@@ -537,7 +537,7 @@ func undoPanicRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation panics ; Should: fail it for good and apply its policy",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.undoable("a"), failingUndo("b", CompensationBlock, panics), once("c", alwaysFails))
+			return Sequence(rec.undoable("a"), failingUndo("b", Block, panics), once("c", alwaysFails))
 		},
 		wantStatus:   StatusCompensationFailed,
 		wantKind:     ErrCompensationFailed,
@@ -662,7 +662,7 @@ func resendAfterRejectionRow() runRow {
 		name: "[Fail] When: the journal rejects the resend of a compensation success and a sibling compensation " +
 			"fails later ; Should: append nothing after the rejection and end ErrConcurrentWriter",
 		steps: func(rec *recorder) Flow {
-			b := failingUndo("b", CompensationBlock, func(context.Context, *tripState) error {
+			b := failingUndo("b", Block, func(context.Context, *tripState) error {
 				time.Sleep(pause)
 
 				return errAlwaysFails
@@ -748,7 +748,7 @@ func graceWaitingRow() runRow {
 			"Should: fail it with ErrGraceEnded without running it",
 		steps: func(rec *recorder) Flow {
 			return Sequence(
-				rec.undoable("a"), failingUndo("b", CompensationContinue, blockedOnCtx), once("c", alwaysFails),
+				rec.undoable("a"), failingUndo("b", Continue, blockedOnCtx), once("c", alwaysFails),
 			)
 		},
 		opts:        []Option{WithRecoveryTimeout(pause)},
@@ -1014,7 +1014,7 @@ func blockChainRow() runRow {
 		name: "[Fail] When: a blocked compensation has a compensation before it ; Should: block that one too",
 		steps: func(rec *recorder) Flow {
 			return Sequence(
-				rec.undoable("a"), rec.undoable("b"), failingUndo("c", CompensationBlock, alwaysFails),
+				rec.undoable("a"), rec.undoable("b"), failingUndo("c", Block, alwaysFails),
 				once("d", alwaysFails),
 			)
 		},
@@ -1119,7 +1119,7 @@ func graceBlockedRow() runRow {
 			"Should: count it blocked, not failed",
 		steps: func(rec *recorder) Flow {
 			return Sequence(
-				rec.undoable("a"), failingUndo("b", CompensationBlock, blockedOnCtx), once("c", alwaysFails),
+				rec.undoable("a"), failingUndo("b", Block, blockedOnCtx), once("c", alwaysFails),
 			)
 		},
 		opts:           []Option{WithRecoveryTimeout(pause)},
@@ -1144,12 +1144,12 @@ func graceBlockedRow() runRow {
 
 func graceHaltRow() runRow {
 	return runRow{
-		name: "[Fail] When: the grace period fails a waiting compensation with CompensationHalt ; " +
+		name: "[Fail] When: the grace period fails a waiting compensation with Halt ; " +
 			"Should: apply Halt to the compensations before it",
 		steps: func(rec *recorder) Flow {
 			return Sequence(
-				rec.undoable("x"), failingUndo("a", CompensationHalt, rec.do(undoA)),
-				failingUndo("b", CompensationContinue, blockedOnCtx), once("c", alwaysFails),
+				rec.undoable("x"), failingUndo("a", Halt, rec.do(undoA)),
+				failingUndo("b", Continue, blockedOnCtx), once("c", alwaysFails),
 			)
 		},
 		opts:        []Option{WithRecoveryTimeout(pause)},
@@ -1219,7 +1219,7 @@ func graceHaltAfterReadRow() runRow {
 			"Should: halt the waiting compensation and match the caller cause and context.Canceled",
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
-				failingUndo("b", CompensationHalt, slowUndo(rec, errAlwaysFails)),
+				failingUndo("b", Halt, slowUndo(rec, errAlwaysFails)),
 				undoOnce("d", okAction, rec.do("undo:d")),
 			), once("c", alwaysFails))
 		},
@@ -1259,7 +1259,7 @@ func haltBeforeGraceEndRow() runRow {
 				return errAlwaysFails
 			}
 
-			return Sequence(rec.undoable("a"), failingUndo("b", CompensationHalt, slowFail), once("c", alwaysFails))
+			return Sequence(rec.undoable("a"), failingUndo("b", Halt, slowFail), once("c", alwaysFails))
 		},
 		cancelAfter:  pause / 2,
 		cancelCause:  errStop,
@@ -1277,7 +1277,7 @@ func haltBeforeGraceEndRow() runRow {
 	}
 }
 
-func policyCopyRow(given, later CompensationFailurePolicy, a stepStatus) runRow {
+func policyCopyRow(given, later FailurePolicy, a stepStatus) runRow {
 	tail, pending := []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"}
 	if a == stepBlocked {
 		tail, pending = []string{blockedOf("a"), closed}, []string{"a", "b"}
@@ -1289,7 +1289,7 @@ func policyCopyRow(given, later CompensationFailurePolicy, a stepStatus) runRow 
 		steps: func(rec *recorder) Flow {
 			b := failingUndo("b", given, alwaysFails)
 			c := once("c", func(context.Context, *tripState) error {
-				b.CompensationFailure = later
+				b.FailurePolicy = later
 
 				return errAlwaysFails
 			})

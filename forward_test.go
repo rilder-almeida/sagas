@@ -406,7 +406,7 @@ func pivotCommitFailsRow() runRow {
 func failingPivot() func(*recorder) Flow {
 	return func(rec *recorder) Flow {
 		p := paying("p", alwaysFails)
-		p.Retry = NoRetry()
+		p.RetryPolicy = NoRetry()
 
 		return Sequence(rec.undoable("a"), p)
 	}
@@ -501,7 +501,7 @@ func pivotErrorRow() runRow {
 		name: "[Fail] When: the pivot returns an error ; Should: compensate the steps before it",
 		steps: func(rec *recorder) Flow {
 			p := paying("p", alwaysFails)
-			p.Retry = NoRetry()
+			p.RetryPolicy = NoRetry()
 
 			return Sequence(rec.undoable("a"), p)
 		},
@@ -539,7 +539,7 @@ func pivotRetriedRow() runRow {
 
 				return nil
 			})
-			p.AttemptTimeout, p.Retry = pause, RetryPolicy{Attempts: 2}
+			p.AttemptTimeout, p.RetryPolicy = pause, RetryPolicy{Attempts: 2}
 
 			return Sequence(rec.undoable("a"), p)
 		},
@@ -559,7 +559,7 @@ func pivotGraceEndRow() runRow {
 			"Should: end ErrIncomplete with ErrGraceEnded and compensate nothing",
 		steps: func(rec *recorder) Flow {
 			p := paying("p", blockedOnCtx)
-			p.Retry = NoRetry()
+			p.RetryPolicy = NoRetry()
 
 			return Sequence(rec.undoable("a"), p)
 		},
@@ -590,7 +590,7 @@ func pivotLateFailureRow() runRow {
 			"Should: keep ErrFailed and join ErrGraceEnded to its error",
 		steps: func(rec *recorder) Flow {
 			p := paying("p", lateFailure)
-			p.Retry = NoRetry()
+			p.RetryPolicy = NoRetry()
 
 			return Sequence(rec.step("a"), p)
 		},
@@ -690,7 +690,7 @@ func forwardOnlyGraceEndRow() runRow {
 			"Should: end it unknown with ErrGraceEnded and end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
 			z := act("z", blockedOnCtx)
-			z.Retry = NoRetry()
+			z.RetryPolicy = NoRetry()
 
 			return Sequence(rec.undoable("a"), rec.pivot(), z)
 		},

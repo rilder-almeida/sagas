@@ -265,8 +265,8 @@ func Pivot[S any](tb testing.TB, setup Setup[S]) {
 
 func pivotAttempts(p plan) int {
 	for i := range p.steps {
-		if p.steps[i].Name == p.pivot && p.steps[i].Retry.Attempts > 0 {
-			return p.steps[i].Retry.Attempts
+		if p.steps[i].Name == p.pivot && p.steps[i].RetryPolicy.Attempts > 0 {
+			return p.steps[i].RetryPolicy.Attempts
 		}
 	}
 

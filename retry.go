@@ -67,7 +67,7 @@ func (p RetryPolicy) multiplier() float64 {
 }
 
 // NoRetry returns the policy of one attempt and no retry. It governs the compensation too, which also gets one
-// attempt. A persistent compensation takes a higher Retry.Attempts instead, bounded by the caller's context and
+// attempt. A persistent compensation takes a higher RetryPolicy.Attempts instead, bounded by the caller's context and
 // then by WithRecoveryTimeout.
 func NoRetry() RetryPolicy { return RetryPolicy{Attempts: 1} }
 

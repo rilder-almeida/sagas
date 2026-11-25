@@ -258,8 +258,12 @@ func ExampleParallel() {
 	}
 
 	windowArrived, aisleArrived := make(chan struct{}), make(chan struct{})
-	window := &seat{Name: "window", Retry: sagas.NoRetry(), arrive: windowArrived, peer: aisleArrived, value: "window"}
-	aisle := &seat{Name: "aisle", Retry: sagas.NoRetry(), arrive: aisleArrived, peer: windowArrived, value: "aisle"}
+	window := &seat{
+		Name: "window", RetryPolicy: sagas.NoRetry(), arrive: windowArrived, peer: aisleArrived, value: "window",
+	}
+	aisle := &seat{
+		Name: "aisle", RetryPolicy: sagas.NoRetry(), arrive: aisleArrived, peer: windowArrived, value: "aisle",
+	}
 
 	clash, err := sagas.New[trip]("trip", sagas.Parallel(window, aisle))
 	if err != nil {
@@ -446,7 +450,7 @@ func (*slow) Execute(ctx context.Context, _ *trip) error {
 
 func ExampleStep_attemptTimeout() {
 	saga, err := sagas.New[trip]("trip",
-		&slow{AttemptTimeout: 10 * time.Millisecond, Retry: sagas.NoRetry()})
+		&slow{AttemptTimeout: 10 * time.Millisecond, RetryPolicy: sagas.NoRetry()})
 	if err != nil {
 		panic(err)
 	}

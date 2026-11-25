@@ -203,23 +203,23 @@ func Test_New_stepSettings(t *testing.T) {
 		wantErrTries int
 	}{
 		{
-			name:     "[Fail] When: Retry is NoRetry and Execute fails ; Should: run it once",
-			settings: Step{Retry: NoRetry()}, execute: alwaysFails,
+			name:     "[Fail] When: RetryPolicy is NoRetry and Execute fails ; Should: run it once",
+			settings: Step{RetryPolicy: NoRetry()}, execute: alwaysFails,
 			wantAttempts: 1, wantErr: errAlwaysFails, wantErrTries: 1,
 		},
 		{
-			name:     "[Fail] When: Retry gives two attempts ; Should: stop an always failing step after two",
-			settings: Step{Retry: RetryPolicy{Attempts: 2, NoJitter: true}}, execute: alwaysFails,
+			name:     "[Fail] When: RetryPolicy gives two attempts ; Should: stop an always failing step after two",
+			settings: Step{RetryPolicy: RetryPolicy{Attempts: 2, NoJitter: true}}, execute: alwaysFails,
 			wantAttempts: 2, wantElapsed: 200 * time.Millisecond, wantErr: errAlwaysFails, wantErrTries: 2,
 		},
 		{
-			name:     "[Fail] When: Retry sets every field ; Should: wait its exact delays",
-			settings: Step{Retry: given}, execute: alwaysFails,
+			name:     "[Fail] When: RetryPolicy sets every field ; Should: wait its exact delays",
+			settings: Step{RetryPolicy: given}, execute: alwaysFails,
 			wantAttempts: 5, wantElapsed: 6500 * time.Millisecond, wantErr: errAlwaysFails, wantErrTries: 5,
 		},
 		{
-			name:         "[Fail] When: Retry is zero apart from NoJitter ; Should: wait the default delays",
-			settings:     Step{Retry: RetryPolicy{NoJitter: true}},
+			name:         "[Fail] When: RetryPolicy is zero apart from NoJitter ; Should: wait the default delays",
+			settings:     Step{RetryPolicy: RetryPolicy{NoJitter: true}},
 			execute:      alwaysFails,
 			wantAttempts: DefaultAttempts,
 			wantElapsed:  600 * time.Millisecond,
@@ -228,7 +228,7 @@ func Test_New_stepSettings(t *testing.T) {
 		},
 		{
 			name:         "[Fail] When: the multiplier is exactly one ; Should: wait a constant delay",
-			settings:     Step{Retry: RetryPolicy{Multiplier: 1, NoJitter: true}},
+			settings:     Step{RetryPolicy: RetryPolicy{Multiplier: 1, NoJitter: true}},
 			execute:      alwaysFails,
 			wantAttempts: DefaultAttempts,
 			wantElapsed:  400 * time.Millisecond,
@@ -237,7 +237,7 @@ func Test_New_stepSettings(t *testing.T) {
 		},
 		{
 			name:     "[Fail] When: AttemptTimeout is shorter than Execute ; Should: end it with DeadlineExceeded",
-			settings: Step{Retry: NoRetry(), AttemptTimeout: time.Second}, execute: twoSecondCall,
+			settings: Step{RetryPolicy: NoRetry(), AttemptTimeout: time.Second}, execute: twoSecondCall,
 			wantAttempts: 1, wantElapsed: time.Second, wantErr: context.DeadlineExceeded, wantErrTries: 1,
 		},
 		{
@@ -252,9 +252,9 @@ func Test_New_stepSettings(t *testing.T) {
 		},
 		{
 			name:     "[Fail] When: the step value changes after New ; Should: run with the settings New copied",
-			settings: Step{Retry: NoRetry()}, execute: alwaysFails,
+			settings: Step{RetryPolicy: NoRetry()}, execute: alwaysFails,
 			changed: Step{
-				Name: "x", Retry: RetryPolicy{Attempts: 9, NoJitter: true}, AttemptTimeout: time.Nanosecond,
+				Name: "x", RetryPolicy: RetryPolicy{Attempts: 9, NoJitter: true}, AttemptTimeout: time.Nanosecond,
 			},
 			wantAttempts: 1, wantErr: errAlwaysFails, wantErrTries: 1,
 		},
@@ -266,7 +266,7 @@ func Test_New_stepSettings(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				step := act("a", tt.execute)
-				step.Retry, step.AttemptTimeout = tt.settings.Retry, tt.settings.AttemptTimeout
+				step.RetryPolicy, step.AttemptTimeout = tt.settings.RetryPolicy, tt.settings.AttemptTimeout
 
 				journal := newScriptJournal(nil)
 
@@ -619,7 +619,7 @@ func Test_stepNode_buildCalls(t *testing.T) {
 				methods.wrap = phased(rec, "own")
 			}
 
-			report := &StepReport{Name: payStep, Pivot: tt.pivot, Retry: NoRetry()}
+			report := &StepReport{Name: payStep, Pivot: tt.pivot, RetryPolicy: NoRetry()}
 
 			var n stepNode[tripState]
 

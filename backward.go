@@ -266,9 +266,9 @@ func (r *runner[S]) lost(grace context.Context, b *rollback[S], i int, out outco
 	}
 
 	policy := r.saga.steps[i].policy
-	b.tainted[i] = policy == CompensationBlock
+	b.tainted[i] = policy == Block
 
-	if policy == CompensationHalt {
+	if policy == Halt {
 		r.halt(grace, b)
 	}
 }

@@ -51,7 +51,7 @@ type Saga[S any] struct {
 type stepNode[S any] struct {
 	name         string
 	pred         func(*S) bool
-	policy       CompensationFailurePolicy
+	policy       FailurePolicy
 	parents      []int
 	children     []int
 	zone         Zone
@@ -98,11 +98,11 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	for i := range in.reports {
 		rep := &in.reports[i]
 		n := stepNode[S]{
-			name: rep.Name, policy: rep.CompensationFailure, parents: in.graph.parents[i], pred: in.methods[i].enabled,
+			name: rep.Name, policy: rep.FailurePolicy, parents: in.graph.parents[i], pred: in.methods[i].enabled,
 		}
 
 		if n.policy == "" {
-			n.policy = CompensationBlock
+			n.policy = Block
 		}
 
 		n.buildCalls(name, rep, &in.methods[i], d.middleware)
@@ -126,7 +126,7 @@ func (n *stepNode[S]) stepZone() StepZone {
 
 func (n *stepNode[S]) buildCalls(saga string, rep *StepReport, m *stepMethods[S], middleware []Middleware) {
 	spec := callSpec{
-		saga: saga, step: rep.Name, phase: PhaseExecute, retry: rep.Retry, timeout: rep.AttemptTimeout,
+		saga: saga, step: rep.Name, phase: PhaseExecute, retry: rep.RetryPolicy, timeout: rep.AttemptTimeout,
 		middleware: middleware, wrap: m.wrap,
 	}
 	if rep.Pivot {

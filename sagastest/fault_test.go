@@ -34,7 +34,7 @@ func plain(name string) *probeStep { return newProbe(name, sagas.NoRetry(), nil)
 
 func newProbe(name string, retry sagas.RetryPolicy, err error) *probeStep {
 	p := &probeStep{err: err}
-	p.Name, p.Retry = name, retry
+	p.Name, p.RetryPolicy = name, retry
 
 	return p
 }
@@ -55,7 +55,7 @@ type undoProbe struct {
 
 func newUndo(name string, err error) *undoProbe {
 	p := &undoProbe{err: err}
-	p.Name, p.Retry = name, sagas.NoRetry()
+	p.Name, p.RetryPolicy = name, sagas.NoRetry()
 
 	return p
 }
@@ -80,7 +80,7 @@ type pivotProbe struct {
 
 func newPivot(name string) *pivotProbe {
 	p := &pivotProbe{}
-	p.Name, p.Retry = name, sagas.NoRetry()
+	p.Name, p.RetryPolicy = name, sagas.NoRetry()
 
 	return p
 }
