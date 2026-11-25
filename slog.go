@@ -6,14 +6,13 @@ import (
 	"time"
 )
 
-// Slog is middleware that logs each attempt to Logger, or to slog.Default() when Logger is nil: saga, execution,
-// step, phase, attempt, duration, and the error when the attempt returns one, at info on success and warn on error. It
-// never logs the state.
+// Slog is middleware that logs each attempt to Logger, or to slog.Default() when Logger is nil. It never logs the
+// state.
 type Slog struct {
 	Logger *slog.Logger
 }
 
-// Wrap runs call, logs the attempt from info, and returns the call error unchanged.
+// Wrap logs the attempt of call and returns the call error unchanged.
 func (s Slog) Wrap(ctx context.Context, info CallInfo, call Call) error {
 	start := time.Now()
 	err := call(ctx)

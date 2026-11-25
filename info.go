@@ -85,9 +85,8 @@ func withIdempotencyKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, idempotencyKey{}, key)
 }
 
-// IdempotencyKey returns the idempotency key of the step call in ctx, and an empty string outside a call.
-// The key is the same in Execute, Pivot and Compensate, so a compensation finds the effect to undo with it.
-// A service that needs its own key on the undo request gets the key plus a suffix, such as "/compensate".
+// IdempotencyKey returns the idempotency key of the step call in ctx, and an empty string outside a call. The key is
+// the same in every phase of a step.
 func IdempotencyKey(ctx context.Context) string {
 	if key, ok := ctx.Value(idempotencyKey{}).(string); ok {
 		return key

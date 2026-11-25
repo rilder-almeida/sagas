@@ -22,15 +22,12 @@ var (
 
 var errInvalidEvent = errors.New("sagas: invalid event")
 
-// Journal only appends events and never delivers work, removes or marks one. A nil e, a Seq below 1 or a Version not
-// EventVersion is invalid. If e.Seq is next in its execution, Append stores a deep copy of every field of e. An equal
-// resend from the same Writer, slices by content and Time by Time.Equal, stores nothing and returns nil. Append rejects
-// any other Seq. Once ctx is done, it stores nothing and returns an error. Rerun sagastest.Journal on each upgrade.
+// Journal stores the events of each execution and only appends them. sagastest.Journal proves its contract.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
 
-// EventReader gives an execution's events by Seq, or an error wrapping ctx.Err() if ctx is done or ErrNoEvents if none.
+// EventReader reads the events of an execution in Seq order.
 type EventReader interface {
 	Events(ctx context.Context, execution string) ([]Event, error)
 }
@@ -40,10 +37,10 @@ var _ EventReader = (*MemoryJournal)(nil)
 // EventVersion is this release's event format. Version 1 holds no state values, so its executions cannot be resumed.
 const EventVersion = 1
 
-// Event is one journal record: Saga, the Execution ID, the run's Writer token, Seq from 1, Kind and Time. A reader
-// checks Version, the writing release's format, against EventVersion first. Steps lists all steps on saga-started. Step
-// names the step of a step or compensation event. Attempt counts its attempts. Changed names the fields that a success
-// committed. Err is set on a failed, unknown or compensation-failed event. Status is the run's end on saga-finished.
+// Event is one journal record: Saga, the Execution ID, the run's Writer token, Seq from 1, Kind and Time. Version is
+// the format of the writing release. Steps lists all steps on saga-started. Step names the step of a step or
+// compensation event. Attempt counts its attempts. Changed names the fields that a success committed. Err is set on a
+// failed, unknown or compensation-failed event. Status is the run's end on saga-finished.
 type Event struct {
 	Saga      string
 	Execution string

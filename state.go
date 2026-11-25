@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// ErrInvalidState is returned when the state type breaks a state rule or a state value cannot round-trip through
-// its JSON encoding. The rules cover the field types, the sagas tags and a kept execution ID method.
+// ErrInvalidState is returned when the state type breaks a state rule or a state value cannot round-trip through its
+// JSON encoding.
 var ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
 
 type offense struct {

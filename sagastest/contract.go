@@ -133,9 +133,8 @@ const (
 
 var errTrigger = errors.New("sagastest: injected failure of the step action")
 
-// Compensations proves, for every step with Compensate, that its compensation is a no-op when the step never
-// applied, is idempotent over a landed step, and tolerates a late step. Each case is a fresh Case that must end
-// in sagas.ErrCompensated; Check decides. Late gets the step and the key the recorder saw; its error is only logged.
+// Compensations proves, for every step with Compensate, that its compensation is a no-op when the step never applied,
+// is idempotent over a landed step, and tolerates a late step.
 func Compensations[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 
@@ -239,9 +238,7 @@ func repeated(step string, phase sagas.Phase) sagas.MiddlewareFunc {
 	}
 }
 
-// Pivot proves that the pivot is atomic and that every forward-only step is idempotent. It injects an unknown
-// outcome on the first attempt of the pivot, then repeats each forward-only step, each in a fresh Case. It compares
-// the final state with reflect.DeepEqual, and expects a pivot with one attempt to end sagas.ErrIncomplete.
+// Pivot proves that the pivot is atomic and that every forward-only step is idempotent.
 func Pivot[S any](tb testing.TB, setup Setup[S]) {
 	tb.Helper()
 

@@ -40,8 +40,8 @@ const (
 	ruleNoEvents       = "no events"
 )
 
-// Journal proves the journal contract against any sagas.Journal, which must also be a sagas.EventReader so the
-// contract can read back every field it stored. Each call of newJournal must return a fresh empty journal.
+// Journal proves the journal contract on a sagas.Journal that is also a sagas.EventReader. Each call of newJournal must
+// return a fresh empty journal.
 func Journal(tb testing.TB, newJournal func() sagas.Journal) {
 	tb.Helper()
 

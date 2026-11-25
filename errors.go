@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// KindError labels a class of error. The package creates every KindError, and errors.Is compares the pointer.
+// KindError labels a class of error. Only this package creates one.
 type KindError struct {
 	name    string
 	message string
@@ -43,8 +43,7 @@ var (
 	ErrPanic = &KindError{name: "panic", message: "sagas: panic"}
 )
 
-// Error reports a step whose action or compensation did not succeed, with its kind, attempts, cause and history.
-// errors.Is also walks Cause and Previous; read the kind of the step itself with errors.As and its Kind field.
+// Error reports a step whose action or compensation did not succeed.
 type Error struct {
 	Kind         *KindError
 	Step         string
@@ -55,7 +54,7 @@ type Error struct {
 	Previous     []error
 }
 
-// Error names the step, whether its compensation failed, the attempts, the error, the cause and the history.
+// Error returns a message that names the step and its failure.
 func (e *Error) Error() string {
 	what := "step"
 	if e.Compensation {
@@ -120,11 +119,11 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
-// RunError reports a run that began and did not complete. Steps holds one *Error for each action or
-// compensation that did not succeed, a failure or an unknown outcome, in order, so one step can appear twice.
-// errors.Is matches Kind and walks every error of Unwrap; read the kind itself with errors.As and its Kind field.
+// RunError reports a run that began and did not complete.
 type RunError struct {
-	Kind  *KindError
+	Kind *KindError
+	// Steps holds one *Error for each action or compensation that did not succeed, in order, so one step can
+	// appear twice.
 	Steps []*Error
 	// Pending holds, in step order, each unknown step, unless it is in the compensable zone and its compensation is
 	// missing or succeeded. It also holds each step whose compensation failed, was blocked or was halted. After a
@@ -133,7 +132,7 @@ type RunError struct {
 	causes  []error
 }
 
-// Error reads the message of Kind, then the texts of Unwrap joined with a semicolon.
+// Error returns the message of Kind followed by the texts of Unwrap.
 func (e *RunError) Error() string {
 	errs := e.Unwrap()
 	if len(errs) == 0 {

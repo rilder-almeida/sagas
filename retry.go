@@ -66,9 +66,7 @@ func (p RetryPolicy) multiplier() float64 {
 	return DefaultMultiplier
 }
 
-// NoRetry returns the policy of one attempt and no retry. It governs the compensation too, which also gets one
-// attempt. A persistent compensation takes a higher RetryPolicy.Attempts instead, bounded by the caller's context and
-// then by WithRecoveryTimeout.
+// NoRetry returns the policy of one attempt and no retry.
 func NoRetry() RetryPolicy { return RetryPolicy{Attempts: 1} }
 
 var errPermanent = errors.New("sagas: permanent")
@@ -81,8 +79,7 @@ func (e *permanentError) Unwrap() error { return e.err }
 
 func (*permanentError) Is(target error) bool { return target == errPermanent }
 
-// Permanent marks err so that the retry loop stops on it. It returns nil for a nil err.
-// The mark counts anywhere in an error chain, so a nested run's permanent error also stops the outer step.
+// Permanent marks err so that the retry loop stops on it, anywhere in an error chain. It returns nil for a nil err.
 func Permanent(err error) error {
 	if err == nil {
 		return nil

@@ -9,23 +9,21 @@ import (
 	"time"
 )
 
-// None is the output type of a step that produces nothing. Its Execute and any Compensate return only an error.
+// None is the output type of a step that produces nothing.
 type None struct{}
 
-// Step declares a step of state S and output R. A step type embeds Step and has Execute(ctx, s S) (R, error), or
-// Execute(ctx, s S) error for None, and optionally Wrap. Compensate(ctx, s S) error restores the output field to its
-// value before the step, and Compensate(ctx, s S) (R, error) sets it. Both get the input and any output of Execute.
-// Enabled(ctx, s S) bool is a fast decision on s, ctx serves trace, log and cancel, and network work belongs in a step.
-// Each method sits on the step type, is idempotent, safe for concurrent use, and honors ctx.
+// Step declares a step of state S and output R for a type that embeds it. Its methods must be idempotent, safe for
+// concurrent use, and honor their context, and its Enabled method is a fast decision on the state whose context serves
+// trace, log and cancel, with network work left to a step.
 type Step[S, R any] struct {
 	typed[S, R]
 
-	// Name names the step, or the type name in kebab case when empty. Set it for a journal that outlives a rename.
+	// Name is the name of the step. Empty means the type name in kebab case.
 	Name string
 	// Description is free text that Inspect reports.
 	Description string
-	// RetryPolicy retries the action and the compensation, bounded by the caller's context, then WithRecoveryTimeout.
-	// Under NoRetry the compensation gets one attempt.
+	// RetryPolicy is the retry policy of the action and the compensation, bounded by the caller's context and then
+	// by WithRecoveryTimeout.
 	RetryPolicy RetryPolicy
 	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
 	AttemptTimeout time.Duration
@@ -33,17 +31,16 @@ type Step[S, R any] struct {
 	FailurePolicy FailurePolicy
 }
 
-// Pivot declares the pivot step of state S and output R. A pivot type embeds Pivot and has
-// Execute(ctx, s S) (R, error), or Execute(ctx, s S) error for None, and optionally Wrap. Its methods follow the rules
-// of Step. It has the settings of Step except FailurePolicy, because a pivot has no compensation.
+// Pivot declares the pivot step of state S and output R for a type that embeds it. Its methods follow the rules of
+// Step.
 type Pivot[S, R any] struct {
 	typed[S, R]
 
-	// Name names the pivot, or the type name in kebab case when empty. Set it for a journal that outlives a rename.
+	// Name is the name of the pivot. Empty means the type name in kebab case.
 	Name string
 	// Description is free text that Inspect reports.
 	Description string
-	// RetryPolicy retries the pivot action, bounded by the caller's context.
+	// RetryPolicy is the retry policy of the pivot action, bounded by the caller's context.
 	RetryPolicy RetryPolicy
 	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
 	AttemptTimeout time.Duration

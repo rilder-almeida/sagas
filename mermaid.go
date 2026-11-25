@@ -5,8 +5,7 @@ import (
 	"strings"
 )
 
-// Mermaid returns the saga as a Mermaid flowchart. Node ids are s plus the index of the step in the flow, the
-// pivot is a hexagon, a step with Enabled ends in "(if Enabled)", and forward-only steps join the forwardOnly class.
+// Mermaid returns the saga as a Mermaid flowchart.
 func (s *Saga[S]) Mermaid() string {
 	lines := []string{"flowchart TD"}
 

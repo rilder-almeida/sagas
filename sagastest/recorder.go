@@ -10,8 +10,8 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-// Call is one recorded call of a step method. Err is the error the call returned, nil on success; for a call
-// that panicked, it wraps both sagas.ErrPanic and the *sagas.PanicError.
+// Call is one recorded call of a step method. Err is the error the call returned, and for a panic it wraps
+// sagas.ErrPanic and the *sagas.PanicError.
 type Call struct {
 	Step    string
 	Phase   sagas.Phase
@@ -29,8 +29,8 @@ type Recorder struct {
 // NewRecorder returns an empty Recorder.
 func NewRecorder() *Recorder { return &Recorder{} }
 
-// Middleware returns the middleware that records each call and returns its error unchanged. A panicking call is
-// recorded with an error that wraps sagas.ErrPanic, and a panic raised below the recorder is raised again.
+// Middleware returns the middleware that records each call and returns its error unchanged. A panic is recorded and
+// then raised again.
 func (r *Recorder) Middleware() sagas.MiddlewareFunc {
 	return func(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
 		defer func() {
