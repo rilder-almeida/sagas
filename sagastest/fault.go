@@ -42,8 +42,8 @@ func (f *fault) matches(info sagas.CallInfo) bool {
 		(len(f.attempts) == 0 || slices.Contains(f.attempts, info.Attempt))
 }
 
-// Fail returns middleware that fails the step called step with err, without running its call. The name step must equal
-// CallInfo.Step, and Fail panics on a nil err.
+// Fail returns middleware that answers each call of the step called step that the options select with err, without
+// running it. The name step must equal CallInfo.Step, and Fail panics on a nil err.
 func Fail(step string, err error, opts ...FaultOption) sagas.MiddlewareFunc {
 	if err == nil {
 		panic("sagastest: Fail needs a non-nil error")
@@ -60,8 +60,8 @@ func Fail(step string, err error, opts ...FaultOption) sagas.MiddlewareFunc {
 	})
 }
 
-// Unknown runs the call of the step called step, then returns context.DeadlineExceeded as a lost reply.
-// A call that returns an error keeps that error.
+// Unknown returns middleware that runs each call of the step called step that the options select and then returns
+// context.DeadlineExceeded as a lost reply. A call that returns an error keeps that error.
 func Unknown(step string, opts ...FaultOption) sagas.MiddlewareFunc {
 	f := newFault(step, opts)
 
@@ -75,8 +75,8 @@ func Unknown(step string, opts ...FaultOption) sagas.MiddlewareFunc {
 	})
 }
 
-// Panic runs the call of the step called step, then panics, so the effect is applied and the outcome is unknown.
-// A call that returns an error keeps that error.
+// Panic returns middleware that runs each call of the step called step that the options select and then panics, so the
+// effect is applied and the outcome is unknown. A call that returns an error keeps that error.
 func Panic(step string, opts ...FaultOption) sagas.MiddlewareFunc {
 	f := newFault(step, opts)
 

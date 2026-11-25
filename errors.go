@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// KindError labels a class of error. Only this package creates one.
+// KindError labels a class of error. Each kind is a variable of this package.
 type KindError struct {
 	name    string
 	message string

@@ -9,8 +9,8 @@ import (
 )
 
 // Flow is a step, or a group of steps that Sequence or Parallel builds, where one pointer is one step wherever it
-// appears. A step reads the outputs of the steps it waits for and never the output of a step that runs at the same
-// time.
+// appears. A step reads the outputs of the steps it waits for, directly or not, and never the output of a step that
+// runs at the same time.
 type Flow interface {
 	flow()
 }

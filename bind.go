@@ -13,8 +13,8 @@ import (
 type None struct{}
 
 // Step declares a step of state S and output R for a type that embeds it. Its methods must be idempotent, safe for
-// concurrent use, and honor their context, and its Enabled method is a fast decision on the state whose context serves
-// trace, log and cancel, with network work left to a step.
+// concurrent use, and honor their context. Its Enabled method is a fast decision on the state. The context of Enabled
+// serves trace, log and cancel, and network work belongs in a step.
 type Step[S, R any] struct {
 	typed[S, R]
 
