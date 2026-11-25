@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	errLookalike            = errors.New("sagas: state conflict")
+	errLookalike            = errors.New("sagas: invalid state")
 	errLookalikeCompensated = errors.New("sagas: compensated")
 )
 
@@ -74,7 +74,6 @@ func kindErrorRows() []kindRow {
 			ErrInvalidState,
 			"sagas: invalid state",
 		},
-		{"[Success] When: the kind is ErrConflict ; Should: return its message", ErrConflict, "sagas: state conflict"},
 		{
 			"[Success] When: the kind is ErrCompensated ; Should: return its message",
 			ErrCompensated,
@@ -146,7 +145,6 @@ func Test_KindError_Name(t *testing.T) {
 		},
 		{"[Success] When: the kind is ErrNoEvents ; Should: return its label", ErrNoEvents, "no_events"},
 		{"[Success] When: the kind is ErrInvalidState ; Should: return its label", ErrInvalidState, "invalid_state"},
-		{"[Success] When: the kind is ErrConflict ; Should: return its label", ErrConflict, "conflict"},
 		{"[Success] When: the kind is ErrCompensated ; Should: return its label", ErrCompensated, "compensated"},
 		{
 			"[Success] When: the kind is ErrCompensationFailed ; Should: return its label",
@@ -288,8 +286,8 @@ func Test_Error_Is(t *testing.T) {
 	}{
 		{
 			name:   "[Success] When: the target is the same Kind ; Should: match",
-			err:    &Error{Kind: ErrConflict, Step: payStep},
-			target: ErrConflict,
+			err:    &Error{Kind: ErrInvalidState, Step: payStep},
+			target: ErrInvalidState,
 			want:   true,
 		},
 		{
@@ -313,11 +311,11 @@ func Test_Error_Is(t *testing.T) {
 		{
 			name:   "[Fail] When: the target is another Kind ; Should: not match",
 			err:    &Error{Kind: ErrFailed},
-			target: ErrConflict,
+			target: ErrInvalidState,
 		},
 		{
 			name:   "[Fail] When: a caller error has the same text as a Kind ; Should: not match",
-			err:    &Error{Kind: ErrConflict},
+			err:    &Error{Kind: ErrInvalidState},
 			target: errLookalike,
 		},
 		{
@@ -402,8 +400,8 @@ func Test_eventErrorOf(t *testing.T) {
 		},
 		{
 			name: "[Success] When: only Err is set ; Should: leave the cause and the history empty",
-			err:  &Error{Kind: ErrConflict, Err: errAlwaysFails},
-			want: EventError{Kind: "conflict", Message: errAlwaysFails.Error()},
+			err:  &Error{Kind: ErrInvalidState, Err: errAlwaysFails},
+			want: EventError{Kind: "invalid_state", Message: errAlwaysFails.Error()},
 		},
 		{
 			name: "[Success] When: the Kind is nil ; Should: store an empty label",
@@ -443,8 +441,8 @@ func Test_kindOf(t *testing.T) {
 			kind: outcomeUnknown, label: ErrPanic, want: ErrPanic,
 		},
 		{
-			name: "[Success] When: the package labelled a commit conflict ; Should: be ErrConflict",
-			kind: outcomeFailure, label: ErrConflict, want: ErrConflict,
+			name: "[Success] When: the package labelled a refused commit ; Should: be ErrInvalidState",
+			kind: outcomeFailure, label: ErrInvalidState, want: ErrInvalidState,
 		},
 		{
 			name: "[Success] When: the package labelled middleware that skipped the call ; Should: be ErrCallNotRun",
@@ -623,7 +621,7 @@ func errorRows() []runRow {
 		droppedPredicateRow(),
 		droppedOutcomeRow(),
 		callerCauseRow(),
-		callerConflictRow(),
+		callerInvalidStateRow(),
 		callerJournalRow(),
 		callerPanicRow(),
 		rejectionStopRow(),
@@ -915,10 +913,11 @@ func callerKindRow(
 	}
 }
 
-func callerConflictRow() runRow {
+func callerInvalidStateRow() runRow {
 	return callerKindRow(
-		"[Fail] When: an action returns an error that wraps ErrConflict ; Should: report ErrFailed, not ErrConflict",
-		ErrConflict, stepFailed, ErrFailed, failedB(),
+		"[Fail] When: an action returns an error that wraps ErrInvalidState ; "+
+			"Should: report ErrFailed, not ErrInvalidState",
+		ErrInvalidState, stepFailed, ErrFailed, failedB(),
 	)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"reflect"
@@ -16,35 +17,43 @@ var ErrInvalidRun = &KindError{name: "invalid_run", message: "sagas: invalid run
 
 const idBytes = 16
 
-func checkRun[S any](s *S, idField int) (string, error) {
+type runStart struct {
+	execution string
+	fields    [][]byte
+}
+
+func checkRun[S any](s *S, idField int) (runStart, error) {
 	if s == nil {
-		return "", fmt.Errorf("%w: state is nil", ErrInvalidState)
+		return runStart{}, fmt.Errorf("%w: state is nil", ErrInvalidState)
 	}
 
-	execution := executionOf(s, idField)
+	fields, encodeErr := encodeFields(reflect.ValueOf(*s))
 
-	var errs []error
+	execution, idErr := executionOf(fields, idField)
+
+	errs := []error{idErr}
 	for _, rule := range checkName(execution) {
 		errs = append(errs, fmt.Errorf("%w: %s", ErrInvalidRun, rule))
 	}
 
-	if _, err := encodeFields(reflect.ValueOf(*s)); err != nil {
-		errs = append(errs, err)
+	if err := errors.Join(append(errs, encodeErr)...); err != nil {
+		return runStart{}, err
 	}
 
-	if err := errors.Join(errs...); err != nil {
-		return "", err
-	}
-
-	return execution, nil
+	return runStart{execution: execution, fields: fields}, nil
 }
 
-func executionOf[S any](s *S, idField int) string {
+func executionOf(fields [][]byte, idField int) (string, error) {
 	if idField < 0 {
-		return newID()
+		return newID(), nil
 	}
 
-	return reflect.ValueOf(s).Elem().Field(idField).String()
+	id, err := jsontext.AppendUnquote(nil, fields[idField])
+	if err != nil {
+		return "", fmt.Errorf("%w: execution ID: %w", ErrInvalidState, err)
+	}
+
+	return string(id), nil
 }
 
 func newID() string {
@@ -206,15 +215,12 @@ func (r *runner[S]) causes() []error {
 // used, and an ID that the saga's journal already holds fails with ErrExecutionExists. An error before the
 // saga-started event is stored returns as is, and any later end other than a completed run returns a *RunError.
 func (s *Saga[S]) Run(ctx context.Context, st *S) error {
-	execution, err := checkRun(st, s.idField)
+	start, err := checkRun(st, s.idField)
 	if err != nil {
 		return err
 	}
 
-	committed, err := newStore(*st)
-	if err != nil {
-		return err
-	}
+	committed := newStore[S](start.fields, s.outputField, s.order, s.ancestors)
 
 	journal := s.journal
 	if journal == nil {
@@ -222,7 +228,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 	}
 
 	r := &runner[S]{
-		saga: s, execution: execution, writer: newID(), journal: journal,
+		saga: s, execution: start.execution, writer: newID(), journal: journal,
 		store: committed, runs: make([]stepRun, len(s.steps)), undone: make([]stepStatus, len(s.steps)),
 	}
 

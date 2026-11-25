@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1154,12 +1153,6 @@ const (
 	linkAt
 )
 
-func probeValues() []any {
-	return []any{-1, chargeState{Total: -1}, map[string]int{"probe": 1}, []string{"probe"}, int64(-1), &linkState{
-		Next: &linkState{},
-	}}
-}
-
 func errText(err error) string {
 	if err == nil {
 		return ""
@@ -1168,41 +1161,92 @@ func errText(err error) string {
 	return err.Error()
 }
 
-type fieldChange struct {
-	field  int
+type storeShape struct {
+	field   []int
+	parents [][]int
+}
+
+func loneStep() storeShape { return storeShape{field: []int{-1}, parents: [][]int{nil}} }
+
+func diamond() storeShape {
+	return storeShape{field: []int{seatsAt, chargeAt, itemsAt, linkAt}, parents: [][]int{nil, {0}, {0}, {1, 2}}}
+}
+
+func seatsChain() storeShape {
+	return storeShape{field: []int{seatsAt, seatsAt}, parents: [][]int{nil, {0}}}
+}
+
+func noneAfterSeats() storeShape {
+	return storeShape{field: []int{seatsAt, -1}, parents: [][]int{nil, {0}}}
+}
+
+func newTestStore[S any](tb testing.TB, initial S, shape storeShape) *store[S] {
+	tb.Helper()
+
+	fields, err := encodeFields(reflect.ValueOf(initial))
+	require.NoError(tb, err)
+
+	order := make([]int, len(shape.field))
+	for i := range order {
+		order[i] = i
+	}
+
+	return newStore[S](fields, shape.field, order, ancestorsOf(shape.parents))
+}
+
+type recorded struct {
+	step   int
 	value  any
 	output *encodedOutput
 }
 
-func commitChange[S any](st *store[S], step string, snap snapshot[S], c fieldChange) (commitResult, error) {
-	if c.output != nil {
-		return st.commit(step, snap, c.field, *c.output)
+func outputOf[S any](st *store[S], r recorded) encodedOutput {
+	if r.output != nil {
+		return *r.output
 	}
 
 	name := ""
-	if c.field >= 0 {
-		name = st.names[c.field]
+	if f := st.field[r.step]; f >= 0 {
+		name = st.names[f]
 	}
 
-	data, err := encodeField(name, c.value)
+	data, err := encodeField(name, r.value)
 
-	return st.commit(step, snap, c.field, encodedOutput{data: data, err: err})
+	return encodedOutput{data: data, err: err}
 }
 
-func assertMoved(t *testing.T, st *store[testState], snap snapshot[testState], want []string) {
+func recordAll(t *testing.T, st *store[testState], outputs []recorded) {
 	t.Helper()
 
-	for i, value := range probeValues() {
-		_, err := commitChange(st, probeStep, snap, fieldChange{field: i, value: value})
-		if !slices.Contains(want, st.names[i]) {
-			require.NoError(t, err)
-
-			continue
-		}
-
-		require.ErrorIs(t, err, ErrConflict)
-		assert.Contains(t, err.Error(), "field "+st.names[i]+` changed by step "probe"`)
+	for _, r := range outputs {
+		_, err := st.record(r.step, outputOf(st, r))
+		require.NoError(t, err)
 	}
+}
+
+func storedState(t *testing.T, snap snapshot[testState]) testState {
+	t.Helper()
+
+	got, err := copyState(snap)
+	require.NoError(t, err)
+
+	return *got
+}
+
+func written(t *testing.T, st *store[testState]) testState {
+	t.Helper()
+
+	var got testState
+	require.NoError(t, st.writeBack(&got))
+
+	return got
+}
+
+func withState(change func(*testState)) testState {
+	s := baseState()
+	change(&s)
+
+	return s
 }
 
 func Test_newStore(t *testing.T) {
@@ -1210,35 +1254,20 @@ func Test_newStore(t *testing.T) {
 
 	require.NoError(t, checkState(reflect.TypeFor[testState]()))
 
-	nan := baseState()
-	nan.Charge.Total = math.NaN()
-
-	loop := &linkState{}
-	loop.Next = loop
-	cycle := baseState()
-	cycle.Link = loop
-
 	tests := []struct {
-		name      string
-		initial   testState
-		wantErr   error
-		wantInMsg []string
+		name    string
+		initial testState
+		shape   storeShape
 	}{
 		{
-			name:    "[Success] When: a valid state ; Should: accept a commit of every field from its first snapshot",
+			name:    "[Success] When: a store of one step ; Should: give back the initial state",
 			initial: baseState(),
+			shape:   loneStep(),
 		},
 		{
-			name:      "[Fail] When: a NaN at depth 2 ; Should: return ErrInvalidState that names the path",
-			initial:   nan,
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"sagas: invalid state: Charge: ", "Total"},
-		},
-		{
-			name:      "[Fail] When: a pointer cycle ; Should: return ErrInvalidState that names the field",
-			initial:   cycle,
-			wantErr:   ErrInvalidState,
-			wantInMsg: []string{"sagas: invalid state: Link: "},
+			name:    "[Success] When: a diamond of four steps over a zero state ; Should: give back the initial state",
+			initial: testState{},
+			shape:   diamond(),
 		},
 	}
 
@@ -1246,66 +1275,12 @@ func Test_newStore(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			st, err := newStore(tt.initial)
-			require.ErrorIs(t, err, tt.wantErr)
-			assertInOrder(t, errText(err), tt.wantInMsg)
-			assert.LessOrEqual(t, strings.Count(errText(err), ErrInvalidState.Error()), 1)
+			st := newTestStore(t, tt.initial, tt.shape)
+			assert.Equal(t, tt.initial, written(t, st))
 
-			if err != nil {
-				assert.Nil(t, st)
-
-				return
+			for step := range tt.shape.field {
+				assert.Equal(t, tt.initial, storedState(t, st.base(step)))
 			}
-
-			var got testState
-			require.NoError(t, st.writeBack(&got))
-			assert.Equal(t, tt.initial, got)
-			assertMoved(t, st, st.snapshot(), nil)
-		})
-	}
-}
-
-func storeErr[S any](initial S) func() (any, error) {
-	return func() (any, error) {
-		st, err := newStore(initial)
-
-		return st, err
-	}
-}
-
-func Test_newStore_invalidType(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		create    func() (any, error)
-		wantInMsg string
-	}{
-		{
-			name:      "[Fail] When: the state has a chan field ; Should: return ErrInvalidState and no store",
-			create:    storeErr(chanState{C: make(chan int)}),
-			wantInMsg: "sagas: invalid state: chanState.C: rejected kind chan",
-		},
-		{
-			name:      "[Fail] When: the state has an unexported field ; Should: return ErrInvalidState and no store",
-			create:    storeErr(outer{Inner: secretInner{secret: 1}}),
-			wantInMsg: "sagas: invalid state: outer.Inner.secret: unexported field",
-		},
-		{
-			name:      "[Fail] When: the state has a **int field ; Should: return ErrInvalidState and no store",
-			create:    storeErr(ptrPtrState{}),
-			wantInMsg: "sagas: invalid state: ptrPtrState.P: pointer to a pointer, slice or map",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			st, err := tt.create()
-			require.ErrorIs(t, err, ErrInvalidState)
-			assert.Equal(t, tt.wantInMsg, err.Error())
-			assert.Nil(t, st)
 		})
 	}
 }
@@ -1348,10 +1323,9 @@ func Test_copyState(t *testing.T) {
 
 	require.NoError(t, checkState(reflect.TypeFor[copyFixture]()))
 
-	st, err := newStore(newCopyFixture())
-	require.NoError(t, err)
+	st := newTestStore(t, newCopyFixture(), loneStep())
 
-	base, err := copyState(st.snapshot())
+	base, err := copyState(st.base(0))
 	require.NoError(t, err)
 	assert.Equal(t, newCopyFixture(), *base)
 	assert.Nil(t, base.NilSlice)
@@ -1409,7 +1383,7 @@ func Test_copyState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			snap := st.snapshot()
+			snap := st.base(0)
 
 			first, firstErr := copyState(snap)
 			require.NoError(t, firstErr)
@@ -1428,8 +1402,7 @@ func Test_copyState_malformedSnapshot(t *testing.T) {
 
 	require.NoError(t, checkState(reflect.TypeFor[copyFixture]()))
 
-	st, err := newStore(newCopyFixture())
-	require.NoError(t, err)
+	st := newTestStore(t, newCopyFixture(), loneStep())
 
 	tests := []struct {
 		name      string
@@ -1457,7 +1430,7 @@ func Test_copyState_malformedSnapshot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			snap := st.snapshot()
+			snap := st.base(0)
 
 			for name, data := range tt.overrides {
 				field, found := reflect.TypeFor[copyFixture]().FieldByName(name)
@@ -1475,160 +1448,63 @@ func Test_copyState_malformedSnapshot(t *testing.T) {
 	}
 }
 
-func Test_store_commit(t *testing.T) {
+func diamondOutputs() []recorded {
+	return []recorded{
+		{step: 0, value: 5},
+		{step: 1, value: chargeState{Total: 10}},
+		{step: 2, value: []string{"c"}},
+	}
+}
+
+func Test_store_base(t *testing.T) {
 	t.Parallel()
 
 	require.NoError(t, checkState(reflect.TypeFor[testState]()))
 
-	reserved := fieldChange{field: seatsAt, value: 5}
-	committed := baseState()
-	committed.Seats = 5
-
-	loop := &linkState{}
-	loop.Next = loop
-
 	tests := []struct {
-		name                     string
-		earlier                  []fieldChange
-		second                   fieldChange
-		secondSnapshotAfterFirst bool
-		wantChanged              []string
-		wantErr                  error
-		wantLabel                *KindError
-		wantInMsg                []string
-		wantMoved                []string
-		wantState                testState
+		name    string
+		shape   storeShape
+		outputs []recorded
+		step    int
+		want    testState
 	}{
 		{
-			name:        "[Success] When: parallel snapshots change disjoint fields ; Should: commit both",
-			earlier:     []fieldChange{reserved},
-			second:      fieldChange{field: chargeAt, value: chargeState{Total: 10}},
-			wantChanged: []string{chargeField},
-			wantMoved:   []string{seatsField, chargeField},
-			wantState: func() testState {
-				s := committed
-				s.Charge.Total = 10
-
-				return s
-			}(),
+			name:  "[Success] When: the step has no ancestor ; Should: give the initial state",
+			shape: diamond(), outputs: diamondOutputs(), step: 0,
+			want: baseState(),
 		},
 		{
-			name:      "[Fail] When: parallel snapshots change one field ; Should: return ErrConflict, both steps",
-			earlier:   []fieldChange{reserved},
-			second:    fieldChange{field: seatsAt, value: 6},
-			wantErr:   ErrConflict,
-			wantLabel: ErrConflict,
-			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantMoved: []string{seatsField},
-			wantState: committed,
+			name:  "[Success] When: a sibling recorded an output ; Should: give only the output of the ancestor",
+			shape: diamond(), outputs: diamondOutputs(), step: 1,
+			want: withState(func(s *testState) { s.Seats = 5 }),
 		},
 		{
-			name:                     "[Success] When: the same field changes in sequence ; Should: commit both",
-			earlier:                  []fieldChange{reserved},
-			second:                   fieldChange{field: seatsAt, value: 6},
-			secondSnapshotAfterFirst: true,
-			wantChanged:              []string{seatsField},
-			wantMoved:                []string{seatsField},
-			wantState: func() testState {
-				s := baseState()
-				s.Seats = 6
-
-				return s
-			}(),
+			name:  "[Success] When: the step joins two branches ; Should: give the outputs of every ancestor",
+			shape: diamond(), outputs: diamondOutputs(), step: 3,
+			want: withState(func(s *testState) {
+				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
+			}),
 		},
 		{
-			name:        "[Success] When: the output equals the snapshot ; Should: return an empty list, keep versions",
-			earlier:     []fieldChange{reserved},
-			second:      fieldChange{field: seatsAt, value: 2},
-			wantChanged: []string{},
-			wantMoved:   []string{seatsField},
-			wantState:   committed,
+			name:    "[Success] When: an ancestor recorded nothing ; Should: give the initial value of its field",
+			shape:   diamond(),
+			outputs: []recorded{{step: 0, value: 5}, {step: 2, value: []string{"c"}}},
+			step:    3,
+			want:    withState(func(s *testState) { s.Seats, s.Items = 5, []string{"c"} }),
 		},
 		{
-			name:        "[Success] When: the step hands no bytes ; Should: return an empty list, write nothing",
-			earlier:     []fieldChange{reserved},
-			second:      fieldChange{field: seatsAt, output: &encodedOutput{}},
-			wantChanged: []string{},
-			wantMoved:   []string{seatsField},
-			wantState:   committed,
+			name:    "[Success] When: two producers of one field in sequence ; Should: give the second one the first",
+			shape:   seatsChain(),
+			outputs: []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			step:    1,
+			want:    withState(func(s *testState) { s.Seats = 5 }),
 		},
 		{
-			name:        "[Success] When: the step has no output field ; Should: return an empty list, write nothing",
-			earlier:     []fieldChange{reserved},
-			second:      fieldChange{field: -1, value: 6},
-			wantChanged: []string{},
-			wantMoved:   []string{seatsField},
-			wantState:   committed,
-		},
-		{
-			name: "[Success] When: float, map, nil slice and time change in parallel ; Should: never conflict",
-			earlier: []fieldChange{
-				{field: chargeAt, value: chargeState{Total: 2.5}},
-				{field: tagsAt, value: map[string]int{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7}},
-				{field: itemsAt, value: []string{"x"}},
-				{field: atAt, value: baseState().At + 1},
-			},
-			second:      fieldChange{field: linkAt, value: &linkState{}},
-			wantChanged: []string{linkField},
-			wantMoved:   []string{chargeField, "Tags", itemsField, "At", linkField},
-			wantState: func() testState {
-				s := baseState()
-				s.Charge.Total = 2.5
-				s.Tags["g"] = 7
-				s.Items = []string{"x"}
-				s.At++
-				s.Link = &linkState{}
-
-				return s
-			}(),
-		},
-		{
-			name:                     "[Fail] When: the output holds a NaN ; Should: return ErrInvalidState naming it",
-			earlier:                  []fieldChange{{field: tagsAt, value: map[string]int{"a": 10}}},
-			second:                   fieldChange{field: chargeAt, value: chargeState{Total: math.NaN()}},
-			secondSnapshotAfterFirst: true,
-			wantErr:                  ErrInvalidState,
-			wantLabel:                ErrInvalidState,
-			wantInMsg:                []string{"sagas: invalid state: Charge: ", "Total"},
-			wantState: func() testState {
-				s := baseState()
-				s.Tags = map[string]int{"a": 10}
-
-				return s
-			}(),
-		},
-		{
-			name:        "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
-			earlier:     []fieldChange{reserved},
-			second:      fieldChange{field: itemsAt, value: []string{}},
-			wantChanged: []string{itemsField},
-			wantMoved:   []string{seatsField, itemsField},
-			wantState: func() testState {
-				s := committed
-				s.Items = []string{}
-
-				return s
-			}(),
-		},
-		{
-			name:      "[Fail] When: a field goes A to B to A after the snapshot ; Should: return ErrConflict",
-			earlier:   []fieldChange{reserved, {field: seatsAt, value: 2}},
-			second:    fieldChange{field: seatsAt, value: 6},
-			wantErr:   ErrConflict,
-			wantLabel: ErrConflict,
-			wantInMsg: []string{"field Seats", `step "charge"`, `step "reserve"`},
-			wantMoved: []string{seatsField},
-			wantState: baseState(),
-		},
-		{
-			name:                     "[Fail] When: the output holds a loop ; Should: return ErrInvalidState",
-			earlier:                  []fieldChange{reserved},
-			second:                   fieldChange{field: linkAt, value: loop},
-			secondSnapshotAfterFirst: true,
-			wantErr:                  ErrInvalidState,
-			wantLabel:                ErrInvalidState,
-			wantInMsg:                []string{"sagas: invalid state: Link: "},
-			wantState:                committed,
+			name:    "[Success] When: a None step follows a producer ; Should: give it the output of the producer",
+			shape:   noneAfterSeats(),
+			outputs: []recorded{{step: 0, value: 5}},
+			step:    1,
+			want:    withState(func(s *testState) { s.Seats = 5 }),
 		},
 	}
 
@@ -1636,32 +1512,123 @@ func Test_store_commit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			st, err := newStore(baseState())
-			require.NoError(t, err)
+			st := newTestStore(t, baseState(), tt.shape)
+			recordAll(t, st, tt.outputs)
 
-			early := st.snapshot()
+			assert.Equal(t, tt.want, storedState(t, st.base(tt.step)))
+		})
+	}
+}
 
-			for _, change := range tt.earlier {
-				_, commitErr := commitChange(st, firstStep, st.snapshot(), change)
-				require.NoError(t, commitErr)
-			}
+func Test_store_record(t *testing.T) {
+	t.Parallel()
 
-			second := early
-			if tt.secondSnapshotAfterFirst {
-				second = st.snapshot()
-			}
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
 
-			res, err := commitChange(st, secondStep, second, tt.second)
+	loop := &linkState{}
+	loop.Next = loop
+
+	tests := []struct {
+		name        string
+		shape       storeShape
+		earlier     []recorded
+		output      recorded
+		wantChanged []string
+		wantErr     error
+		wantLabel   *KindError
+		wantInMsg   []string
+		wantState   testState
+	}{
+		{
+			name:        "[Success] When: a producer changes its field ; Should: record the output and name the field",
+			shape:       diamond(),
+			output:      recorded{step: 0, value: 5},
+			wantChanged: []string{seatsField},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:        "[Success] When: the output equals the base of the step ; Should: return an empty list",
+			shape:       diamond(),
+			earlier:     []recorded{{step: 0, value: 5}},
+			output:      recorded{step: 1, value: baseState().Charge},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:        "[Success] When: a later producer sets the initial value back ; Should: name the field, win",
+			shape:       seatsChain(),
+			earlier:     []recorded{{step: 0, value: 5}},
+			output:      recorded{step: 1, value: baseState().Seats},
+			wantChanged: []string{seatsField},
+			wantState:   baseState(),
+		},
+		{
+			name:        "[Success] When: a sibling changed another field ; Should: compare with the step base only",
+			shape:       diamond(),
+			earlier:     []recorded{{step: 0, value: 5}, {step: 1, value: chargeState{Total: 10}}},
+			output:      recorded{step: 2, value: []string{"c"}},
+			wantChanged: []string{itemsField},
+			wantState: withState(func(s *testState) {
+				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
+			}),
+		},
+		{
+			name:        "[Success] When: a nil slice is set to empty ; Should: count the field as changed",
+			shape:       diamond(),
+			output:      recorded{step: 2, value: []string{}},
+			wantChanged: []string{itemsField},
+			wantState:   withState(func(s *testState) { s.Items = []string{} }),
+		},
+		{
+			name:        "[Success] When: the step hands no bytes ; Should: return an empty list, record nothing",
+			shape:       diamond(),
+			earlier:     []recorded{{step: 0, value: 5}},
+			output:      recorded{step: 1, output: &encodedOutput{}},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:        "[Success] When: the step is a None step ; Should: return an empty list, record nothing",
+			shape:       noneAfterSeats(),
+			earlier:     []recorded{{step: 0, value: 5}},
+			output:      recorded{step: 1, output: &encodedOutput{data: []byte("9")}},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:      "[Fail] When: the output holds a NaN ; Should: return ErrInvalidState naming it, record nothing",
+			shape:     diamond(),
+			earlier:   []recorded{{step: 0, value: 5}},
+			output:    recorded{step: 1, value: chargeState{Total: math.NaN()}},
+			wantErr:   ErrInvalidState,
+			wantLabel: ErrInvalidState,
+			wantInMsg: []string{"sagas: invalid state: Charge: ", "Total"},
+			wantState: withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:      "[Fail] When: the output holds a loop ; Should: return ErrInvalidState, record nothing",
+			shape:     diamond(),
+			output:    recorded{step: 3, value: loop},
+			wantErr:   ErrInvalidState,
+			wantLabel: ErrInvalidState,
+			wantInMsg: []string{"sagas: invalid state: Link: "},
+			wantState: baseState(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st := newTestStore(t, baseState(), tt.shape)
+			recordAll(t, st, tt.earlier)
+
+			res, err := st.record(tt.output.step, outputOf(st, tt.output))
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.Same(t, tt.wantLabel, res.label)
 			assertInOrder(t, errText(err), tt.wantInMsg)
 			assert.Equal(t, tt.wantChanged, res.changed)
-
-			var got testState
-			require.NoError(t, st.writeBack(&got))
-			assert.Equal(t, tt.wantState, got)
-
-			assertMoved(t, st, second, tt.wantMoved)
+			assert.Equal(t, tt.wantState, written(t, st))
 		})
 	}
 }
@@ -1673,22 +1640,37 @@ func Test_store_writeBack(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		shape   storeShape
+		outputs []recorded
 		dst     *testState
 		want    *testState
 		wantErr error
 	}{
 		{
-			name: "[Success] When: the destination holds other values ; Should: keep the committed state",
-			dst:  &testState{Seats: 99, Items: []string{"stale"}},
-			want: func() *testState {
-				s := baseState()
-				s.Seats = 5
-
-				return &s
-			}(),
+			name:  "[Success] When: every step of a diamond recorded an output ; Should: hold every output",
+			shape: diamond(), outputs: diamondOutputs(), dst: &testState{Seats: 99, Items: []string{"stale"}},
+			want: new(withState(func(s *testState) {
+				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
+			})),
+		},
+		{
+			name:    "[Success] When: two producers of one field run in sequence ; Should: keep the later output",
+			shape:   seatsChain(),
+			outputs: []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			dst:     &testState{},
+			want:    new(withState(func(s *testState) { s.Seats = 7 })),
+		},
+		{
+			name:    "[Success] When: a None step follows a producer ; Should: keep the output of the producer",
+			shape:   noneAfterSeats(),
+			outputs: []recorded{{step: 0, value: 5}, {step: 1, output: &encodedOutput{data: []byte("9")}}},
+			dst:     &testState{},
+			want:    new(withState(func(s *testState) { s.Seats = 5 })),
 		},
 		{
 			name:    "[Fail] When: the destination is nil ; Should: return ErrInvalidState",
+			shape:   diamond(),
+			outputs: diamondOutputs(),
 			wantErr: ErrInvalidState,
 		},
 	}
@@ -1697,22 +1679,214 @@ func Test_store_writeBack(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			st, err := newStore(baseState())
-			require.NoError(t, err)
-
-			_, err = commitChange(st, firstStep, st.snapshot(), fieldChange{field: seatsAt, value: 5})
-			require.NoError(t, err)
+			st := newTestStore(t, baseState(), tt.shape)
+			recordAll(t, st, tt.outputs)
 
 			require.ErrorIs(t, st.writeBack(tt.dst), tt.wantErr)
-
-			later := st.snapshot()
-			_, err = commitChange(st, secondStep, later, fieldChange{field: seatsAt, value: 7})
-			require.NoError(t, err)
-
-			_, err = commitChange(st, secondStep, later, fieldChange{field: tagsAt, value: map[string]int{"a": 100}})
-			require.NoError(t, err)
-
 			assert.Equal(t, tt.want, tt.dst)
+		})
+	}
+}
+
+func Test_store_compensationBase(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+
+	tests := []struct {
+		name    string
+		shape   storeShape
+		outputs []recorded
+		step    int
+		want    testState
+	}{
+		{
+			name:    "[Success] When: the step recorded an output ; Should: give its base plus that output",
+			shape:   seatsChain(),
+			outputs: []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			step:    1,
+			want:    withState(func(s *testState) { s.Seats = 7 }),
+		},
+		{
+			name:    "[Success] When: the step recorded nothing ; Should: give only its base",
+			shape:   seatsChain(),
+			outputs: []recorded{{step: 0, value: 5}},
+			step:    1,
+			want:    withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:    "[Success] When: the step is a None step ; Should: give only its base",
+			shape:   noneAfterSeats(),
+			outputs: []recorded{{step: 0, value: 5}},
+			step:    1,
+			want:    withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:    "[Success] When: a sibling recorded an output ; Should: leave the sibling output out",
+			shape:   diamond(),
+			outputs: diamondOutputs(),
+			step:    1,
+			want:    withState(func(s *testState) { s.Seats, s.Charge = 5, chargeState{Total: 10} }),
+		},
+		{
+			name:    "[Success] When: a root step recorded an output ; Should: give the initial state plus it",
+			shape:   diamond(),
+			outputs: diamondOutputs(),
+			step:    0,
+			want:    withState(func(s *testState) { s.Seats = 5 }),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st := newTestStore(t, baseState(), tt.shape)
+			recordAll(t, st, tt.outputs)
+
+			assert.Equal(t, tt.want, storedState(t, st.compensationBase(tt.step)))
+		})
+	}
+}
+
+func Test_store_restore(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+
+	tests := []struct {
+		name        string
+		shape       storeShape
+		outputs     []recorded
+		restored    []int
+		wantChanged []string
+		wantState   testState
+	}{
+		{
+			name:        "[Success] When: the later of two producers restores ; Should: fall back to the first output",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			restored:    []int{1},
+			wantChanged: []string{seatsField},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:        "[Success] When: both producers restore in reverse ; Should: fall back to the initial value",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			restored:    []int{1, 0},
+			wantChanged: []string{seatsField},
+			wantState:   baseState(),
+		},
+		{
+			name:        "[Success] When: the step recorded nothing ; Should: change nothing",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}},
+			restored:    []int{1},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:        "[Success] When: the output equals the base ; Should: drop it and return an empty list",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 5}},
+			restored:    []int{1},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+		{
+			name:        "[Success] When: the step is a None step ; Should: change nothing",
+			shape:       noneAfterSeats(),
+			outputs:     []recorded{{step: 0, value: 5}},
+			restored:    []int{1},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 5 }),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st := newTestStore(t, baseState(), tt.shape)
+			recordAll(t, st, tt.outputs)
+
+			var res commitResult
+			for _, step := range tt.restored {
+				res = st.restore(step)
+			}
+
+			assert.Equal(t, tt.wantChanged, res.changed)
+			assert.Nil(t, res.label)
+			assert.Equal(t, tt.wantState, written(t, st))
+		})
+	}
+}
+
+func Test_store_replace(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkState(reflect.TypeFor[testState]()))
+
+	tests := []struct {
+		name        string
+		shape       storeShape
+		outputs     []recorded
+		replacement recorded
+		wantChanged []string
+		wantErr     error
+		wantLabel   *KindError
+		wantState   testState
+	}{
+		{
+			name:        "[Success] When: the compensation returns a new value ; Should: replace the output, name it",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			replacement: recorded{step: 1, value: 9},
+			wantChanged: []string{seatsField},
+			wantState:   withState(func(s *testState) { s.Seats = 9 }),
+		},
+		{
+			name:        "[Success] When: the step recorded nothing ; Should: record the value as its output",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}},
+			replacement: recorded{step: 1, value: 9},
+			wantChanged: []string{seatsField},
+			wantState:   withState(func(s *testState) { s.Seats = 9 }),
+		},
+		{
+			name:        "[Success] When: the value equals the recorded output ; Should: return an empty list",
+			shape:       seatsChain(),
+			outputs:     []recorded{{step: 0, value: 5}, {step: 1, value: 7}},
+			replacement: recorded{step: 1, value: 7},
+			wantChanged: []string{},
+			wantState:   withState(func(s *testState) { s.Seats = 7 }),
+		},
+		{
+			name:        "[Fail] When: the value holds a NaN ; Should: return ErrInvalidState, keep the output",
+			shape:       diamond(),
+			outputs:     diamondOutputs(),
+			replacement: recorded{step: 1, value: chargeState{Total: math.NaN()}},
+			wantErr:     ErrInvalidState,
+			wantLabel:   ErrInvalidState,
+			wantState: withState(func(s *testState) {
+				s.Seats, s.Charge, s.Items = 5, chargeState{Total: 10}, []string{"c"}
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			st := newTestStore(t, baseState(), tt.shape)
+			recordAll(t, st, tt.outputs)
+
+			res, err := st.replace(tt.replacement.step, outputOf(st, tt.replacement))
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Same(t, tt.wantLabel, res.label)
+			assert.Equal(t, tt.wantChanged, res.changed)
+			assert.Equal(t, tt.wantState, written(t, st))
 		})
 	}
 }
@@ -1749,34 +1923,27 @@ func newBenchLarge() benchLarge {
 
 func BenchmarkStore_commit(b *testing.B) {
 	b.Run("small", func(b *testing.B) {
-		benchCommit(b, benchSmall{A: 1, B: 2.5, C: "seat", D: true}, func(s *benchSmall) fieldChange {
-			return fieldChange{field: 0, value: s.A + 1}
-		})
+		benchRecord(b, benchSmall{A: 1, B: 2.5, C: "seat", D: true}, 0, func(s *benchSmall) any { return s.A + 1 })
 	})
 	b.Run("large", func(b *testing.B) {
-		benchCommit(b, newBenchLarge(), func(s *benchLarge) fieldChange {
-			return fieldChange{field: 2, value: s.Count + 1}
-		})
+		benchRecord(b, newBenchLarge(), 2, func(s *benchLarge) any { return s.Count + 1 })
 	})
 }
 
-func benchCommit[S any](b *testing.B, initial S, change func(*S) fieldChange) {
+func benchRecord[S any](b *testing.B, initial S, field int, change func(*S) any) {
 	b.Helper()
 
 	require.NoError(b, checkState(reflect.TypeFor[S]()))
 
-	st, err := newStore(initial)
-	require.NoError(b, err)
+	st := newTestStore(b, initial, storeShape{field: []int{field}, parents: [][]int{nil}})
 
 	b.ReportAllocs()
 
 	for b.Loop() {
-		snap := st.snapshot()
-
-		attempt, copyErr := copyState(snap)
+		attempt, copyErr := copyState(st.base(0))
 		require.NoError(b, copyErr)
 
-		_, commitErr := commitChange(st, "bench", snap, change(attempt))
-		require.NoError(b, commitErr)
+		_, recordErr := st.record(0, outputOf(st, recorded{step: 0, value: change(attempt)}))
+		require.NoError(b, recordErr)
 	}
 }

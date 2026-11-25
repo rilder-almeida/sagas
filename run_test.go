@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -375,56 +376,83 @@ func Test_Saga_Run_withoutJournal(t *testing.T) {
 func Test_checkRun(t *testing.T) {
 	t.Parallel()
 
+	loop := &linkState{}
+	loop.Next = loop
+
 	tests := []struct {
 		name          string
-		run           func() (string, error)
+		run           func() (runStart, error)
 		wantExecution *regexp.Regexp
+		wantFields    int
 		wantErrs      []error
 		wantContains  []string
 	}{
 		{
 			name:          "[Success] When: the state has no id tag ; Should: draw a random 32-char hex execution",
-			run:           func() (string, error) { return checkRun(&tripState{}, -1) },
+			run:           func() (runStart, error) { return checkRun(&tripState{}, -1) },
 			wantExecution: hexID,
+			wantFields:    3,
 		},
 		{
 			name:          "[Success] When: the tagged field holds a valid ID ; Should: keep it",
-			run:           func() (string, error) { return checkRun(&orderState{ID: "order-42"}, 1) },
+			run:           func() (runStart, error) { return checkRun(&orderState{ID: "order-42"}, 1) },
 			wantExecution: regexp.MustCompile(`^order-42$`),
+			wantFields:    2,
 		},
 		{
 			name:         "[Fail] When: the execution ID is empty ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{}, 1) },
+			run:          func() (runStart, error) { return checkRun(&orderState{}, 1) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: checkName(""),
 		},
 		{
 			name:         "[Fail] When: the execution ID holds a colon ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{ID: "order:42"}, 1) },
+			run:          func() (runStart, error) { return checkRun(&orderState{ID: "order:42"}, 1) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
 			name:         "[Fail] When: the execution ID starts with a dash ; Should: return ErrInvalidRun",
-			run:          func() (string, error) { return checkRun(&orderState{ID: "-x"}, 1) },
+			run:          func() (runStart, error) { return checkRun(&orderState{ID: "-x"}, 1) },
+			wantErrs:     []error{ErrInvalidRun},
+			wantContains: []string{nameRule},
+		},
+		{
+			name: "[Fail] When: the execution ID holds quotes, a backslash and non-ASCII text ; " +
+				"Should: return ErrInvalidRun",
+			run:          func() (runStart, error) { return checkRun(&orderState{ID: quotedID}, 1) },
 			wantErrs:     []error{ErrInvalidRun},
 			wantContains: []string{nameRule},
 		},
 		{
 			name:         "[Fail] When: s is nil ; Should: return ErrInvalidState",
-			run:          func() (string, error) { return checkRun[tripState](nil, -1) },
+			run:          func() (runStart, error) { return checkRun[tripState](nil, -1) },
 			wantErrs:     []error{ErrInvalidState},
 			wantContains: []string{"state is nil"},
 		},
 		{
 			name:         "[Fail] When: the initial state holds NaN ; Should: return ErrInvalidState",
-			run:          func() (string, error) { return checkRun(&floatState{F: math.NaN()}, -1) },
+			run:          func() (runStart, error) { return checkRun(&floatState{F: math.NaN()}, -1) },
 			wantErrs:     []error{ErrInvalidState},
 			wantContains: []string{"F"},
 		},
 		{
-			name:         "[Fail] When: the ID and the state are both bad ; Should: join both errors",
-			run:          func() (string, error) { return checkRun(&floatIDState{F: math.NaN(), ID: "a b"}, 1) },
+			name: "[Fail] When: the initial state holds a pointer cycle ; " +
+				"Should: return ErrInvalidState naming the field",
+			run: func() (runStart, error) {
+				st := baseState()
+				st.Link = loop
+
+				return checkRun(&st, -1)
+			},
+			wantErrs:     []error{ErrInvalidState},
+			wantContains: []string{"sagas: invalid state: Link: "},
+		},
+		{
+			name: "[Fail] When: the ID and the state are both bad ; Should: join both errors",
+			run: func() (runStart, error) {
+				return checkRun(&floatIDState{F: math.NaN(), ID: "a b"}, 1)
+			},
 			wantErrs:     []error{ErrInvalidRun, ErrInvalidState},
 			wantContains: []string{nameRule, "F"},
 		},
@@ -434,9 +462,12 @@ func Test_checkRun(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			execution, err := tt.run()
+			start, err := tt.run()
 			requireErrs(t, err, tt.wantErrs, nil)
 			requireText(t, err, tt.wantContains, nil)
+			assert.Len(t, start.fields, tt.wantFields)
+
+			execution := start.execution
 
 			if tt.wantExecution == nil {
 				assert.Empty(t, execution)
@@ -455,28 +486,52 @@ type floatIDState struct {
 	ID string `sagas:"id"`
 }
 
+const quotedID = `say "hi" \ café`
+
+func encodedOf(s any) func() ([][]byte, error) {
+	return func() ([][]byte, error) { return encodeFields(reflect.ValueOf(s)) }
+}
+
 func Test_executionOf(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		run  func() string
-		want *regexp.Regexp
+		name    string
+		fields  func() ([][]byte, error)
+		idField int
+		want    *regexp.Regexp
+		wantErr error
 	}{
 		{
-			name: "[Success] When: the id field is tagged ; Should: return its value",
-			run:  func() string { return executionOf(&orderState{ID: "order-9", Hotel: "x"}, 1) },
-			want: regexp.MustCompile(`^order-9$`),
+			name:    "[Success] When: the id field is tagged ; Should: return its value",
+			fields:  encodedOf(orderState{ID: "order-9", Hotel: "x"}),
+			idField: 1,
+			want:    regexp.MustCompile(`^order-9$`),
 		},
 		{
-			name: "[Success] When: the id field is not the first ; Should: return the value at idField",
-			run:  func() string { return executionOf(&floatIDState{F: 1, ID: "late-id"}, 1) },
-			want: regexp.MustCompile(`^late-id$`),
+			name:    "[Success] When: the id field is not the first ; Should: return the value at idField",
+			fields:  encodedOf(floatIDState{F: 1, ID: "late-id"}),
+			idField: 1,
+			want:    regexp.MustCompile(`^late-id$`),
 		},
 		{
-			name: "[Success] When: idField is -1 ; Should: return a random 32-char hex ID",
-			run:  func() string { return executionOf(&tripState{Hotel: "x"}, -1) },
-			want: hexID,
+			name: "[Success] When: the ID holds quotes, a backslash and non-ASCII text ; " +
+				"Should: return it unchanged",
+			fields:  encodedOf(orderState{ID: quotedID}),
+			idField: 1,
+			want:    regexp.MustCompile("^" + regexp.QuoteMeta(quotedID) + "$"),
+		},
+		{
+			name:    "[Success] When: idField is -1 ; Should: return a random 32-char hex ID",
+			fields:  encodedOf(tripState{Hotel: "x"}),
+			idField: -1,
+			want:    hexID,
+		},
+		{
+			name:    "[Fail] When: the id field does not hold a JSON string ; Should: return ErrInvalidState",
+			fields:  func() ([][]byte, error) { return [][]byte{[]byte(`"x"`), []byte(`42`)}, nil },
+			idField: 1,
+			wantErr: ErrInvalidState,
 		},
 	}
 
@@ -484,7 +539,19 @@ func Test_executionOf(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Regexp(t, tt.want, tt.run())
+			fields, err := tt.fields()
+			require.NoError(t, err)
+
+			got, err := executionOf(fields, tt.idField)
+			require.ErrorIs(t, err, tt.wantErr)
+
+			if tt.want == nil {
+				assert.Empty(t, got)
+
+				return
+			}
+
+			assert.Regexp(t, tt.want, got)
 		})
 	}
 }
@@ -610,7 +677,7 @@ func Test_runner_append(t *testing.T) {
 			require.True(t, tt.failAt >= 0 && tt.failAt <= tt.appends, "failAt must be within 0..appends")
 
 			for i := 1; i <= tt.appends; i++ {
-				changed := []string{"Hotel"}
+				changed := []string{hotelField}
 				err = r.append(ctx, &Event{Kind: EventStepSucceeded, Step: "a", Changed: changed})
 				changed[0] = "mutated"
 
@@ -671,7 +738,7 @@ func assertAppended(t *testing.T, j *scriptJournal, wantStored, calls int) {
 		assert.Equal(t, "writer-1", e.Writer)
 		assert.Equal(t, EventVersion, e.Version)
 		assert.Equal(t, EventStepSucceeded, e.Kind)
-		assert.Equal(t, []string{"Hotel"}, e.Changed)
+		assert.Equal(t, []string{hotelField}, e.Changed)
 		assert.False(t, e.Time.IsZero())
 	}
 }
@@ -822,6 +889,14 @@ func (r *recorder) book(name string, hotel Hotel) func(context.Context, tripStat
 	}
 }
 
+func (r *recorder) saw(name string) func(context.Context, tripState) error {
+	return func(_ context.Context, s tripState) error {
+		r.add(name + " saw " + string(s.Hotel))
+
+		return nil
+	}
+}
+
 func (r *recorder) step(name string) *actStep { return act(name, r.do(name)) }
 
 func (r *recorder) booking(name string) *makeStep {
@@ -881,6 +956,8 @@ type runRow struct {
 	wantOrder          [][2]string
 	wantZones          []StepZone
 	wantTrail          [][]string
+	wantChanged        map[string][]string
+	initial            tripState
 	wantState          tripState
 }
 
@@ -1008,6 +1085,7 @@ func execute(s *Saga[tripState], tt *runRow) []ran {
 				time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
 			}
 
+			out[i].state = tt.initial
 			out[i].err = s.Run(ctx, &out[i].state)
 		}
 		if tt.concurrent {
@@ -1084,7 +1162,12 @@ func assertEvents(t *testing.T, res *runRecord, tt *runRow, events []Event) {
 			started[events[i].Step] = true
 		}
 
-		trail = append(trail, trailOf(events[i].Kind, events[i].Step))
+		key := trailOf(events[i].Kind, events[i].Step)
+		trail = append(trail, key)
+
+		if want, found := tt.wantChanged[key]; found {
+			assert.Equal(t, want, events[i].Changed, "event %s", key)
+		}
 	}
 
 	for i := range res.Steps {

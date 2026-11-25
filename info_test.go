@@ -266,7 +266,7 @@ func Test_callMeta_mark(t *testing.T) {
 		},
 		{
 			name: "[Success] When: the meta has a label ; Should: replace it",
-			meta: &callMeta{label: ErrPanic}, label: ErrConflict, want: ErrConflict,
+			meta: &callMeta{label: ErrPanic}, label: ErrInvalidState, want: ErrInvalidState,
 		},
 		{
 			name: "[Success] When: the meta has a label and the new one is nil ; Should: clear it",

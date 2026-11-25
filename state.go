@@ -11,13 +11,9 @@ import (
 	"time"
 )
 
-var (
-	// ErrInvalidState is returned when the state type breaks a state rule or a state value cannot round-trip through
-	// its JSON encoding. The rules cover the field types, the sagas tags and a kept execution ID method.
-	ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
-	// ErrConflict is returned when a step changes a field that another step committed after the step's snapshot.
-	ErrConflict = &KindError{name: "conflict", message: "sagas: state conflict"}
-)
+// ErrInvalidState is returned when the state type breaks a state rule or a state value cannot round-trip through
+// its JSON encoding. The rules cover the field types, the sagas tags and a kept execution ID method.
+var ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
 
 type offense struct {
 	path string
@@ -251,43 +247,51 @@ func isMapKeyKind(kind reflect.Kind) bool {
 }
 
 type snapshot[S any] struct {
-	fields   [][]byte
-	versions []uint64
+	fields [][]byte
 }
 
 type store[S any] struct {
-	fields   [][]byte
-	versions []uint64
-	steps    []string
-	names    []string
+	initial   [][]byte
+	outputs   [][]byte
+	field     []int
+	order     []int
+	ancestors [][]bool
+	names     []string
 }
 
-func newStore[S any](initial S) (*store[S], error) {
+func newStore[S any](initial [][]byte, field, order []int, ancestors [][]bool) *store[S] {
 	t := reflect.TypeFor[S]()
-	if err := checkState(t); err != nil {
-		return nil, err
-	}
 
-	fields, err := encodeFields(reflect.ValueOf(initial))
-	if err != nil {
-		return nil, err
-	}
-
-	names := make([]string, len(fields))
+	names := make([]string, len(initial))
 	for i := range names {
 		names[i] = t.Field(i).Name
 	}
 
 	return &store[S]{
-		fields:   fields,
-		versions: make([]uint64, len(fields)),
-		steps:    make([]string, len(fields)),
-		names:    names,
-	}, nil
+		initial: initial, outputs: make([][]byte, len(field)), field: field, order: order, ancestors: ancestors,
+		names: names,
+	}
 }
 
-func (s *store[S]) snapshot() snapshot[S] {
-	return snapshot[S]{fields: slices.Clone(s.fields), versions: slices.Clone(s.versions)}
+func (s *store[S]) base(step int) snapshot[S] {
+	fields := slices.Clone(s.initial)
+
+	for _, j := range s.order {
+		if s.ancestors[step][j] && s.outputs[j] != nil {
+			fields[s.field[j]] = s.outputs[j]
+		}
+	}
+
+	return snapshot[S]{fields: fields}
+}
+
+func (s *store[S]) compensationBase(step int) snapshot[S] {
+	snap := s.base(step)
+	if s.outputs[step] != nil {
+		snap.fields[s.field[step]] = s.outputs[step]
+	}
+
+	return snap
 }
 
 type commitResult struct {
@@ -295,27 +299,47 @@ type commitResult struct {
 	label   *KindError
 }
 
-func (s *store[S]) commit(step string, snap snapshot[S], field int, out encodedOutput) (commitResult, error) {
+func (s *store[S]) record(step int, out encodedOutput) (commitResult, error) {
+	return s.put(step, out, s.base(step))
+}
+
+func (s *store[S]) replace(step int, out encodedOutput) (commitResult, error) {
+	return s.put(step, out, s.compensationBase(step))
+}
+
+func (s *store[S]) restore(step int) commitResult {
+	f := s.field[step]
+	if f < 0 {
+		return commitResult{changed: []string{}}
+	}
+
+	before := s.compensationBase(step).fields[f]
+	s.outputs[step] = nil
+
+	return s.change(f, before, s.base(step).fields[f])
+}
+
+func (s *store[S]) put(step int, out encodedOutput, before snapshot[S]) (commitResult, error) {
 	if out.err != nil {
 		return commitResult{label: ErrInvalidState}, out.err
 	}
 
-	if out.data == nil || field < 0 || bytes.Equal(out.data, snap.fields[field]) {
+	f := s.field[step]
+	if f < 0 || out.data == nil {
 		return commitResult{changed: []string{}}, nil
 	}
 
-	if s.versions[field] != snap.versions[field] {
-		err := fmt.Errorf("%w: field %s changed by step %q after step %q committed it",
-			ErrConflict, s.names[field], step, s.steps[field])
+	s.outputs[step] = out.data
 
-		return commitResult{label: ErrConflict}, err
+	return s.change(f, before.fields[f], out.data), nil
+}
+
+func (s *store[S]) change(f int, before, after []byte) commitResult {
+	if bytes.Equal(before, after) {
+		return commitResult{changed: []string{}}
 	}
 
-	s.fields[field] = out.data
-	s.versions[field]++
-	s.steps[field] = step
-
-	return commitResult{changed: []string{s.names[field]}}, nil
+	return commitResult{changed: []string{s.names[f]}}
 }
 
 func (s *store[S]) writeBack(dst *S) error {
@@ -323,7 +347,15 @@ func (s *store[S]) writeBack(dst *S) error {
 		return fmt.Errorf("%w: write-back destination is nil", ErrInvalidState)
 	}
 
-	out, err := copyState(snapshot[S]{fields: s.fields})
+	fields := slices.Clone(s.initial)
+
+	for _, j := range s.order {
+		if s.outputs[j] != nil {
+			fields[s.field[j]] = s.outputs[j]
+		}
+	}
+
+	out, err := copyState(snapshot[S]{fields: fields})
 	if err != nil {
 		return err
 	}
@@ -366,9 +398,5 @@ func encodeFields(v reflect.Value) ([][]byte, error) {
 		fields[i] = data
 	}
 
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
-	}
-
-	return fields, nil
+	return fields, errors.Join(errs...)
 }

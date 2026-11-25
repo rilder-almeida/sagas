@@ -192,8 +192,8 @@ func Test_PanicError_Unwrap(t *testing.T) {
 		},
 		{
 			name:  "[Success] When: the value is a package Kind ; Should: return it",
-			value: ErrConflict,
-			want:  ErrConflict,
+			value: ErrInvalidState,
+			want:  ErrInvalidState,
 		},
 		{
 			name:  "[Success] When: the value is a string ; Should: return nothing",
@@ -285,10 +285,7 @@ func stateOf(tb testing.TB, out encodedOutput) *pipeState {
 func baseOf[S any](tb testing.TB, s S) snapshot[S] {
 	tb.Helper()
 
-	st, err := newStore(s)
-	require.NoError(tb, err)
-
-	return st.snapshot()
+	return newTestStore(tb, s, loneStep()).base(0)
 }
 
 func tagged(r *recorder, name string) MiddlewareFunc {
@@ -1154,10 +1151,7 @@ func baseFor(t *testing.T, row *pipelineRow) snapshot[pipeState] {
 	t.Helper()
 
 	if row.corruptBase {
-		st, err := newStore(badState{A: "abc", B: "abc", C: "abc"})
-		require.NoError(t, err)
-
-		return snapshot[pipeState](st.snapshot())
+		return snapshot[pipeState](newTestStore(t, badState{A: "abc", B: "abc", C: "abc"}, loneStep()).base(0))
 	}
 
 	return baseOf(t, row.base)

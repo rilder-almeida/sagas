@@ -73,6 +73,59 @@ func forwardRows() []runRow {
 		noPivotZonesRow(),
 		pivotZonesRow(),
 		concurrentRunsRow(),
+		ancestorsOnlyRow(),
+		skippedAncestorRow(),
+	}
+}
+
+func hotelLength(_ context.Context, s tripState) (Rate, error) { return Rate(len(s.Hotel)), nil }
+
+func ancestorsOnlyRow() runRow {
+	return runRow{
+		name: "[Success] When: a concurrent branch produces a field first ; " +
+			"Should: give a step only the outputs of its ancestors",
+		steps: func(rec *recorder) Flow {
+			slow := act("c", func(context.Context, tripState) error {
+				time.Sleep(time.Second)
+				rec.add("c")
+
+				return nil
+			})
+
+			return Parallel(
+				Sequence(rec.step("a1"), producing("a2", rec.book("a2", "a2"))),
+				Sequence(slow, producingRate("b", hotelLength)),
+			)
+		},
+		wantStatus: StatusCompleted,
+		wantSteps: map[string]stepStatus{
+			"a1": stepSucceeded, "a2": stepSucceeded, "b": stepSucceeded, "c": stepSucceeded,
+		},
+		wantOrder: [][2]string{{"a2", "c"}},
+		wantTrail: slices.Concat(
+			seq(opened),
+			together(startOf("a1"), startOf("c")),
+			seq(doneOf("a1"), startOf("a2"), doneOf("a2"), doneOf("c"), startOf("b"), doneOf("b"), closed),
+		),
+		wantState: tripState{Hotel: "a2"},
+	}
+}
+
+func skippedAncestorRow() runRow {
+	return runRow{
+		name: "[Success] When: a skipped ancestor would produce a field ; " +
+			"Should: give the next step the newest output still recorded",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				producing("z", rec.book("z", "zz")),
+				rec.bookingIf("a", "a", rec.when(false, "a")),
+				producingRate("b", hotelLength),
+			)
+		},
+		wantStatus: StatusCompleted,
+		wantSteps:  map[string]stepStatus{"z": stepSucceeded, "a": stepSkipped, "b": stepSucceeded},
+		wantTrail:  seq(opened, startOf("z"), doneOf("z"), skipOf("a"), startOf("b"), doneOf("b"), closed),
+		wantState:  tripState{Hotel: "zz", Rate: 2},
 	}
 }
 

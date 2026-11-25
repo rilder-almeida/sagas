@@ -13,6 +13,7 @@ import (
 
 const (
 	refunded    = "refunded"
+	hotelField  = "Hotel"
 	undoA       = "undo:a"
 	undoB       = "undo:b"
 	undoC       = "undo:c"
@@ -123,6 +124,147 @@ func backwardRows() []runRow {
 		haltBeforeGraceEndRow(),
 		policyCopyRow(Continue, Block, stepCompensated),
 		policyCopyRow(Block, Continue, stepBlocked),
+		ownOutputRow(),
+		sequenceRestoreRow(),
+		failedStepInputRow(),
+		callerValueRow(),
+		continuePastFailedUndoRow(),
+	}
+}
+
+func (r *recorder) restorable(name string, hotel Hotel) *undoMakeStep {
+	s := undoingMade(name, r.book(name, hotel), r.saw("undo:"+name))
+	s.RetryPolicy = NoRetry()
+
+	return s
+}
+
+func restoreChain(tail ...string) [][]string {
+	return seq(append([]string{opened, startOf("a"), doneOf("a"), startOf("x"), failedOf("x")}, tail...)...)
+}
+
+func restoreRow(name string, steps func(rec *recorder) Flow) runRow {
+	return runRow{
+		name:         name,
+		steps:        steps,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"x": ErrFailed},
+		wantFailed:   []string{"x"},
+		wantErrText:  map[string]string{"x": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"x": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps:    map[string]stepStatus{"a": stepCompensated, "x": stepFailed},
+		wantTrail:    restoreChain(compStartOf("a"), undoneOf("a"), closed),
+	}
+}
+
+func ownOutputRow() runRow {
+	row := restoreRow(
+		"[Fail] When: a step with a restore compensation produced a field ; "+
+			"Should: give the compensation that output, then restore the field",
+		func(rec *recorder) Flow { return Sequence(rec.restorable("a", hotelRitz), once("x", alwaysFails)) },
+	)
+	row.wantOrder = [][2]string{{"a", "undo:a saw ritz"}}
+	row.wantChanged = map[string][]string{undoneOf("a"): {hotelField}}
+
+	return row
+}
+
+func callerValueRow() runRow {
+	row := restoreRow(
+		"[Fail] When: the caller set a field and a step produced it ; "+
+			"Should: restore the caller value",
+		func(rec *recorder) Flow { return Sequence(rec.restorable("a", "x"), once("x", alwaysFails)) },
+	)
+	row.initial = tripState{Hotel: "mine"}
+	row.wantOrder = [][2]string{{"a", "undo:a saw x"}}
+	row.wantState = tripState{Hotel: "mine"}
+
+	return row
+}
+
+func sequenceRestoreRow() runRow {
+	return runRow{
+		name: "[Fail] When: two steps in sequence produce one field and restore it ; " +
+			"Should: give each compensation its own output and end on the initial value",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.restorable("r1", "r1"), rec.restorable("r2", "r2"), once("x", alwaysFails))
+		},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"x": ErrFailed},
+		wantFailed:   []string{"x"},
+		wantErrText:  map[string]string{"x": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"x": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps:    map[string]stepStatus{"r1": stepCompensated, "r2": stepCompensated, "x": stepFailed},
+		wantOrder:    [][2]string{{"undo:r2 saw r2", "undo:r1 saw r1"}},
+		wantTrail: seq(
+			opened, startOf("r1"), doneOf("r1"), startOf("r2"), doneOf("r2"), startOf("x"), failedOf("x"),
+			compStartOf("r2"), undoneOf("r2"), compStartOf("r1"), undoneOf("r1"), closed,
+		),
+		wantChanged: map[string][]string{undoneOf("r2"): {hotelField}, undoneOf("r1"): {hotelField}},
+	}
+}
+
+func failedStepInputRow() runRow {
+	return runRow{
+		name: "[Fail] When: the failing step has a restore compensation ; " +
+			"Should: give it no output of its own and leave the field unchanged",
+		steps: func(rec *recorder) Flow {
+			failing := undoingMade("f", func(context.Context, tripState) (Hotel, error) {
+				return "", errAlwaysFails
+			}, rec.saw("undo:f"))
+			failing.RetryPolicy = NoRetry()
+
+			return Sequence(producing("a", rec.book("a", "a")), failing)
+		},
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"f": ErrFailed},
+		wantFailed:   []string{"f"},
+		wantErrText:  map[string]string{"f": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"f": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps:    map[string]stepStatus{"a": stepSucceeded, "f": stepCompensated},
+		wantOrder:    [][2]string{{"a", "undo:f saw a"}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("f"), failedOf("f"), compStartOf("f"), undoneOf("f"), closed,
+		),
+		wantChanged: map[string][]string{undoneOf("f"): {}},
+		wantState:   tripState{Hotel: "a"},
+	}
+}
+
+func continuePastFailedUndoRow() runRow {
+	return runRow{
+		name: "[Fail] When: a later compensation fails under Continue and an earlier restore succeeds ; " +
+			"Should: keep the output of the failed compensation",
+		steps: func(rec *recorder) Flow {
+			kept := undoingMade("a2", rec.book("a2", "a2"), alwaysFails)
+			kept.RetryPolicy, kept.FailurePolicy = NoRetry(), Continue
+
+			return Sequence(rec.restorable("a1", "a1"), kept, once("x", alwaysFails))
+		},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("a2"): ErrFailed, "x": ErrFailed},
+		wantFailed:   []string{"x", comp("a2")},
+		wantErrText:  map[string]string{comp("a2"): errAlwaysFails.Error(), "x": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("a2"): 1, "x": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantNotErrs:  []error{ErrCompensated},
+		wantSteps: map[string]stepStatus{
+			"a1": stepCompensated, "a2": stepCompensationFailed, "x": stepFailed,
+		},
+		wantPending: []string{"a2"},
+		wantOrder:   [][2]string{{"a2", "undo:a1 saw a1"}},
+		wantTrail: seq(
+			opened, startOf("a1"), doneOf("a1"), startOf("a2"), doneOf("a2"), startOf("x"), failedOf("x"),
+			compStartOf("a2"), undoFailedOf("a2"), compStartOf("a1"), undoneOf("a1"), closed,
+		),
+		wantState: tripState{Hotel: "a2"},
 	}
 }
 
@@ -147,7 +289,8 @@ func reversedOrderRow() runRow {
 			opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("c"), failedOf("c"),
 			compStartOf("b"), undoneOf("b"), compStartOf("a"), undoneOf("a"), closed,
 		),
-		wantState: tripState{Hotel: refunded},
+		wantChanged: map[string][]string{undoneOf("b"): {hotelField}},
+		wantState:   tripState{Hotel: refunded},
 	}
 }
 

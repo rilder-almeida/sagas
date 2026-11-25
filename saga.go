@@ -40,19 +40,22 @@ type definition struct {
 
 // Saga is a validated, immutable definition that can run many times.
 type Saga[S any] struct {
-	name     string
-	steps    []stepNode[S]
-	reports  []StepReport
-	journal  Journal
-	recovery time.Duration
-	order    []int
-	pivot    int
-	idField  int
+	name        string
+	steps       []stepNode[S]
+	reports     []StepReport
+	journal     Journal
+	recovery    time.Duration
+	order       []int
+	ancestors   [][]bool
+	outputField []int
+	pivot       int
+	idField     int
 }
 
 type stepNode[S any] struct {
 	name         string
 	field        int
+	replaces     bool
 	pred         func(context.Context, S) bool
 	policy       FailurePolicy
 	parents      []int
@@ -90,8 +93,8 @@ func New[S any](name string, flow Flow, opts ...Option) (*Saga[S], error) {
 
 func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	s := &Saga[S]{
-		name: name, journal: d.journal, recovery: d.recovery, order: in.graph.order,
-		pivot: in.graph.pivot, reports: in.reports, idField: in.idField,
+		name: name, journal: d.journal, recovery: d.recovery, order: in.graph.order, ancestors: in.graph.ancestors,
+		outputField: in.fields, pivot: in.graph.pivot, reports: in.reports, idField: in.idField,
 		steps: make([]stepNode[S], 0, len(in.reports)),
 	}
 	if s.recovery == 0 {
@@ -102,7 +105,7 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 		rep := &in.reports[i]
 		n := stepNode[S]{
 			name: rep.Name, field: in.fields[i], policy: rep.FailurePolicy, parents: in.graph.parents[i],
-			pred: in.methods[i].enabled,
+			pred: in.methods[i].enabled, replaces: in.methods[i].replaces,
 		}
 
 		if n.policy == "" {

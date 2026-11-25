@@ -176,7 +176,7 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 			return
 		}
 
-		j := job[S]{step: i, base: r.store.snapshot()}
+		j := job[S]{step: i, base: r.store.base(i)}
 
 		switch {
 		case r.saga.steps[i].pred != nil:
@@ -336,7 +336,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 		return
 	}
 
-	res, err := r.store.commit(name, f.base, r.saga.steps[f.step].field, f.out.output)
+	res, err := r.store.record(i, f.out.output)
 	if err != nil {
 		kind := outcomeFailure
 		if i == r.saga.pivot {

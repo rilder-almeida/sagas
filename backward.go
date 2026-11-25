@@ -158,7 +158,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 		return
 	}
 
-	j := job[S]{step: i, base: r.store.snapshot()}
+	j := job[S]{step: i, base: r.store.compensationBase(i)}
 	b.running++
 	r.undone[i] = stepCompensationFailed
 
@@ -197,7 +197,17 @@ func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome[S]
 	name := r.saga.steps[f.step].name
 	attempts := f.out.attempts
 
-	res, err := r.store.commit(name, f.base, r.saga.steps[f.step].field, f.out.output)
+	var (
+		res commitResult
+		err error
+	)
+
+	if r.saga.steps[f.step].replaces {
+		res, err = r.store.replace(f.step, f.out.output)
+	} else {
+		res = r.store.restore(f.step)
+	}
+
 	if err != nil {
 		return outcome[S]{kind: outcomeFailure, attempts: attempts, err: err, label: res.label}, false
 	}

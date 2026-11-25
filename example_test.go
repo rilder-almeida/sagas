@@ -169,9 +169,14 @@ func ExampleSaga_Run() {
 		panic(err)
 	}
 
+	if _, err := fmt.Printf("flight after the rollback: %q\n", failing.Flight); err != nil {
+		panic(err)
+	}
+
 	// Output:
 	// trip-42: completed
 	// trip-42: compensated, failed: [hotel], pending: []
+	// flight after the rollback: ""
 }
 
 func ExampleIdempotencyKey() {
