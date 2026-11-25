@@ -14,13 +14,7 @@ const (
 	tagSecret = "secret"
 )
 
-// stateTags reads the sagas tag of each top-level field of the struct type t. It returns the index of the field
-// that carries id, or -1 when none does or when any tag breaks a rule.
 func stateTags(t reflect.Type) (int, []error) {
-	if t.Kind() != reflect.Struct {
-		return -1, nil
-	}
-
 	var errs []error
 
 	id := -1
@@ -30,12 +24,12 @@ func stateTags(t reflect.Type) (int, []error) {
 		field := t.Field(i)
 
 		tag := fieldTagRules(&field)
-		if tag.id && len(tag.rules) == 0 {
-			if id >= 0 {
-				tag.rules = append(tag.rules, "id is already on field "+t.Field(id).Name)
-			} else {
-				id = i
-			}
+		if tag.id && id >= 0 {
+			tag.rules = append(tag.rules, "id is already on field "+t.Field(id).Name)
+		}
+
+		if tag.id && id < 0 {
+			id = i
 		}
 
 		for _, rule := range tag.rules {
@@ -85,7 +79,6 @@ func fieldTagRules(field *reflect.StructField) fieldTag {
 	return fieldTag{id: true, rules: rules}
 }
 
-// tagKeys returns the key of each pair of a struct tag, and "?" for a part that is not a key:"value" pair.
 func tagKeys(tag reflect.StructTag) []string {
 	var keys []string
 

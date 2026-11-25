@@ -39,6 +39,12 @@ func Test_stateTags(t *testing.T) {
 			wantErrs: 1,
 		},
 		{
+			name:     `[Fail] When: an int field and a string field both carry sagas:"id" ; Should: return both errors`,
+			typ:      reflect.TypeFor[intThenStringIDState](),
+			wantID:   -1,
+			wantErrs: 2,
+		},
+		{
 			name:     `[Fail] When: a field carries an unknown value and an id on an int ; Should: return both errors`,
 			typ:      reflect.TypeFor[badTagsState](),
 			wantID:   -1,
@@ -60,6 +66,11 @@ func Test_stateTags(t *testing.T) {
 			}
 		})
 	}
+}
+
+type intThenStringIDState struct {
+	A int    `sagas:"id"`
+	B string `sagas:"id"`
 }
 
 type badTagsState struct {

@@ -491,47 +491,6 @@ func Test_executionOf(t *testing.T) {
 	}
 }
 
-func Test_Saga_Run_randomExecution(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		runs int
-	}{
-		{name: "[Success] When: two runs of an untagged state ; Should: store them under two random IDs", runs: 2},
-		{name: "[Success] When: three runs of an untagged state ; Should: store them under three random IDs", runs: 3},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			journal := newScriptJournal(nil)
-
-			s, err := New[tripState]("trip", &tripStep{}, WithJournal(journal))
-			require.NoError(t, err)
-
-			for range tt.runs {
-				require.NoError(t, s.Run(t.Context(), &tripState{}))
-			}
-
-			seen := map[string]bool{}
-
-			for _, rec := range journal.results(t) {
-				assert.Regexp(t, hexID, rec.Execution)
-
-				seen[rec.Execution] = true
-			}
-
-			assert.Len(t, seen, tt.runs)
-		})
-	}
-}
-
-type tripStep struct{ Step }
-
-func (*tripStep) Execute(context.Context, *tripState) error { return nil }
-
 func Test_newID(t *testing.T) {
 	t.Parallel()
 
@@ -1214,8 +1173,22 @@ func assertZones(t *testing.T, got, want []StepZone) {
 	assert.Equal(t, want, got)
 }
 
+func randomExecutionRow() runRow {
+	return runRow{
+		name: "[Success] When: two runs of a state without an id tag ; Should: complete both under two random IDs",
+		steps: func(rec *recorder) Flow {
+			return rec.step("a")
+		},
+		runs:       2,
+		wantStatus: StatusCompleted,
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), closed),
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded},
+	}
+}
+
 func runRows() []runRow {
 	return []runRow{
+		randomExecutionRow(),
 		finishedAfterCompensatedRow(),
 		finishedAfterCompensationFailedRow(),
 		finishedAfterIncompleteRow(),
