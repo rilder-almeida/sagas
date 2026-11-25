@@ -129,6 +129,7 @@ func backwardRows() []runRow {
 		failedStepInputRow(),
 		callerValueRow(),
 		continuePastFailedUndoRow(),
+		unsentSuccessOutputRow(),
 	}
 }
 
@@ -1514,5 +1515,37 @@ func Test_backwardDone(t *testing.T) {
 
 			assert.Equal(t, tt.want, backwardDone(tt.children, tt.done))
 		})
+	}
+}
+
+func unsentSuccessOutputRow() runRow {
+	return runRow{
+		name: "[Fail] When: a producing step returns its output and its success append fails ; " +
+			"Should: give the compensation that output and keep it when the compensation fails",
+		steps: func(rec *recorder) Flow {
+			a := undoingMade("a", rec.book("a", hotelRitz), func(ctx context.Context, s tripState) error {
+				if err := rec.saw(undoA)(ctx, s); err != nil {
+					return err
+				}
+
+				return errAlwaysFails
+			})
+			a.RetryPolicy, a.FailurePolicy = NoRetry(), Continue
+
+			return a
+		},
+		script:       map[int]error{3: errJournalDown},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{comp("a"): ErrFailed},
+		wantFailed:   []string{comp("a")},
+		wantErrText:  map[string]string{comp("a"): errAlwaysFails.Error()},
+		wantAttempts: map[string]int{comp("a"): 1},
+		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantSteps:    map[string]stepStatus{"a": stepCompensationFailed},
+		wantPending:  []string{"a"},
+		wantOrder:    [][2]string{{"a", "undo:a saw ritz"}},
+		wantTrail:    seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoFailedOf("a"), closed),
+		wantState:    tripState{Hotel: hotelRitz},
 	}
 }

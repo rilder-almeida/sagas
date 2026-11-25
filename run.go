@@ -28,6 +28,9 @@ func checkRun[S any](s *S, idField int) (runStart, error) {
 	}
 
 	fields, encodeErr := encodeFields(reflect.ValueOf(*s))
+	if idField >= 0 && fields[idField] == nil {
+		return runStart{}, encodeErr
+	}
 
 	execution, idErr := executionOf(fields, idField)
 

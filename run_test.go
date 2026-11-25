@@ -386,6 +386,7 @@ func Test_checkRun(t *testing.T) {
 		wantFields    int
 		wantErrs      []error
 		wantContains  []string
+		wantAbsent    []string
 	}{
 		{
 			name:          "[Success] When: the state has no id tag ; Should: draw a random 32-char hex execution",
@@ -456,6 +457,14 @@ func Test_checkRun(t *testing.T) {
 			wantErrs:     []error{ErrInvalidRun, ErrInvalidState},
 			wantContains: []string{nameRule, "F"},
 		},
+		{
+			name: "[Fail] When: the ID field holds invalid UTF-8 ; " +
+				"Should: return only the encoding error of the field, no ID rule",
+			run:          func() (runStart, error) { return checkRun(&orderState{ID: "ab\xff"}, 1) },
+			wantErrs:     []error{ErrInvalidState},
+			wantContains: []string{"sagas: invalid state: ID: "},
+			wantAbsent:   []string{"empty name", "execution ID", ErrInvalidRun.Error()},
+		},
 	}
 
 	for _, tt := range tests {
@@ -464,7 +473,7 @@ func Test_checkRun(t *testing.T) {
 
 			start, err := tt.run()
 			requireErrs(t, err, tt.wantErrs, nil)
-			requireText(t, err, tt.wantContains, nil)
+			requireText(t, err, tt.wantContains, tt.wantAbsent)
 			assert.Len(t, start.fields, tt.wantFields)
 
 			execution := start.execution
