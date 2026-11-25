@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net/url"
 	"os"
-	"reflect"
 	"slices"
 	"sync"
 
@@ -85,7 +84,7 @@ func journalFile(execution string) string { return url.PathEscape(execution) + f
 // --8<-- [start:append]
 
 func (j *fileJournal) Append(ctx context.Context, e *sagas.Event) error {
-	if err := validate(e); err != nil {
+	if err := sagas.CheckEvent(e); err != nil {
 		return err
 	}
 
@@ -106,27 +105,12 @@ func (j *fileJournal) Append(ctx context.Context, e *sagas.Event) error {
 		return createEvent(j.root, e)
 	case e.Seq == len(stored)+1:
 		return writeEvent(j.root, e)
-	case e.Seq <= len(stored) && sameEvent(&stored[e.Seq-1], e):
+	case e.Seq <= len(stored) && sagas.SameEvent(&stored[e.Seq-1], e):
 		return syncDir(j.root)
 	case e.Seq == 1:
 		return fmt.Errorf("%w: execution %q", sagas.ErrExecutionExists, e.Execution)
 	default:
 		return fmt.Errorf("%w: execution %q seq %d", sagas.ErrConcurrentWriter, e.Execution, e.Seq)
-	}
-}
-
-var errInvalidEvent = errors.New("invalid event")
-
-func validate(e *sagas.Event) error {
-	switch {
-	case e == nil:
-		return fmt.Errorf("%w: nil event", errInvalidEvent)
-	case e.Seq < 1:
-		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
-	case e.Version != sagas.EventVersion:
-		return fmt.Errorf("%w: execution %q seq %d version %q", errInvalidEvent, e.Execution, e.Seq, e.Version)
-	default:
-		return nil
 	}
 }
 
@@ -180,28 +164,6 @@ func syncDir(root *os.Root) error {
 	return errors.Join(dir.Sync(), dir.Close())
 }
 
-func sameEvent(a, b *sagas.Event) bool {
-	return reflect.DeepEqual(canonical(a), canonical(b))
-}
-
-func canonical(src *sagas.Event) sagas.Event {
-	e := *src
-	e.Time = e.Time.UTC()
-	e.Changed = nilIfEmpty(e.Changed)
-	e.Steps = nilIfEmpty(e.Steps)
-	e.Err.Previous = nilIfEmpty(e.Err.Previous)
-
-	return e
-}
-
-func nilIfEmpty[T any](s []T) []T {
-	if len(s) == 0 {
-		return nil
-	}
-
-	return s
-}
-
 // --8<-- [end:append]
 
 // --8<-- [start:events]
@@ -227,9 +189,8 @@ func (j *fileJournal) Events(ctx context.Context, execution string) ([]sagas.Eve
 }
 
 var (
-	errUnknownVersion = errors.New("unknown event version")
-	errCutLine        = errors.New("last line is cut")
-	errBadLine        = errors.New("line is not an event")
+	errCutLine = errors.New("last line is cut")
+	errBadLine = errors.New("line is not an event")
 )
 
 func readEvents(root *os.Root, execution string) ([]sagas.Event, error) {
@@ -255,9 +216,8 @@ func readEvents(root *os.Root, execution string) ([]sagas.Event, error) {
 			return nil, fmt.Errorf("%w: execution %q line %d: %w", errBadLine, execution, len(events)+1, err)
 		}
 
-		if e.Version != sagas.EventVersion {
-			return nil, fmt.Errorf("%w: execution %q line %d: version %q",
-				errUnknownVersion, execution, len(events)+1, e.Version)
+		if err = sagas.CheckEvent(&e); err != nil {
+			return nil, fmt.Errorf("execution %q line %d: %w", execution, len(events)+1, err)
 		}
 
 		if e.Execution != execution || e.Seq != len(events)+1 {

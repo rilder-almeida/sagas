@@ -231,13 +231,13 @@ func Test_fileJournal_Events(t *testing.T) {
 			wantErr: sagas.ErrNoEvents,
 		},
 		{
-			name: "[Fail] When: a line has another Version ; Should: return errUnknownVersion and no events",
+			name: "[Fail] When: a line has another Version ; Should: return ErrInvalidEvent and no events",
 			seed: []sagas.Event{
 				*testEvent(1, "a"),
 				{Execution: runID, Seq: 2, Version: "v0.3.0"},
 			},
 			read:    runID,
-			wantErr: errUnknownVersion,
+			wantErr: sagas.ErrInvalidEvent,
 		},
 		{
 			name:    "[Fail] When: the last line is cut ; Should: return errCutLine and no events",
@@ -372,67 +372,6 @@ func Test_journalFile(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, tt.want, journalFile(tt.execution))
-		})
-	}
-}
-
-func Test_sameEvent(t *testing.T) {
-	t.Parallel()
-
-	zone := time.FixedZone("zone", int(time.Hour/time.Second))
-
-	withEmpty := testEvent(1, "a")
-	withEmpty.Changed, withEmpty.Steps, withEmpty.Err.Previous = []string{}, []sagas.StepZone{}, []string{}
-
-	moved := testEvent(1, "a")
-	moved.Time = moved.Time.In(zone)
-
-	previous := testEvent(1, "a")
-	previous.Err.Previous = []string{"earlier"}
-
-	tests := []struct {
-		name string
-		a    *sagas.Event
-		b    *sagas.Event
-		want bool
-	}{
-		{
-			name: "[Success] When: both events are equal ; Should: report equal",
-			a:    testEvent(1, "a"),
-			b:    testEvent(1, "a"),
-			want: true,
-		},
-		{
-			name: "[Success] When: the same instant has another zone ; Should: report equal",
-			a:    testEvent(1, "a"),
-			b:    moved,
-			want: true,
-		},
-		{
-			name: "[Success] When: one side has empty slices and the other nil ; Should: report equal",
-			a:    testEvent(1, "a"),
-			b:    withEmpty,
-			want: true,
-		},
-		{
-			name: "[Fail] When: the step differs ; Should: report different",
-			a:    testEvent(1, "a"),
-			b:    testEvent(1, "b"),
-			want: false,
-		},
-		{
-			name: "[Fail] When: a slice differs by content ; Should: report different",
-			a:    testEvent(1, "a"),
-			b:    previous,
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, sameEvent(tt.a, tt.b))
 		})
 	}
 }

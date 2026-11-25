@@ -240,11 +240,11 @@ func eventAt(seq int, kind sagas.EventKind) sagas.Event {
 	return sagas.Event{Execution: "order-1", Seq: seq, Version: sagas.EventVersion, Kind: kind}
 }
 
-func Test_checkVersions(t *testing.T) {
+func Test_checkEvents(t *testing.T) {
 	t.Parallel()
 
 	current := eventAt(1, sagas.EventSagaStarted)
-	future := sagas.Event{Version: "v0.3.0", Kind: sagas.EventSagaStarted}
+	future := sagas.Event{Execution: "order-1", Seq: 2, Version: "v0.3.0", Kind: sagas.EventSagaStarted}
 
 	tests := []struct {
 		name    string
@@ -260,9 +260,9 @@ func Test_checkVersions(t *testing.T) {
 			events: nil,
 		},
 		{
-			name:    "[Fail] When: one event has a newer Version ; Should: return errUnknownVersion",
+			name:    "[Fail] When: one event has a newer Version ; Should: return ErrInvalidEvent",
 			events:  []sagas.Event{current, future},
-			wantErr: errUnknownVersion,
+			wantErr: sagas.ErrInvalidEvent,
 		},
 	}
 
@@ -270,7 +270,7 @@ func Test_checkVersions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.ErrorIs(t, checkVersions("order-1", tt.events), tt.wantErr)
+			require.ErrorIs(t, checkEvents("order-1", tt.events), tt.wantErr)
 		})
 	}
 }

@@ -2,14 +2,14 @@ package sagas
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sync"
 )
 
 var (
-	// ErrJournal wraps an Append error that is neither a rejection nor ctx's own error after the grace end.
+	// ErrJournal reports a failed Append whose error is not ErrExecutionExists, not ErrConcurrentWriter, and not the
+	// error of the context of the caller after the grace period ends.
 	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
 	// ErrExecutionExists is returned when the journal rejects the first event because it already holds events for it.
 	ErrExecutionExists = &KindError{name: "execution_exists", message: "sagas: execution exists"}
@@ -19,12 +19,13 @@ var (
 	ErrNoEvents = &KindError{name: "no_events", message: "sagas: no events"}
 )
 
-var errInvalidEvent = errors.New("sagas: invalid event")
+// ErrInvalidEvent reports an event that CheckEvent refuses.
+var ErrInvalidEvent = &KindError{name: "invalid-event", message: "sagas: invalid event"}
 
-// Journal stores the events of each execution and only appends them. Append treats a nil event, a Seq below 1 or a
-// Version other than EventVersion as invalid. It stores the next Seq of an execution as a deep copy of the event. An
-// equal resend from the same Writer stores nothing and returns nil, and Append refuses any other Seq. Once ctx is done,
-// it stores nothing and returns an error. sagastest.Journal proves this contract.
+// Journal stores the events of each execution and only appends them. Append stores the next Seq of an execution as a
+// deep copy of the event and refuses any other Seq. An equal resend by SameEvent stores nothing and returns nil. An
+// event survives a crash of the process once Append returns nil. CheckEvent gives the rules of a valid event. Once ctx
+// is done, Append stores nothing and returns an error. sagastest.Journal proves this contract.
 type Journal interface {
 	Append(ctx context.Context, e *Event) error
 }
@@ -53,16 +54,8 @@ func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
 		return err
 	}
 
-	if e == nil {
-		return fmt.Errorf("%w: nil event", errInvalidEvent)
-	}
-
-	if e.Seq < 1 {
-		return fmt.Errorf("%w: execution %q seq %d", errInvalidEvent, e.Execution, e.Seq)
-	}
-
-	if e.Version != EventVersion {
-		return fmt.Errorf("%w: execution %q seq %d version %q", errInvalidEvent, e.Execution, e.Seq, e.Version)
+	if err := CheckEvent(e); err != nil {
+		return err
 	}
 
 	j.mu.Lock()
@@ -81,7 +74,7 @@ func (j *MemoryJournal) Append(ctx context.Context, e *Event) error {
 		return nil
 	}
 
-	if e.Seq <= len(stream) && sameEvent(&stream[e.Seq-1], e) {
+	if e.Seq <= len(stream) && SameEvent(&stream[e.Seq-1], e) {
 		return nil
 	}
 
@@ -127,9 +120,26 @@ func cloneSlices(e *Event) {
 	e.Err.Previous = slices.Clone(e.Err.Previous)
 }
 
-func sameEvent(a, b *Event) bool {
-	return sameScalars(a, b) && sameError(&a.Err, &b.Err) && slices.Equal(a.Changed, b.Changed) &&
-		slices.Equal(a.Steps, b.Steps) && a.Time.Equal(b.Time)
+// CheckEvent returns an error that wraps ErrInvalidEvent for a nil event, a Seq below 1 or an incompatible Version.
+func CheckEvent(e *Event) error {
+	switch {
+	case e == nil:
+		return fmt.Errorf("%w: nil event", ErrInvalidEvent)
+	case e.Seq < 1:
+		return fmt.Errorf("%w: execution %q seq %d", ErrInvalidEvent, e.Execution, e.Seq)
+	case !compatibleVersion(e.Version):
+		return fmt.Errorf("%w: execution %q seq %d version %q is not compatible with %q",
+			ErrInvalidEvent, e.Execution, e.Seq, e.Version, EventVersion)
+	default:
+		return nil
+	}
+}
+
+// SameEvent reports whether sent is an equal resend of stored, with Time as an instant and a nil slice as empty.
+func SameEvent(stored, sent *Event) bool {
+	return sameScalars(stored, sent) && sameError(&stored.Err, &sent.Err) &&
+		slices.Equal(stored.Changed, sent.Changed) && slices.Equal(stored.Steps, sent.Steps) &&
+		stored.Time.Equal(sent.Time)
 }
 
 func sameError(a, b *EventError) bool {
