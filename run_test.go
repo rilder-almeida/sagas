@@ -34,6 +34,7 @@ var (
 	errAwaitCause     = errors.New("sagas: test: wait for the context to end, then return its cause")
 	errAwaitThenKeep  = errors.New("sagas: test: wait for the context to end, then store this event only")
 	errStoreThenFail  = errors.New("sagas: test: store this event, let time pass, then return an error")
+	errJournalPanic   = errors.New("sagas: test: the journal panics")
 )
 
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -123,6 +124,8 @@ func (j *scriptJournal) scripted(ctx context.Context, e *Event, err error) error
 		<-ctx.Done()
 
 		return j.MemoryJournal.Append(context.WithoutCancel(ctx), e)
+	case errors.Is(err, errJournalPanic):
+		panic(errJournalPanic)
 	case errors.Is(err, errStoreThenFail):
 		if stored := j.MemoryJournal.Append(ctx, e); stored != nil {
 			return stored
@@ -626,6 +629,7 @@ func Test_runner_append(t *testing.T) {
 		wantErrs   []error
 		wantNoErrs []error
 		wantCauses []error
+		wantPanic  error
 	}{
 		{
 			name:       "[Success] When: the first event is appended ; Should: give it Seq 1 and the run's Writer",
@@ -662,6 +666,31 @@ func Test_runner_append(t *testing.T) {
 			wantErrs:   []error{ErrJournal, errStoreThenFail},
 			wantNoErrs: []error{ErrConcurrentWriter, ErrExecutionExists},
 			wantCauses: []error{ErrJournal},
+		},
+		{
+			name: "[Fail] When: the journal panics on the first call ; " +
+				"Should: return ErrJournal with the panic in the chain and resend the event before the next one",
+			script:     map[int]error{1: errJournalPanic},
+			appends:    2,
+			failAt:     1,
+			wantStored: 2,
+			wantCalls:  3,
+			wantErrs:   []error{ErrJournal, errJournalPanic},
+			wantNoErrs: []error{ErrConcurrentWriter, ErrExecutionExists},
+			wantCauses: []error{ErrJournal},
+			wantPanic:  errJournalPanic,
+		},
+		{
+			name: "[Fail] When: the journal panics on every call ; " +
+				"Should: return ErrJournal with the panic in the chain and store nothing",
+			script:     map[int]error{1: failing(errJournalPanic, forever)},
+			appends:    1,
+			failAt:     1,
+			wantCalls:  1,
+			wantErrs:   []error{ErrJournal, errJournalPanic},
+			wantNoErrs: []error{ErrConcurrentWriter, ErrExecutionExists},
+			wantCauses: []error{ErrJournal},
+			wantPanic:  errJournalPanic,
 		},
 		{
 			name:       "[Fail] When: the journal rejects Seq 1 ; Should: return ErrExecutionExists as is and keep seq",
@@ -724,6 +753,7 @@ func Test_runner_append(t *testing.T) {
 
 			causes := r.causes()
 			require.Len(t, causes, len(tt.wantCauses))
+			assertPanic(t, errors.Join(causes...), tt.wantPanic)
 
 			for i, want := range tt.wantCauses {
 				require.ErrorIs(t, causes[i], want)
@@ -989,6 +1019,7 @@ type runRow struct {
 	wantEventAttempts  map[string]int
 	initial            tripState
 	wantState          tripState
+	wantPanic          error
 }
 
 func Test_Saga_Run(t *testing.T) {
@@ -1062,6 +1093,20 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	assertEvents(t, res, tt, storedEvents(t, journal.MemoryJournal, res.Execution))
 
 	assertFailures(t, tt, got, res)
+	assertPanic(t, err, tt.wantPanic)
+}
+
+func assertPanic(t *testing.T, err, want error) {
+	t.Helper()
+
+	if want == nil {
+		return
+	}
+
+	panicked, found := errors.AsType[*PanicError](err)
+	require.True(t, found, "no *PanicError in the chain of %v", err)
+	assert.Equal(t, want, panicked.Value)
+	assert.NotEmpty(t, panicked.Stack)
 }
 
 func endKindOf(status Status) EventKind {
@@ -2337,9 +2382,13 @@ type scriptSecrets struct {
 	mu     sync.Mutex
 	fails  map[int]int
 	failed map[int]int
+	panics map[int]bool
 }
 
-var errSecretsDown = errors.New("sagas: test: secret store down")
+var (
+	errSecretsDown  = errors.New("sagas: test: secret store down")
+	errSecretsPanic = errors.New("sagas: test: the secret store panics")
+)
 
 func (s *scriptSecrets) Put(ctx context.Context, execution string, seq int, field string, value jsontext.Value) error {
 	s.mu.Lock()
@@ -2350,6 +2399,10 @@ func (s *scriptSecrets) Put(ctx context.Context, execution string, seq int, fiel
 		s.failed[seq]++
 	}
 	s.mu.Unlock()
+
+	if s.panics[seq] {
+		panic(errSecretsPanic)
+	}
 
 	if fail {
 		return errSecretsDown
@@ -2432,6 +2485,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		card        Card
 		tip         Tip
 		putFails    map[int]int
+		putPanics   map[int]bool
 		wantErrs    []error
 		wantText    []string
 		wantHidden  []string
@@ -2439,6 +2493,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		wantValues  map[int][]FieldValue
 		wantSecrets []secretPut
 		wantMissing []secretPut
+		wantPanic   error
 	}{
 		{
 			name: "[Success] When: the steps return a nil slice and a secret card ; " +
@@ -2500,6 +2555,26 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 			wantMissing: []secretPut{ledgerPut(1, cardField, "")},
 		},
 		{
+			name: "[Fail] When: every put of the card success panics ; " +
+				"Should: end as a journal failure with the panic in the chain and never append the card success",
+			card:        "5500",
+			putPanics:   map[int]bool{seqCard: true},
+			wantErrs:    []error{ErrJournal, errSecretsPanic},
+			wantHidden:  []string{"5500"},
+			wantEvents:  4,
+			wantMissing: []secretPut{ledgerPut(seqCard, cardField, "")},
+			wantPanic:   errSecretsPanic,
+		},
+		{
+			name: "[Fail] When: the put of saga-started panics ; " +
+				"Should: return the journal failure with the panic in the chain and append nothing",
+			initial:    ledgerState{Card: "4111"},
+			putPanics:  map[int]bool{1: true},
+			wantErrs:   []error{ErrJournal, errSecretsPanic},
+			wantHidden: []string{"4111"},
+			wantPanic:  errSecretsPanic,
+		},
+		{
 			name: "[Fail] When: a step returns a secret NaN ; " +
 				"Should: fail the step with a text that names only the field and keep ErrInvalidState",
 			tip:        Tip(math.NaN()),
@@ -2524,6 +2599,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 
 			secrets := &scriptSecrets{
 				MemorySecretStore: NewMemorySecretStore(), fails: tt.putFails, failed: map[int]int{},
+				panics: tt.putPanics,
 			}
 			journal := &secretReadingJournal{MemoryJournal: NewMemoryJournal(), secrets: secrets}
 			s := ledgerSaga(t, tt.rooms, tt.card, tt.tip, WithJournal(journal), WithSecretStore(secrets))
@@ -2537,6 +2613,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 			}
 
 			requireText(t, err, tt.wantText, tt.wantHidden)
+			assertPanic(t, err, tt.wantPanic)
 
 			for _, want := range tt.wantErrs {
 				require.ErrorIs(t, err, want)

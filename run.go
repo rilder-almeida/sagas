@@ -142,13 +142,17 @@ func (r *runner[S]) resend(ctx context.Context) error {
 }
 
 func (r *runner[S]) deliver(ctx context.Context, e *Event, secrets []FieldValue) error {
-	for _, v := range secrets {
-		if err := r.secrets.Put(ctx, e.Execution, e.Seq, v.Field, v.Value); err != nil {
-			return err
+	_, err := recoverPanic(func() error {
+		for _, v := range secrets {
+			if err := r.secrets.Put(ctx, e.Execution, e.Seq, v.Field, v.Value); err != nil {
+				return err
+			}
 		}
-	}
 
-	return r.journal.Append(ctx, e)
+		return r.journal.Append(ctx, e)
+	})
+
+	return err
 }
 
 func (r *runner[S]) send(ctx context.Context, e *Event, secrets []FieldValue) error {

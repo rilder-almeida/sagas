@@ -1372,6 +1372,8 @@ func journalRows() []runRow {
 		outcomeAppendRow(),
 		outcomeDownRow(),
 		undoableOutcomeDownRow(),
+		panicDownRow(),
+		panicOnceRow(),
 		failureAppendRow(),
 		intentAppendRow(),
 		intentClosingFailsRow(),
@@ -1611,6 +1613,38 @@ func outcomeDownRow() runRow {
 		wantSteps:  map[string]stepStatus{"a": stepUnknown, "b": stepNotStarted},
 		wantTrail:  seq(opened, startOf("a")),
 		wantState:  tripState{Hotel: hotelRitz},
+	}
+}
+
+func panicDownRow() runRow {
+	row := undoableOutcomeDownRow()
+	row.name = "[Fail] When: the journal panics on every append of the outcome of a step with a compensation ; " +
+		"Should: end as if every append failed, list the step in Pending and keep the panic in the chain"
+	row.script = map[int]error{3: failing(errJournalPanic, forever)}
+	row.wantErrText = map[string]string{comp("a"): "sagas: panic: " + errJournalPanic.Error()}
+	row.wantErrs = []error{ErrJournal, errJournalPanic}
+	row.wantPanic = errJournalPanic
+
+	return row
+}
+
+func panicOnceRow() runRow {
+	return runRow{
+		name: "[Fail] When: the journal panics once on the outcome of a step ; " +
+			"Should: end as a journal failure, resend the outcome and keep the panic in the chain",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.step("b"))
+		},
+		script:          map[int]error{3: failing(errJournalPanic, 1)},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantErrs:        []error{ErrJournal, errJournalPanic},
+		wantSteps:       map[string]stepStatus{"a": stepCompensated, "b": stepNotStarted},
+		wantCompensated: []string{"a"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), compStartOf("a"), undoneOf("a"), closed,
+		),
+		wantPanic: errJournalPanic,
 	}
 }
 
