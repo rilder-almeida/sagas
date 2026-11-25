@@ -233,7 +233,7 @@ func (r *runner[S]) commitUndo(grace context.Context, f *settled[S]) (outcome, b
 	}
 
 	done := Event{Kind: EventCompensationSucceeded, Step: name, Attempts: attempts, Values: res.values}
-	if err = r.persist(grace, &done); err != nil {
+	if err = r.persist(grace, &done, res.secrets...); err != nil {
 		return outcome{kind: outcomeFailure, attempts: attempts, err: err, label: appendLabel(err)}, false
 	}
 

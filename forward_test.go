@@ -29,6 +29,7 @@ const (
 	pause          = time.Second
 	panicBoom      = "panic: boom"
 	goexitText     = "sagas: call ended by runtime.Goexit"
+	nanText        = "NaN"
 )
 
 func trailOf(kind EventKind, step string) string { return strings.TrimSpace(string(kind) + " " + step) }
@@ -474,7 +475,7 @@ func forwardOnlyCommitFailsRow() runRow {
 		wantKind:     ErrIncomplete,
 		wantKinds:    map[string]*KindError{"z": ErrInvalidState},
 		wantFailed:   []string{"z"},
-		wantErrText:  map[string]string{"z": "NaN"},
+		wantErrText:  map[string]string{"z": nanText},
 		wantAttempts: map[string]int{"z": 1},
 		wantErrs:     []error{ErrInvalidState},
 		wantNotErrs:  []error{ErrCompensated},
@@ -561,7 +562,7 @@ func pivotCommitFailsRow() runRow {
 		wantKind:     ErrIncomplete,
 		wantKinds:    map[string]*KindError{"p": ErrInvalidState},
 		wantFailed:   []string{"p"},
-		wantErrText:  map[string]string{"p": "NaN"},
+		wantErrText:  map[string]string{"p": nanText},
 		wantAttempts: map[string]int{"p": 1},
 		wantErrs:     []error{ErrInvalidState},
 		wantNotErrs:  []error{ErrCompensated},

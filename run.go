@@ -75,10 +75,12 @@ type runner[S any] struct {
 	execution   string
 	writer      string
 	journal     Journal
+	secrets     SecretStore
 	seq         int
 	events      []Event
 	unsent      *Event
 	unsentErr   error
+	unsentPuts  []FieldValue
 	appendErrs  []error
 	rejected    error
 	interrupted error
@@ -92,14 +94,14 @@ type runner[S any] struct {
 	serial      bool
 }
 
-func (r *runner[S]) append(ctx context.Context, e *Event) error {
+func (r *runner[S]) append(ctx context.Context, e *Event, secrets ...FieldValue) error {
 	if err := r.resend(ctx); err != nil {
 		return err
 	}
 
 	stored := r.stamp(e)
 
-	return r.send(ctx, &stored)
+	return r.send(ctx, &stored, secrets)
 }
 
 func (r *runner[S]) stamp(e *Event) Event {
@@ -125,7 +127,7 @@ func (r *runner[S]) resend(ctx context.Context) error {
 		return r.rejected
 	}
 
-	if err := r.send(ctx, e); err != nil {
+	if err := r.send(ctx, e, r.unsentPuts); err != nil {
 		return err
 	}
 
@@ -136,11 +138,21 @@ func (r *runner[S]) resend(ctx context.Context) error {
 	failure := &Error{Kind: appendLabel(cause), Step: e.Step, Err: cause}
 	closing := r.stamp(&Event{Kind: EventStepFailed, Step: e.Step, Err: eventErrorOf(failure)})
 
-	return r.send(ctx, &closing)
+	return r.send(ctx, &closing, nil)
 }
 
-func (r *runner[S]) send(ctx context.Context, e *Event) error {
-	if err := r.journal.Append(ctx, e); err != nil {
+func (r *runner[S]) deliver(ctx context.Context, e *Event, secrets []FieldValue) error {
+	for _, v := range secrets {
+		if err := r.secrets.Put(ctx, e.Execution, e.Seq, v.Field, v.Value); err != nil {
+			return err
+		}
+	}
+
+	return r.journal.Append(ctx, e)
+}
+
+func (r *runner[S]) send(ctx context.Context, e *Event, secrets []FieldValue) error {
+	if err := r.deliver(ctx, e, secrets); err != nil {
 		if errors.Is(err, ErrExecutionExists) || errors.Is(err, ErrConcurrentWriter) {
 			r.rejected = err
 			r.stop(errRejectionStopped)
@@ -160,7 +172,7 @@ func (r *runner[S]) send(ctx context.Context, e *Event) error {
 		r.appendErrs = append(r.appendErrs, err)
 
 		if r.unsent != e {
-			r.unsent, r.unsentErr = e, err
+			r.unsent, r.unsentErr, r.unsentPuts = e, err, secrets
 		}
 
 		r.stop(errJournalStopped)
@@ -170,7 +182,7 @@ func (r *runner[S]) send(ctx context.Context, e *Event) error {
 
 	r.seq++
 	r.events = append(r.events, *e)
-	r.unsent = nil
+	r.unsent, r.unsentPuts = nil, nil
 
 	return nil
 }
@@ -233,8 +245,13 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		journal = NewMemoryJournal()
 	}
 
+	var secrets SecretStore = NewMemorySecretStore()
+	if s.secrets != nil {
+		secrets = s.secrets
+	}
+
 	r := &runner[S]{
-		saga: s, execution: start.execution, writer: newID(), journal: journal,
+		saga: s, execution: start.execution, writer: newID(), journal: journal, secrets: secrets,
 		store: committed, runs: make([]stepRun, len(s.steps)), undone: make([]stepStatus, len(s.steps)),
 		compErrs: make([]*Error, len(s.steps)), serial: serial.On(ctx),
 	}
@@ -247,8 +264,10 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		zoned[i] = s.steps[i].stepZone()
 	}
 
-	started := Event{Kind: EventSagaStarted, Steps: zoned, Values: committed.initialValues()}
-	if startErr := r.append(grace, &started); startErr != nil {
+	initial := committed.initialValues()
+
+	started := Event{Kind: EventSagaStarted, Steps: zoned, Values: initial.values}
+	if startErr := r.append(grace, &started, initial.secrets...); startErr != nil {
 		return startErr
 	}
 

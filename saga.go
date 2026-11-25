@@ -26,6 +26,7 @@ const (
 	keyWithJournal         = "WithJournal"
 	keyWithMiddleware      = "WithMiddleware"
 	keyWithRecoveryTimeout = "WithRecoveryTimeout"
+	keyWithSecretStore     = "WithSecretStore"
 )
 
 // Option configures a saga that New builds.
@@ -33,6 +34,7 @@ type Option func(*definition)
 
 type definition struct {
 	journal    Journal
+	secrets    SecretStore
 	middleware []Middleware
 	recovery   time.Duration
 	given      map[string]int
@@ -44,6 +46,7 @@ type Saga[S any] struct {
 	steps       []stepNode[S]
 	reports     []StepReport
 	journal     Journal
+	secrets     SecretStore
 	recovery    time.Duration
 	order       []int
 	ancestors   [][]bool
@@ -93,7 +96,8 @@ func New[S any](name string, flow Flow, opts ...Option) (*Saga[S], error) {
 
 func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	s := &Saga[S]{
-		name: name, journal: d.journal, recovery: d.recovery, order: in.graph.order, ancestors: in.graph.ancestors,
+		name: name, journal: d.journal, secrets: d.secrets, recovery: d.recovery, order: in.graph.order,
+		ancestors:   in.graph.ancestors,
 		outputField: in.fields, pivot: in.graph.pivot, reports: in.reports, idField: in.idField,
 		steps: make([]stepNode[S], 0, len(in.reports)),
 	}
@@ -166,6 +170,10 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 		rules = append(rules, "WithJournal journal is nil")
 	}
 
+	if d.given[keyWithSecretStore] > 0 && isNilValue(d.secrets) {
+		rules = append(rules, "WithSecretStore secret store is nil")
+	}
+
 	if d.recovery < 0 {
 		rules = append(rules, "WithRecoveryTimeout is negative")
 	}
@@ -209,6 +217,15 @@ func WithJournal(j Journal) Option {
 	return func(d *definition) {
 		d.journal = j
 		d.given[keyWithJournal]++
+	}
+}
+
+// WithSecretStore sets the secret store that keeps the secret values of each run. Left out, a run uses a fresh
+// MemorySecretStore.
+func WithSecretStore(s SecretStore) Option {
+	return func(d *definition) {
+		d.secrets = s
+		d.given[keyWithSecretStore]++
 	}
 }
 

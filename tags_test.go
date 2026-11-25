@@ -207,3 +207,68 @@ func Test_refuseExecutionIDMethod(t *testing.T) {
 		})
 	}
 }
+
+type tagFormsState struct {
+	Plain     string
+	Secret    string `sagas:"secret"`
+	ID        string `sagas:"id"`
+	Both      string `sagas:"id,secret"`
+	Unknown   string `sagas:"pii"`
+	SecretPII string `sagas:"secret,pii"`
+}
+
+func Test_fieldTagRules(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		field      string
+		wantID     bool
+		wantSecret bool
+		wantRules  int
+	}{
+		{name: "[Success] When: the field has no tag ; Should: mark nothing", field: "Plain"},
+		{
+			name:       `[Success] When: the field carries sagas:"secret" ; Should: mark it secret`,
+			field:      "Secret",
+			wantSecret: true,
+		},
+		{
+			name:   `[Success] When: the field carries sagas:"id" ; Should: mark it the id, not secret`,
+			field:  "ID",
+			wantID: true,
+		},
+		{
+			name:       `[Fail] When: the field carries sagas:"id,secret" ; Should: mark both and give one rule`,
+			field:      "Both",
+			wantID:     true,
+			wantSecret: true,
+			wantRules:  1,
+		},
+		{
+			name:      `[Fail] When: the field carries sagas:"pii" ; Should: mark nothing and give one rule`,
+			field:     "Unknown",
+			wantRules: 1,
+		},
+		{
+			name:       `[Fail] When: the field carries sagas:"secret,pii" ; Should: mark it secret and give one rule`,
+			field:      "SecretPII",
+			wantSecret: true,
+			wantRules:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			field, found := reflect.TypeFor[tagFormsState]().FieldByName(tt.field)
+			require.True(t, found)
+
+			got := fieldTagRules(&field)
+			assert.Equal(t, tt.wantID, got.id)
+			assert.Equal(t, tt.wantSecret, got.secret)
+			assert.Len(t, got.rules, tt.wantRules)
+		})
+	}
+}

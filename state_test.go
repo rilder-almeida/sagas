@@ -1302,6 +1302,7 @@ type copyFixture struct {
 	At         int64
 	SharedA    *copyInner
 	SharedB    *copyInner
+	Pin        int `sagas:"secret"`
 }
 
 func newCopyFixture() copyFixture {
@@ -1317,6 +1318,7 @@ func newCopyFixture() copyFixture {
 		At:         1_700_000_000_000_000_000,
 		SharedA:    shared,
 		SharedB:    shared,
+		Pin:        1234,
 	}
 }
 
@@ -1409,9 +1411,10 @@ func Test_copyState_malformedSnapshot(t *testing.T) {
 	st := newTestStore(t, newCopyFixture(), loneStep())
 
 	tests := []struct {
-		name      string
-		overrides map[string]string
-		wantInMsg []string
+		name       string
+		overrides  map[string]string
+		wantInMsg  []string
+		wantAbsent []string
 	}{
 		{
 			name:      "[Fail] When: one field holds malformed bytes ; Should: return ErrInvalidState that names it",
@@ -1427,6 +1430,12 @@ func Test_copyState_malformedSnapshot(t *testing.T) {
 			name:      "[Fail] When: two fields hold bad bytes ; Should: name both, the first field in front",
 			overrides: map[string]string{"Nested": `{`, "Scalar": `"x"`},
 			wantInMsg: []string{"sagas: invalid state: Scalar: ", "sagas: invalid state: Nested: "},
+		},
+		{
+			name:       "[Fail] When: a secret field holds JSON of the wrong type ; Should: name only the field",
+			overrides:  map[string]string{"Pin": `"1234"`},
+			wantInMsg:  []string{"sagas: invalid state: Pin: secret value cannot be decoded"},
+			wantAbsent: []string{"1234", "string"},
 		},
 	}
 
@@ -1447,6 +1456,11 @@ func Test_copyState_malformedSnapshot(t *testing.T) {
 			require.ErrorIs(t, copyErr, ErrInvalidState)
 			assert.Nil(t, got)
 			assertInOrder(t, copyErr.Error(), tt.wantInMsg)
+
+			for _, absent := range tt.wantAbsent {
+				assert.NotContains(t, copyErr.Error(), absent)
+			}
+
 			assert.Equal(t, len(tt.overrides), strings.Count(copyErr.Error(), ErrInvalidState.Error()))
 		})
 	}

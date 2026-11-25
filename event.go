@@ -32,7 +32,7 @@ type Event struct {
 	Time      time.Time
 }
 
-// FieldValue is the JSON value of one state field, named by its Go name. A JSON null is stored as null.
+// FieldValue is one state field by its Go name. Value holds its JSON, null included, and is empty for a secret field.
 type FieldValue struct {
 	Field string
 	Value jsontext.Value

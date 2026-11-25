@@ -2,6 +2,7 @@ package sagas
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"slices"
@@ -540,6 +541,71 @@ func Test_WithJournal(t *testing.T) {
 			}
 
 			assert.Len(t, j.ctxs, tt.wantAppends)
+		})
+	}
+}
+
+func Test_WithSecretStore(t *testing.T) {
+	t.Parallel()
+
+	var nilStore *MemorySecretStore
+
+	tests := []struct {
+		name    string
+		opts    func(s *MemorySecretStore) []Option
+		wantErr error
+		wantGet error
+	}{
+		{
+			name:    "[Success] When: a secret store is given ; Should: put the secret values of the run into it",
+			opts:    func(s *MemorySecretStore) []Option { return []Option{WithSecretStore(s)} },
+			wantGet: nil,
+		},
+		{
+			name:    "[Success] When: no secret store is given ; Should: run on a secret store of its own",
+			opts:    func(*MemorySecretStore) []Option { return nil },
+			wantGet: ErrNoSecret,
+		},
+		{
+			name:    "[Fail] When: the secret store is nil ; Should: reject it",
+			opts:    func(*MemorySecretStore) []Option { return []Option{WithSecretStore(nil)} },
+			wantErr: ErrInvalidStep,
+		},
+		{
+			name:    "[Fail] When: the secret store holds a nil pointer ; Should: reject it",
+			opts:    func(*MemorySecretStore) []Option { return []Option{WithSecretStore(nilStore)} },
+			wantErr: ErrInvalidStep,
+		},
+		{
+			name: "[Fail] When: two secret stores are given ; Should: reject them",
+			opts: func(s *MemorySecretStore) []Option {
+				return []Option{WithSecretStore(s), WithSecretStore(s)}
+			},
+			wantErr: ErrInvalidStep,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			secrets := NewMemorySecretStore()
+
+			s, err := New[ledgerState]("ledger", &cardStep{Name: "card"}, tt.opts(secrets)...)
+			require.ErrorIs(t, err, tt.wantErr)
+
+			if s == nil {
+				return
+			}
+
+			require.NoError(t, s.Run(t.Context(), &ledgerState{ID: ledgerID, Card: "4111"}))
+
+			got, getErr := secrets.Get(t.Context(), ledgerID, 1, cardField)
+			require.ErrorIs(t, getErr, tt.wantGet)
+
+			if tt.wantGet == nil {
+				assert.Equal(t, jsontext.Value(cardJSON), got)
+			}
 		})
 	}
 }

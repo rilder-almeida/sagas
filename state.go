@@ -68,6 +68,14 @@ func encodeField(name string, v any) ([]byte, error) {
 	return data, nil
 }
 
+func hideSecret(field *reflect.StructField, verb string, err error) error {
+	if err == nil || !fieldTagRules(field).secret {
+		return err
+	}
+
+	return fmt.Errorf("%w: %s: secret value cannot be %s", ErrInvalidState, field.Name, verb)
+}
+
 func decodeField(name string, data []byte, v any) error {
 	dst, err := decodeTarget(name, v)
 	if err != nil {
@@ -250,19 +258,23 @@ type store[S any] struct {
 	order     []int
 	ancestors [][]bool
 	names     []string
+	secret    []bool
 }
 
 func newStore[S any](initial [][]byte, field, order []int, ancestors [][]bool) *store[S] {
 	t := reflect.TypeFor[S]()
 
 	names := make([]string, len(initial))
+	secret := make([]bool, len(initial))
+
 	for i := range names {
-		names[i] = t.Field(i).Name
+		f := t.Field(i)
+		names[i], secret[i] = f.Name, fieldTagRules(&f).secret
 	}
 
 	return &store[S]{
 		initial: initial, outputs: make([][]byte, len(field)), field: field, order: order, ancestors: ancestors,
-		names: names,
+		names: names, secret: secret,
 	}
 }
 
@@ -288,36 +300,55 @@ func (s *store[S]) compensationBase(step int) snapshot[S] {
 }
 
 type commitResult struct {
-	values []FieldValue
-	label  *KindError
+	values  []FieldValue
+	secrets []FieldValue
+	label   *KindError
 }
 
 func (s *store[S]) put(step int, out encodedOutput) (commitResult, error) {
+	f := s.field[step]
+
 	if out.err != nil {
-		return commitResult{label: ErrInvalidState}, out.err
+		err := out.err
+
+		if f >= 0 {
+			field := reflect.TypeFor[S]().Field(f)
+			err = hideSecret(&field, "encoded", err)
+		}
+
+		return commitResult{label: ErrInvalidState}, err
 	}
 
-	f := s.field[step]
 	if f < 0 || out.data == nil {
 		return commitResult{}, nil
 	}
 
 	s.outputs[step] = out.data
+	value := FieldValue{Field: s.names[f], Value: out.data}
 
-	return commitResult{values: []FieldValue{{Field: s.names[f], Value: out.data}}}, nil
+	if s.secret[f] {
+		return commitResult{values: []FieldValue{{Field: value.Field}}, secrets: []FieldValue{value}}, nil
+	}
+
+	return commitResult{values: []FieldValue{value}}, nil
 }
 
 func (s *store[S]) restore(step int) {
 	s.outputs[step] = nil
 }
 
-func (s *store[S]) initialValues() []FieldValue {
-	values := make([]FieldValue, len(s.initial))
+func (s *store[S]) initialValues() commitResult {
+	res := commitResult{values: make([]FieldValue, len(s.initial))}
+
 	for i, data := range s.initial {
-		values[i] = FieldValue{Field: s.names[i], Value: data}
+		res.values[i] = FieldValue{Field: s.names[i], Value: data}
+		if s.secret[i] {
+			res.secrets = append(res.secrets, res.values[i])
+			res.values[i].Value = nil
+		}
 	}
 
-	return values
+	return res
 }
 
 func (s *store[S]) writeBack(dst *S) error {
@@ -350,8 +381,9 @@ func copyState[S any](snap snapshot[S]) (*S, error) {
 
 	v := reflect.ValueOf(out).Elem()
 	for i, data := range snap.fields {
-		if err := decodeField(v.Type().Field(i).Name, data, v.Field(i).Addr().Interface()); err != nil {
-			errs = append(errs, err)
+		field := v.Type().Field(i)
+		if err := decodeField(field.Name, data, v.Field(i).Addr().Interface()); err != nil {
+			errs = append(errs, hideSecret(&field, "decoded", err))
 		}
 	}
 
@@ -368,9 +400,11 @@ func encodeFields(v reflect.Value) ([][]byte, error) {
 	var errs []error
 
 	for i := range fields {
-		data, err := encodeField(v.Type().Field(i).Name, v.Field(i).Interface())
+		field := v.Type().Field(i)
+
+		data, err := encodeField(field.Name, v.Field(i).Interface())
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, hideSecret(&field, "encoded", err))
 		}
 
 		fields[i] = data

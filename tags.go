@@ -45,8 +45,9 @@ func stateTags(t reflect.Type) (int, []error) {
 }
 
 type fieldTag struct {
-	id    bool
-	rules []string
+	id     bool
+	secret bool
+	rules  []string
 }
 
 func fieldTagRules(field *reflect.StructField) fieldTag {
@@ -64,11 +65,12 @@ func fieldTagRules(field *reflect.StructField) fieldTag {
 		}
 	}
 
+	secret := slices.Contains(values, tagSecret)
 	if !slices.Contains(values, tagID) {
-		return fieldTag{rules: rules}
+		return fieldTag{secret: secret, rules: rules}
 	}
 
-	if slices.Contains(values, tagSecret) {
+	if secret {
 		rules = append(rules, "id and secret cannot share a field")
 	}
 
@@ -76,7 +78,7 @@ func fieldTagRules(field *reflect.StructField) fieldTag {
 		rules = append(rules, fmt.Sprintf("id needs a string field, got %s", field.Type.Kind()))
 	}
 
-	return fieldTag{id: true, rules: rules}
+	return fieldTag{id: true, secret: secret, rules: rules}
 }
 
 func tagKeys(tag reflect.StructTag) []string {

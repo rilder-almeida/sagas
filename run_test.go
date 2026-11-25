@@ -471,6 +471,14 @@ func Test_checkRun(t *testing.T) {
 			wantContains: []string{"sagas: invalid state: ID: "},
 			wantAbsent:   []string{"empty name", "execution ID", ErrInvalidRun.Error()},
 		},
+		{
+			name: "[Fail] When: a secret field of the initial state holds NaN ; " +
+				"Should: return ErrInvalidState with a text that names only the field",
+			run:          func() (runStart, error) { return checkRun(&secretFloatState{F: math.NaN()}, -1) },
+			wantErrs:     []error{ErrInvalidState},
+			wantContains: []string{"sagas: invalid state: F: secret value cannot be encoded"},
+			wantAbsent:   []string{nanText},
+		},
 	}
 
 	for _, tt := range tests {
@@ -494,6 +502,10 @@ func Test_checkRun(t *testing.T) {
 			assert.Empty(t, checkName(execution))
 		})
 	}
+}
+
+type secretFloatState struct {
+	F float64 `sagas:"secret"`
 }
 
 type floatIDState struct {
@@ -2267,14 +2279,26 @@ func compensatedListRow() runRow {
 	}
 }
 
-type Rooms []string
+type (
+	Rooms []string
+	Card  string
+	Tip   float64
+)
 
-const roomsField = "Rooms"
+const (
+	roomsField = "Rooms"
+	tipField   = "Tip"
+	ledgerID   = "ledger-1"
+	seqCard    = 5
+	seqTip     = 7
+)
 
 type ledgerState struct {
 	ID    string `sagas:"id"`
 	Hotel Hotel
 	Rooms Rooms
+	Card  Card `sagas:"secret"`
+	Tip   Tip  `sagas:"secret"`
 }
 
 type roomsStep struct {
@@ -2285,23 +2309,112 @@ type roomsStep struct {
 
 func (s *roomsStep) Execute(context.Context, ledgerState) (Rooms, error) { return s.rooms, nil }
 
-func ledgerEvents(t *testing.T, initial ledgerState, rooms Rooms) []Event {
+type cardStep struct {
+	Step[ledgerState, Card]
+
+	card Card
+}
+
+func (s *cardStep) Execute(context.Context, ledgerState) (Card, error) { return s.card, nil }
+
+type tipStep struct {
+	Step[ledgerState, Tip]
+
+	tip Tip
+}
+
+func (s *tipStep) Execute(context.Context, ledgerState) (Tip, error) { return s.tip, nil }
+
+type scriptSecrets struct {
+	*MemorySecretStore
+
+	mu     sync.Mutex
+	fails  map[int]int
+	failed map[int]int
+}
+
+var errSecretsDown = errors.New("sagas: test: secret store down")
+
+func (s *scriptSecrets) Put(ctx context.Context, execution string, seq int, field string, value jsontext.Value) error {
+	s.mu.Lock()
+	times, scripted := s.fails[seq]
+	fail := scripted && (times == forever || s.failed[seq] < times)
+
+	if fail {
+		s.failed[seq]++
+	}
+	s.mu.Unlock()
+
+	if fail {
+		return errSecretsDown
+	}
+
+	return s.MemorySecretStore.Put(ctx, execution, seq, field, value)
+}
+
+type secretReadingJournal struct {
+	*MemoryJournal
+
+	secrets SecretStore
+	misses  []string
+}
+
+func (j *secretReadingJournal) Append(ctx context.Context, e *Event) error {
+	for _, v := range e.Values {
+		if len(v.Value) > 0 {
+			continue
+		}
+
+		if _, err := j.secrets.Get(ctx, e.Execution, e.Seq, v.Field); err != nil {
+			j.misses = append(j.misses, fmt.Sprintf("seq %d %s: %v", e.Seq, v.Field, err))
+		}
+	}
+
+	return j.MemoryJournal.Append(ctx, e)
+}
+
+func ledgerSaga(t *testing.T, rooms Rooms, card Card, tip Tip, opts ...Option) *Saga[ledgerState] {
 	t.Helper()
 
-	journal := NewMemoryJournal()
-
-	s, err := New[ledgerState]("ledger", &roomsStep{Name: "rooms", rooms: rooms},
-		WithJournal(journal))
+	s, err := New[ledgerState]("ledger", Sequence(
+		&roomsStep{Name: "rooms", rooms: rooms},
+		&cardStep{Name: "card", card: card},
+		&tipStep{Name: "tip", tip: tip},
+	), opts...)
 	require.NoError(t, err)
 
-	st := initial
-	st.ID = "ledger-1"
-	require.NoError(t, s.Run(t.Context(), &st))
+	return s
+}
 
-	events := storedEvents(t, journal, st.ID)
-	require.Len(t, events, 4)
+func secretValue(field string) FieldValue { return FieldValue{Field: field} }
 
-	return events
+func ledgerStarted(rooms string) []FieldValue {
+	return []FieldValue{
+		{Field: "ID", Value: jsontext.Value(`"ledger-1"`)},
+		{Field: hotelField, Value: jsontext.Value(`""`)},
+		{Field: roomsField, Value: jsontext.Value(rooms)},
+		secretValue(cardField),
+		secretValue(tipField),
+	}
+}
+
+func ledgerPut(seq int, field, value string) secretPut {
+	return secretPut{execution: ledgerID, seq: seq, field: field, value: value}
+}
+
+func assertSecrets(t *testing.T, secrets SecretStore, held, missing []secretPut) {
+	t.Helper()
+
+	for _, p := range held {
+		got, err := secrets.Get(t.Context(), p.execution, p.seq, p.field)
+		require.NoError(t, err)
+		assert.Equal(t, jsontext.Value(p.value), got)
+	}
+
+	for _, p := range missing {
+		_, err := secrets.Get(t.Context(), p.execution, p.seq, p.field)
+		require.ErrorIs(t, err, ErrNoSecret)
+	}
 }
 
 func Test_Saga_Run_fieldValues(t *testing.T) {
@@ -2311,31 +2424,92 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		name        string
 		initial     ledgerState
 		rooms       Rooms
-		wantStarted []FieldValue
-		wantDone    []FieldValue
+		card        Card
+		tip         Tip
+		putFails    map[int]int
+		wantErrs    []error
+		wantText    []string
+		wantHidden  []string
+		wantEvents  int
+		wantValues  map[int][]FieldValue
+		wantSecrets []secretPut
+		wantMissing []secretPut
 	}{
 		{
-			name: "[Success] When: the step returns a nil slice ; " +
-				"Should: record null on the success and every initial field by its Go name on saga-started",
-			initial: ledgerState{Hotel: hotelRitz},
-			wantStarted: []FieldValue{
-				{Field: "ID", Value: jsontext.Value(`"ledger-1"`)},
-				{Field: hotelField, Value: jsontext.Value(`"ritz"`)},
-				{Field: roomsField, Value: jsontext.Value("null")},
+			name: "[Success] When: the steps return a nil slice and a secret card ; " +
+				"Should: record null, name each secret field with an empty value and keep its value in the store",
+			initial:    ledgerState{Card: "4111"},
+			card:       "5500",
+			wantHidden: []string{"4111", "5500"},
+			wantEvents: 8,
+			wantValues: map[int][]FieldValue{
+				1:       ledgerStarted("null"),
+				3:       {{Field: roomsField, Value: jsontext.Value("null")}},
+				seqCard: {secretValue(cardField)},
+				seqTip:  {secretValue(tipField)},
 			},
-			wantDone: []FieldValue{{Field: roomsField, Value: jsontext.Value("null")}},
+			wantSecrets: []secretPut{
+				ledgerPut(1, cardField, cardJSON), ledgerPut(1, tipField, "0"),
+				ledgerPut(seqCard, cardField, `"5500"`), ledgerPut(seqTip, tipField, "0"),
+			},
 		},
 		{
-			name: "[Success] When: the step returns the rooms the state already held ; " +
+			name: "[Success] When: a step returns the rooms the state already held ; " +
 				"Should: still record the rooms on the success",
-			initial: ledgerState{Rooms: Rooms{"a1"}},
-			rooms:   Rooms{"a1"},
-			wantStarted: []FieldValue{
-				{Field: "ID", Value: jsontext.Value(`"ledger-1"`)},
-				{Field: hotelField, Value: jsontext.Value(`""`)},
-				{Field: roomsField, Value: jsontext.Value(`["a1"]`)},
+			initial:    ledgerState{Rooms: Rooms{"a1"}},
+			rooms:      Rooms{"a1"},
+			wantEvents: 8,
+			wantValues: map[int][]FieldValue{
+				1: ledgerStarted(`["a1"]`),
+				3: {{Field: roomsField, Value: jsontext.Value(`["a1"]`)}},
 			},
-			wantDone: []FieldValue{{Field: roomsField, Value: jsontext.Value(`["a1"]`)}},
+		},
+		{
+			name: "[Fail] When: the put of the card success fails once ; " +
+				"Should: end as a journal failure and put the card again under the same seq before the resend",
+			card:        "5500",
+			putFails:    map[int]int{seqCard: 1},
+			wantErrs:    []error{ErrJournal, errSecretsDown},
+			wantHidden:  []string{"5500"},
+			wantEvents:  6,
+			wantValues:  map[int][]FieldValue{seqCard: {secretValue(cardField)}},
+			wantSecrets: []secretPut{ledgerPut(seqCard, cardField, `"5500"`)},
+		},
+		{
+			name: "[Fail] When: every put of the card success fails ; " +
+				"Should: end as a journal failure and never append the card success",
+			card:        "5500",
+			putFails:    map[int]int{seqCard: forever},
+			wantErrs:    []error{ErrJournal, errSecretsDown},
+			wantHidden:  []string{"5500"},
+			wantEvents:  4,
+			wantMissing: []secretPut{ledgerPut(seqCard, cardField, "")},
+		},
+		{
+			name: "[Fail] When: the put of saga-started fails ; " +
+				"Should: return the journal failure and append nothing",
+			initial:     ledgerState{Card: "4111"},
+			putFails:    map[int]int{1: forever},
+			wantErrs:    []error{ErrJournal, errSecretsDown},
+			wantHidden:  []string{"4111"},
+			wantMissing: []secretPut{ledgerPut(1, cardField, "")},
+		},
+		{
+			name: "[Fail] When: a step returns a secret NaN ; " +
+				"Should: fail the step with a text that names only the field and keep ErrInvalidState",
+			tip:        Tip(math.NaN()),
+			wantErrs:   []error{ErrInvalidState},
+			wantText:   []string{"sagas: invalid state: Tip: secret value cannot be encoded"},
+			wantHidden: []string{nanText},
+			wantEvents: 8,
+		},
+		{
+			name: "[Fail] When: the initial state holds a secret NaN ; " +
+				"Should: return a text that names only the field and append nothing",
+			initial:    ledgerState{Tip: Tip(math.NaN())},
+			wantErrs:   []error{ErrInvalidState},
+			wantText:   []string{"sagas: invalid state: Tip: secret value cannot be encoded"},
+			wantHidden: []string{nanText},
 		},
 	}
 
@@ -2343,10 +2517,39 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			events := ledgerEvents(t, tt.initial, tt.rooms)
-			assert.Equal(t, tt.wantStarted, events[0].Values)
-			assert.Equal(t, EventStepSucceeded, events[2].Kind)
-			assert.Equal(t, tt.wantDone, events[2].Values)
+			secrets := &scriptSecrets{
+				MemorySecretStore: NewMemorySecretStore(), fails: tt.putFails, failed: map[int]int{},
+			}
+			journal := &secretReadingJournal{MemoryJournal: NewMemoryJournal(), secrets: secrets}
+			s := ledgerSaga(t, tt.rooms, tt.card, tt.tip, WithJournal(journal), WithSecretStore(secrets))
+
+			st := tt.initial
+			st.ID = ledgerID
+			err := s.Run(t.Context(), &st)
+
+			if len(tt.wantErrs) == 0 {
+				require.NoError(t, err)
+			}
+
+			requireText(t, err, tt.wantText, tt.wantHidden)
+
+			for _, want := range tt.wantErrs {
+				require.ErrorIs(t, err, want)
+			}
+
+			events := storedEvents(t, journal.MemoryJournal, ledgerID)
+			require.Len(t, events, tt.wantEvents)
+			assert.Empty(t, journal.misses)
+
+			for _, hidden := range tt.wantHidden {
+				assert.NotContains(t, fmt.Sprintf("%+v", events), hidden)
+			}
+
+			for seq, want := range tt.wantValues {
+				assert.Equal(t, want, events[seq-1].Values, "event %d", seq)
+			}
+
+			assertSecrets(t, secrets.MemorySecretStore, tt.wantSecrets, tt.wantMissing)
 		})
 	}
 }

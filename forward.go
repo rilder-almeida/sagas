@@ -81,20 +81,20 @@ func (r *runner[S]) stopped() bool {
 	return r.failed || r.rejected != nil || len(r.appendErrs) > 0 || r.interrupted != nil
 }
 
-func (r *runner[S]) record(ctx context.Context, e *Event) bool {
-	return r.persist(ctx, e) == nil
+func (r *runner[S]) record(ctx context.Context, e *Event, secrets ...FieldValue) bool {
+	return r.persist(ctx, e, secrets...) == nil
 }
 
 func (r *runner[S]) resent(ctx context.Context) bool {
 	return r.resend(ctx) == nil
 }
 
-func (r *runner[S]) persist(ctx context.Context, e *Event) error {
+func (r *runner[S]) persist(ctx context.Context, e *Event, secrets ...FieldValue) error {
 	if r.rejected != nil {
 		return r.rejected
 	}
 
-	return r.append(ctx, e)
+	return r.append(ctx, e, secrets...)
 }
 
 type crew[S any] struct {
@@ -354,7 +354,7 @@ func (r *runner[S]) settle(grace context.Context, f *settled[S]) {
 	r.runs[i].status, r.runs[i].attempts = runSucceeded, f.out.attempts
 
 	done := Event{Kind: EventStepSucceeded, Step: name, Attempts: f.out.attempts, Values: res.values}
-	if !r.record(grace, &done) {
+	if !r.record(grace, &done, res.secrets...) {
 		r.runs[i].status, r.runs[i].applied = runUnknown, i == r.saga.pivot
 	}
 }
