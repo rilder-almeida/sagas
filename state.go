@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -411,4 +412,80 @@ func encodeFields(v reflect.Value) ([][]byte, error) {
 	}
 
 	return fields, errors.Join(errs...)
+}
+
+type fieldWrite struct {
+	step string
+	data []byte
+}
+
+type rebuild struct {
+	index  map[string]int
+	writes [][]fieldWrite
+}
+
+func rebuildState[S any](ctx context.Context, events []Event, secrets SecretStore, through int) (*S, error) {
+	t := reflect.TypeFor[S]()
+	b := rebuild{index: make(map[string]int, t.NumField()), writes: make([][]fieldWrite, t.NumField())}
+
+	for i := range t.NumField() {
+		b.index[t.Field(i).Name] = i
+	}
+
+	for i := range events {
+		if events[i].Seq > through {
+			break
+		}
+
+		if err := b.apply(ctx, &events[i], secrets); err != nil {
+			return nil, err
+		}
+	}
+
+	fields := make([][]byte, len(b.writes))
+	for f, w := range b.writes {
+		if len(w) > 0 {
+			fields[f] = w[len(w)-1].data
+		}
+	}
+
+	return copyState(snapshot[S]{fields: fields})
+}
+
+func (b *rebuild) apply(ctx context.Context, e *Event, secrets SecretStore) error {
+	own := func(w fieldWrite) bool { return w.step == e.Step }
+
+	if e.Kind == EventCompensationSucceeded && len(e.Values) == 0 {
+		for f := range b.writes {
+			b.writes[f] = slices.DeleteFunc(b.writes[f], own)
+		}
+	}
+
+	for _, v := range e.Values {
+		f, found := b.index[v.Field]
+		if !found {
+			return fmt.Errorf("%w: seq %d: unknown field %s", ErrInvalidState, e.Seq, v.Field)
+		}
+
+		data, err := valueData(ctx, e, &v, secrets)
+		if err != nil {
+			return err
+		}
+
+		if i := slices.IndexFunc(b.writes[f], own); e.Kind == EventCompensationSucceeded && i >= 0 {
+			b.writes[f][i].data = data
+		} else {
+			b.writes[f] = append(b.writes[f], fieldWrite{step: e.Step, data: data})
+		}
+	}
+
+	return nil
+}
+
+func valueData(ctx context.Context, e *Event, v *FieldValue, secrets SecretStore) ([]byte, error) {
+	if len(v.Value) > 0 {
+		return v.Value, nil
+	}
+
+	return secrets.Get(ctx, e.Execution, e.Seq, v.Field)
 }

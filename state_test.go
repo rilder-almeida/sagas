@@ -1,6 +1,7 @@
 package sagas
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -1904,5 +1905,148 @@ func benchRecord[S any](b *testing.B, initial S, field int, change func(*S) any)
 
 		_, recordErr := st.put(0, outputOf(st, recorded{step: 0, value: change(attempt)}))
 		require.NoError(b, recordErr)
+	}
+}
+
+type undoRoomsStep struct {
+	Step[ledgerState, Rooms]
+
+	rooms Rooms
+}
+
+func (s *undoRoomsStep) Execute(context.Context, ledgerState) (Rooms, error) { return s.rooms, nil }
+
+func (*undoRoomsStep) Compensate(context.Context, ledgerState) error { return nil }
+
+func seqOf(t *testing.T, events []Event, kind EventKind, step string) int {
+	t.Helper()
+
+	for i := range events {
+		if events[i].Kind == kind && events[i].Step == step {
+			return events[i].Seq
+		}
+	}
+
+	require.Failf(t, "no event", "%s %s", kind, step)
+
+	return 0
+}
+
+func throughOf(t *testing.T, events []Event, step string, pastEnd int) int {
+	t.Helper()
+
+	if step != "" {
+		return seqOf(t, events, EventStepSucceeded, step)
+	}
+
+	return events[len(events)-1].Seq + pastEnd
+}
+
+func Test_rebuildState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		initial     ledgerState
+		tip         Tip
+		freshStore  bool
+		throughStep string
+		pastEnd     int
+		wantSeen    bool
+		otherType   bool
+		wantErr     error
+		wantInMsg   string
+	}{
+		{
+			name: "[Success] When: a completed run is rebuilt through its last seq ; " +
+				"Should: equal the state that Run wrote back, secrets included",
+			initial: ledgerState{Rooms: Rooms{"old"}, Card: "4111"},
+		},
+		{
+			name: "[Success] When: a run is rebuilt through the success of its first step ; " +
+				"Should: equal the state the next step saw",
+			initial:     ledgerState{Card: "4111"},
+			throughStep: "rooms",
+			wantSeen:    true,
+		},
+		{
+			name: "[Success] When: a compensated run restored a field ; " +
+				"Should: equal the state that Run wrote back",
+			initial: ledgerState{Rooms: Rooms{"old"}},
+			tip:     Tip(math.NaN()),
+		},
+		{
+			name:    "[Success] When: through is past the last seq ; Should: return the final state",
+			initial: ledgerState{Card: "4111"},
+			pastEnd: 10,
+		},
+		{
+			name:       "[Fail] When: the secret store misses a value ; Should: return ErrNoSecret",
+			initial:    ledgerState{Card: "4111"},
+			freshStore: true,
+			wantErr:    ErrNoSecret,
+		},
+		{
+			name: "[Fail] When: an event names a field the state type does not have ; " +
+				"Should: return ErrInvalidState naming the field",
+			otherType: true,
+			wantErr:   ErrInvalidState,
+			wantInMsg: "sagas: invalid state: seq 1: unknown field ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			journal, secrets := NewMemoryJournal(), NewMemorySecretStore()
+
+			var seen ledgerState
+
+			s, err := New[ledgerState]("ledger", Sequence(
+				&undoRoomsStep{Name: "rooms", rooms: Rooms{"a1"}},
+				&cardStep{Name: "card", card: "5500", seen: &seen},
+				&tipStep{Name: "tip", tip: tt.tip},
+			), WithJournal(journal), WithSecretStore(secrets))
+			require.NoError(t, err)
+
+			st := tt.initial
+			st.ID = ledgerID
+			runErr := s.Run(t.Context(), &st)
+
+			events, err := journal.Events(t.Context(), ledgerID)
+			require.NoError(t, err)
+
+			through := throughOf(t, events, tt.throughStep, tt.pastEnd)
+			want := st
+
+			if tt.wantSeen {
+				want = seen
+			}
+
+			if tt.freshStore {
+				secrets = NewMemorySecretStore()
+			}
+
+			if tt.otherType {
+				_, otherErr := rebuildState[otherState](t.Context(), events, secrets, through)
+				require.ErrorIs(t, otherErr, tt.wantErr)
+				require.EqualError(t, otherErr, tt.wantInMsg)
+
+				return
+			}
+
+			got, err := rebuildState[ledgerState](t.Context(), events, secrets, through)
+			require.ErrorIs(t, err, tt.wantErr)
+
+			if tt.wantErr != nil {
+				assert.Nil(t, got)
+
+				return
+			}
+
+			require.NotNil(t, got)
+			assert.Equal(t, want, *got, "run error: %v", runErr)
+		})
 	}
 }

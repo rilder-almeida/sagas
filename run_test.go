@@ -2295,7 +2295,6 @@ const (
 
 type ledgerState struct {
 	ID    string `sagas:"id"`
-	Hotel Hotel
 	Rooms Rooms
 	Card  Card `sagas:"secret"`
 	Tip   Tip  `sagas:"secret"`
@@ -2313,9 +2312,16 @@ type cardStep struct {
 	Step[ledgerState, Card]
 
 	card Card
+	seen *ledgerState
 }
 
-func (s *cardStep) Execute(context.Context, ledgerState) (Card, error) { return s.card, nil }
+func (s *cardStep) Execute(_ context.Context, st ledgerState) (Card, error) {
+	if s.seen != nil {
+		*s.seen = st
+	}
+
+	return s.card, nil
+}
 
 type tipStep struct {
 	Step[ledgerState, Tip]
@@ -2391,7 +2397,6 @@ func secretValue(field string) FieldValue { return FieldValue{Field: field} }
 func ledgerStarted(rooms string) []FieldValue {
 	return []FieldValue{
 		{Field: "ID", Value: jsontext.Value(`"ledger-1"`)},
-		{Field: hotelField, Value: jsontext.Value(`""`)},
 		{Field: roomsField, Value: jsontext.Value(rooms)},
 		secretValue(cardField),
 		secretValue(tipField),
