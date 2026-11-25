@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -124,8 +125,39 @@ func createEvent(root *os.Root, e *sagas.Event) error {
 
 const fileMode = 0o600
 
+type eventLine struct {
+	*sagas.Event
+
+	Values []valueLine
+}
+
+type valueLine struct {
+	Field string
+	Value jsontext.Value `json:",omitzero"`
+}
+
+func lineOf(e *sagas.Event) eventLine {
+	line := eventLine{Event: e}
+	for _, v := range e.Values {
+		line.Values = append(line.Values, valueLine{Field: v.Field, Value: v.Value})
+	}
+
+	return line
+}
+
+func (l *eventLine) event() sagas.Event {
+	e := *l.Event
+	e.Values = nil
+
+	for _, v := range l.Values {
+		e.Values = append(e.Values, sagas.FieldValue{Field: v.Field, Value: v.Value})
+	}
+
+	return e
+}
+
 func writeEvent(root *os.Root, e *sagas.Event) error {
-	line, err := json.Marshal(e)
+	line, err := json.Marshal(lineOf(e))
 	if err != nil {
 		return err
 	}
@@ -210,11 +242,12 @@ func readEvents(root *os.Root, execution string) ([]sagas.Event, error) {
 	var events []sagas.Event
 
 	for line := range bytes.Lines(data) {
-		var e sagas.Event
-
-		if err = json.Unmarshal(line, &e); err != nil {
+		stored := eventLine{Event: new(sagas.Event)}
+		if err = json.Unmarshal(line, &stored); err != nil {
 			return nil, fmt.Errorf("%w: execution %q line %d: %w", errBadLine, execution, len(events)+1, err)
 		}
+
+		e := stored.event()
 
 		if err = sagas.CheckEvent(&e); err != nil {
 			return nil, fmt.Errorf("execution %q line %d: %w", execution, len(events)+1, err)

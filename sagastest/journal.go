@@ -71,7 +71,7 @@ func journalEvent(seq int) *sagas.Event {
 		Kind: sagas.EventStepStarted,
 		Step: "step", Attempts: 1,
 		Err:    sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
-		Values: []sagas.FieldValue{{Field: "Field", Value: jsontext.Value(`"value"`)}},
+		Values: []sagas.FieldValue{{Field: "Field", Value: jsontext.Value(`"value"`)}, {Field: "Secret"}},
 		Steps: []sagas.StepZone{
 			{Name: "step", Zone: sagas.ZoneCompensable, Compensable: true},
 			{Name: "bare", Zone: sagas.ZonePivot},
@@ -283,6 +283,7 @@ func copyMutations() []mutation {
 		{"scalar field", func(e *sagas.Event) { e.Step = mutated }},
 		{"Version", func(e *sagas.Event) { e.Version = "v9.0.0" }},
 		{"Values element", func(e *sagas.Event) { e.Values[0].Field = mutated }},
+		{"Values byte", func(e *sagas.Event) { e.Values[0].Value[1] = 'x' }},
 		{"Steps slice", func(e *sagas.Event) { e.Steps[0].Name = mutated }},
 		{"Steps Compensable from true", func(e *sagas.Event) { e.Steps[0].Compensable = false }},
 		{"Steps Compensable from false", func(e *sagas.Event) { e.Steps[1].Compensable = true }},

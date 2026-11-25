@@ -245,6 +245,8 @@ func Test_checkEvents(t *testing.T) {
 
 	current := eventAt(1, sagas.EventSagaStarted)
 	future := sagas.Event{Execution: "order-1", Seq: 2, Version: "v0.3.0", Kind: sagas.EventSagaStarted}
+	past := future
+	past.Version = "v0.1.0"
 
 	tests := []struct {
 		name    string
@@ -262,6 +264,11 @@ func Test_checkEvents(t *testing.T) {
 		{
 			name:    "[Fail] When: one event has a newer Version ; Should: return ErrInvalidEvent",
 			events:  []sagas.Event{current, future},
+			wantErr: sagas.ErrInvalidEvent,
+		},
+		{
+			name:    "[Fail] When: one event has an older Version ; Should: return ErrInvalidEvent",
+			events:  []sagas.Event{current, past},
 			wantErr: sagas.ErrInvalidEvent,
 		},
 	}

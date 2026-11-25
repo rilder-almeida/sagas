@@ -283,21 +283,27 @@ func ExampleWithJournal() {
 
 	for i := range events {
 		e := &events[i]
-		if _, err = fmt.Println(strings.TrimSpace(fmt.Sprintf("%d %s %s", e.Seq, e.Kind, e.Step))); err != nil {
+
+		line := strings.Fields(fmt.Sprintf("%d %s %s", e.Seq, e.Kind, e.Step))
+		for _, v := range e.Values {
+			line = append(line, v.Field+"="+string(v.Value))
+		}
+
+		if _, err = fmt.Println(strings.Join(line, " ")); err != nil {
 			panic(err)
 		}
 	}
 
 	// Output:
-	// 1 saga-started
+	// 1 saga-started ID="trip-42" Flight="" Hotel="" Charge="" Email=""
 	// 2 step-started flight
-	// 3 step-succeeded flight
+	// 3 step-succeeded flight Flight="trip/trip-42/flight"
 	// 4 step-started hotel
-	// 5 step-succeeded hotel
+	// 5 step-succeeded hotel Hotel="booked"
 	// 6 step-started charge
-	// 7 step-succeeded charge
+	// 7 step-succeeded charge Charge="charged"
 	// 8 step-started email
-	// 9 step-succeeded email
+	// 9 step-succeeded email Email="sent"
 	// 10 saga-finished
 }
 

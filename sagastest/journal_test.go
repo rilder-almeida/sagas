@@ -43,6 +43,38 @@ func (j *keepsPointer) Append(ctx context.Context, e *sagas.Event) error {
 	return err
 }
 
+type keepsValueBytes struct {
+	*sagas.MemoryJournal
+
+	mu   sync.Mutex
+	kept map[string]sagas.Event
+}
+
+func (j *keepsValueBytes) Append(ctx context.Context, e *sagas.Event) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if e == nil {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	key := fmt.Sprintf("%s/%d", e.Execution, e.Seq)
+	if prev, ok := j.kept[key]; ok && reflect.DeepEqual(prev, *e) {
+		return nil
+	}
+
+	err := j.MemoryJournal.Append(ctx, e)
+	if err == nil {
+		kept := *e
+		kept.Values = slices.Clone(e.Values)
+		kept.Steps = slices.Clone(e.Steps)
+		kept.Err.Previous = slices.Clone(e.Err.Previous)
+		j.kept[key] = kept
+	}
+
+	return err
+}
+
 type keepsSlices struct {
 	*sagas.MemoryJournal
 
@@ -460,6 +492,15 @@ func journalRows() []journalRow {
 				"resend of seq 1 after the caller changed its Steps slice returned nil",
 				"resend of seq 1 after the caller changed its Err.Previous slice returned nil",
 			},
+		},
+		{
+			name: "[Fail] When: the journal copies Values but keeps the bytes of each Value ; " +
+				"Should: report the accepted changed byte",
+			newJournal: func() sagas.Journal {
+				return &keepsValueBytes{MemoryJournal: sagas.NewMemoryJournal(), kept: map[string]sagas.Event{}}
+			},
+			wantRules:  []string{ruleStoredCopy},
+			wantCauses: []string{"resend of seq 1 after the caller changed its Values byte returned nil"},
 		},
 		{
 			name:       "[Fail] When: the journal drops Compensable of each step ; Should: report the accepted change",

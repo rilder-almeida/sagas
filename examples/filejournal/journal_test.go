@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"io"
 	"io/fs"
 	"os"
@@ -673,6 +674,50 @@ func Test_fileJournal_Append_twoValues(t *testing.T) {
 			}
 
 			t.Fatal("no attempt let both journal values accept Seq 1")
+		})
+	}
+}
+
+func Test_eventLine_event(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		values []sagas.FieldValue
+	}{
+		{name: "[Success] When: the event has no values ; Should: read back nil values"},
+		{
+			name:   "[Success] When: a value is JSON text ; Should: read back the same bytes",
+			values: []sagas.FieldValue{{Field: "Seat", Value: jsontext.Value(`"12A"`)}},
+		},
+		{
+			name:   "[Success] When: a value is the JSON null ; Should: read back null, not an empty value",
+			values: []sagas.FieldValue{{Field: "Seat", Value: jsontext.Value("null")}},
+		},
+		{
+			name: "[Success] When: a secret field has an empty value ; Should: read back an empty value, not null",
+			values: []sagas.FieldValue{
+				{Field: "Card"}, {Field: "Seat", Value: jsontext.Value(`["a",1]`)},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := testEvent(1, "reserve")
+			e.Values = tt.values
+
+			data, err := json.Marshal(lineOf(e))
+			require.NoError(t, err)
+
+			read := eventLine{Event: new(sagas.Event)}
+			require.NoError(t, json.Unmarshal(data, &read))
+
+			got := read.event()
+			assert.Equal(t, tt.values, got.Values)
+			assert.True(t, sagas.SameEvent(e, &got))
 		})
 	}
 }
