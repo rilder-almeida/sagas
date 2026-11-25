@@ -25,6 +25,7 @@ type Step[S, R any] struct {
 	// Description is free text that Inspect reports.
 	Description string
 	// RetryPolicy retries the action and the compensation, bounded by the caller's context, then WithRecoveryTimeout.
+	// Under NoRetry the compensation gets one attempt.
 	RetryPolicy RetryPolicy
 	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
 	AttemptTimeout time.Duration
