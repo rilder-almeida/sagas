@@ -22,13 +22,11 @@ type Step struct {
 	FailurePolicy  FailurePolicy
 }
 
-// FailurePolicy sets what a saga does when a step's compensation fails. The empty value means
-// Block.
+// FailurePolicy sets what a saga does when a step's compensation fails. The empty value means Block.
 type FailurePolicy string
 
 const (
-	// Block blocks every compensation that waits on the failed one; other branches go on. It is the
-	// default.
+	// Block blocks every compensation that waits on the failed one. Other branches go on. It is the default.
 	Block FailurePolicy = "block"
 	// Continue goes on with the compensations that remain.
 	Continue FailurePolicy = "continue"

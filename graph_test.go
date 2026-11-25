@@ -242,7 +242,8 @@ func Test_ancestorsOf(t *testing.T) {
 func Test_graph_concurrent(t *testing.T) {
 	t.Parallel()
 
-	g := graph{ancestors: ancestorsOf([][]int{{}, {0}, {0}, {1, 2}})}
+	g, errs := checkGraph(make([]StepReport, 4), [][]int{{}, {0}, {0}, {1, 2}})
+	require.Empty(t, errs)
 
 	tests := []struct {
 		name string
@@ -259,6 +260,12 @@ func Test_graph_concurrent(t *testing.T) {
 			name: "[Fail] When: one step is an ancestor of the other ; Should: not be concurrent",
 			i:    0,
 			k:    3,
+			want: false,
+		},
+		{
+			name: "[Fail] When: the later step comes first ; Should: not be concurrent",
+			i:    3,
+			k:    0,
 			want: false,
 		},
 		{
