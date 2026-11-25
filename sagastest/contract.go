@@ -79,7 +79,7 @@ func descendants(steps []sagas.StepReport, root string) []string {
 func runCase[S any](ctx context.Context, setup Setup[S], mw ...sagas.Middleware) (Case[S], error) {
 	c := setup(mw...)
 
-	return c, c.Saga.Run(ctx, c.State)
+	return c, c.Saga.Run(WithoutConcurrency(ctx), c.State)
 }
 
 func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {

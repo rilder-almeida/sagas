@@ -15,6 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/rilder-almeida/sagas/internal/serial"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -939,6 +940,7 @@ type runRow struct {
 	script             map[int]error
 	runs               int
 	concurrent         bool
+	serial             bool
 	wantStatus         Status
 	wantKind           *KindError
 	wantErrs           []error
@@ -1094,6 +1096,10 @@ func execute(s *Saga[tripState], tt *runRow) []ran {
 				cancel(tt.cancelCause)
 			default:
 				time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
+			}
+
+			if tt.serial {
+				ctx = serial.With(ctx)
 			}
 
 			out[i].state = tt.initial

@@ -105,6 +105,10 @@ func (r *runner[S]) unwind(grace context.Context, b *rollback[S]) {
 				continue
 			}
 
+			if r.serial && b.running > 0 {
+				return
+			}
+
 			b.begun[i] = true
 			r.turn(grace, b, i, blockedBelow)
 		}

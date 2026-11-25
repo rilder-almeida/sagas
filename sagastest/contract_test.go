@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rilder-almeida/sagas"
@@ -961,6 +962,57 @@ func Test_Pivot(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wantSetups, setups)
+		})
+	}
+}
+
+func Test_runCase(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		steps []string
+		want  []string
+	}{
+		{
+			name: "[Success] When: a kit runs a case of two parallel steps ; " +
+				"Should: run them one at a time in graph order",
+			steps: []string{"a", "b"},
+			want:  []string{startA, endA, startB, endB},
+		},
+		{
+			name: "[Success] When: a kit runs a case of three parallel steps ; " +
+				"Should: run them one at a time in graph order",
+			steps: []string{"a", "b", "c"},
+			want:  []string{startA, endA, startB, endB, startC, endC},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				tr := &trace{}
+				setup := func(mw ...sagas.Middleware) Case[probeState] {
+					flows := make([]sagas.Flow, 0, len(tt.steps))
+					for _, name := range tt.steps {
+						s := &traceStep{trace: tr}
+						s.Name = name
+						flows = append(flows, s)
+					}
+
+					flow := sagas.Parallel(flows...)
+					saga, err := sagas.New[probeState]("serial", flow, sagas.WithMiddleware(mw...))
+					require.NoError(t, err)
+
+					return Case[probeState]{Saga: saga, State: &probeState{ID: runID}, Flow: flow}
+				}
+
+				_, err := runCase(t.Context(), setup)
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, tr.snapshot())
+			})
 		})
 	}
 }

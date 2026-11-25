@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"slices"
 	"time"
+
+	"github.com/rilder-almeida/sagas/internal/serial"
 )
 
 // ErrInvalidRun is returned by Run for an execution ID that breaks a rule of the run input.
@@ -86,6 +88,7 @@ type runner[S any] struct {
 	runs        []stepRun
 	undone      []stepStatus
 	failures    []*Error
+	serial      bool
 }
 
 func (r *runner[S]) append(ctx context.Context, e *Event) error {
@@ -232,6 +235,7 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 	r := &runner[S]{
 		saga: s, execution: start.execution, writer: newID(), journal: journal,
 		store: committed, runs: make([]stepRun, len(s.steps)), undone: make([]stepStatus, len(s.steps)),
+		serial: serial.On(ctx),
 	}
 
 	grace, release := graceContext(ctx, s.recovery)

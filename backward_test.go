@@ -81,6 +81,7 @@ func undoOnce(name string, do, undo func(context.Context, tripState) error) *und
 func backwardRows() []runRow {
 	return []runRow{
 		reversedOrderRow(),
+		serialUndoRow(),
 		failedAndUnknownRow(),
 		undoGoexitRow(),
 		unknownBarrierRow(),
@@ -292,6 +293,35 @@ func reversedOrderRow() runRow {
 		),
 		wantChanged: map[string][]string{undoneOf("b"): {hotelField}},
 		wantState:   tripState{Hotel: refunded},
+	}
+}
+
+func serialUndoRow() runRow {
+	return runRow{
+		name: "[Success] When: a serial run fails with three compensable parallel steps done ; " +
+			"Should: compensation events arrive one at a time in reverse graph order",
+		steps: func(rec *recorder) Flow {
+			return Sequence(
+				Parallel(rec.undoable("a"), rec.undoable("b"), rec.undoable("c")), once("x", alwaysFails),
+			)
+		},
+		serial:       true,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"x": ErrFailed},
+		wantFailed:   []string{"x"},
+		wantErrText:  map[string]string{"x": errAlwaysFails.Error()},
+		wantAttempts: map[string]int{"x": 1},
+		wantErrs:     []error{errAlwaysFails},
+		wantSteps: map[string]stepStatus{
+			"a": stepCompensated, "b": stepCompensated, "c": stepCompensated, "x": stepFailed,
+		},
+		wantOrder: [][2]string{{"undo:c", "undo:b"}, {"undo:b", undoA}},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), startOf("c"), doneOf("c"),
+			startOf("x"), failedOf("x"), compStartOf("c"), undoneOf("c"), compStartOf("b"), undoneOf("b"),
+			compStartOf("a"), undoneOf("a"), closed,
+		),
 	}
 }
 

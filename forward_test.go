@@ -75,6 +75,47 @@ func forwardRows() []runRow {
 		concurrentRunsRow(),
 		ancestorsOnlyRow(),
 		skippedAncestorRow(),
+		serialVerdictRow(),
+	}
+}
+
+func serialVerdictRow() runRow {
+	return runRow{
+		name: "[Success] When: a serial run with an Enabled step before a parallel sibling ; " +
+			"Should: the sibling starts only after the verdict",
+		steps: func(rec *recorder) Flow {
+			return Parallel(rec.stepIf("a", rec.lateYes("a")), rec.step("b"))
+		},
+		serial:     true,
+		wantStatus: StatusCompleted,
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "b": stepSucceeded},
+		wantOrder:  [][2]string{{"if:a", "a"}, {"a", "b"}},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("b"), doneOf("b"), closed),
+	}
+}
+
+func serialCallerEndRow() runRow {
+	return runRow{
+		name: "[Fail] When: the caller context ends during a serial run ; Should: no step starts after the end",
+		steps: func(rec *recorder) Flow {
+			slow := undoing("a", func(context.Context, tripState) error {
+				time.Sleep(pause)
+				rec.add("a")
+
+				return nil
+			}, rec.do(undoA))
+
+			return Parallel(slow, rec.undoable("b"))
+		},
+		serial:      true,
+		cancelAfter: pause / 2,
+		cancelCause: errStop,
+		wantStatus:  StatusCompensated,
+		wantKind:    ErrCompensated,
+		wantErrs:    []error{errStop, context.Canceled},
+		wantSteps:   map[string]stepStatus{"a": stepCompensated, "b": stepNotStarted},
+		wantOrder:   [][2]string{{"a", undoA}},
+		wantTrail:   seq(opened, startOf("a"), doneOf("a"), compStartOf("a"), undoneOf("a"), closed),
 	}
 }
 
@@ -1218,6 +1259,7 @@ func failureRows() []runRow {
 		predicateGoexitRow(),
 		siblingCancelRow(),
 		stoppedBeforeStartRow(),
+		serialCallerEndRow(),
 	}
 }
 

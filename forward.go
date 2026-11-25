@@ -171,6 +171,10 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 			continue
 		}
 
+		if r.serial && c.running > 0 {
+			return
+		}
+
 		if r.callerStops(stepCtx, grace, i) {
 			return
 		}
