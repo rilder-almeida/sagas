@@ -13,7 +13,9 @@ const (
 	Block FailurePolicy = "block"
 	// Continue goes on with the compensations that remain.
 	Continue FailurePolicy = "continue"
-	// BlockAll makes a failed compensation of this step block every compensation that did not start.
+	// BlockAll makes a failed compensation of this step block every compensation that did not start. A saga with a
+	// BlockAll step begins the compensations of one level together, and the next level only after all of them end. The
+	// level of a step is 0, or one more than the highest level among the steps that depend on it and have a Compensate.
 	BlockAll FailurePolicy = "block-all"
 )
 

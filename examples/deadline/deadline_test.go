@@ -290,7 +290,7 @@ func Test_newSaga_blockAllRepeat(t *testing.T) {
 				wg.Go(func() {
 					svc := newServices()
 
-					saga, err := newSaga(svc, longGrace, sagas.BlockAll)
+					saga, err := newSaga(svc, sc.grace, sc.policy)
 					if err != nil {
 						errs[i] = err
 
