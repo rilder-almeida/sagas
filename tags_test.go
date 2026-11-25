@@ -176,24 +176,6 @@ func Test_refuseExecutionIDMethod(t *testing.T) {
 			wantText: []string{"pointerMethodState", "ExecutionID", tagLiteral},
 		},
 		{
-			name: "[Fail] When: New gets a state with the method ; Should: refuse it",
-			run: func() error {
-				_, err := New[valueMethodState]("s", &okStep[valueMethodState]{})
-
-				return err
-			},
-			wantText: []string{"valueMethodState", tagLiteral},
-		},
-		{
-			name: "[Fail] When: Inspect gets a state with the method ; Should: report the same problem",
-			run: func() error {
-				_, err := Inspect[pointerMethodState](&okStep[pointerMethodState]{})
-
-				return err
-			},
-			wantText: []string{"pointerMethodState", tagLiteral},
-		},
-		{
 			name: "[Success] When: the method returns another type ; Should: accept the state",
 			run:  refuseExecutionIDMethod[otherSignatureState],
 		},

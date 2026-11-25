@@ -187,6 +187,31 @@ func Test_New(t *testing.T) {
 	}
 }
 
+func Test_New_stateType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		wantContains []string
+	}{
+		{
+			name:         "[Fail] When: the state keeps the old execution ID method ; Should: refuse it, name the tag",
+			wantContains: []string{"valueMethodState", tagLiteral},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := New[valueMethodState](tripName, &okStep[valueMethodState]{})
+
+			assert.Nil(t, s)
+			requireErrs(t, err, []error{ErrInvalidState}, tt.wantContains)
+		})
+	}
+}
+
 func Test_New_stepSettings(t *testing.T) {
 	t.Parallel()
 

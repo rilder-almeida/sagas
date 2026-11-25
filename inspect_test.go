@@ -471,6 +471,14 @@ func inspectStepRows() []inspectRow {
 			wantNoErrs:   []error{ErrInvalidStep},
 			wantContains: []string{"badIDState.ID", "id needs a string field, got int"},
 		},
+		{
+			name:         "[Fail] When: the state keeps the old execution ID method ; Should: return ErrInvalidState",
+			inspect:      Inspect[pointerMethodState],
+			flow:         &okStep[pointerMethodState]{},
+			wantErrs:     []error{ErrInvalidState},
+			wantNoErrs:   []error{ErrInvalidStep},
+			wantContains: []string{"pointerMethodState", tagLiteral},
+		},
 	}
 }
 

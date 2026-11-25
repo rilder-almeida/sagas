@@ -12,7 +12,8 @@ import (
 )
 
 var (
-	// ErrInvalidState is returned when the state type or a state value cannot round-trip through its JSON encoding.
+	// ErrInvalidState is returned when the state type breaks a state rule or a state value cannot round-trip through
+	// its JSON encoding. The rules cover the field types, the sagas tags and a kept execution ID method.
 	ErrInvalidState = &KindError{name: "invalid_state", message: "sagas: invalid state"}
 	// ErrConflict is returned when a step changes a field that another step committed after the step's snapshot.
 	ErrConflict = &KindError{name: "conflict", message: "sagas: state conflict"}
