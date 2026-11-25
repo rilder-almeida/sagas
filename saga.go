@@ -50,6 +50,7 @@ type Saga[S any] struct {
 	outputField []int
 	pivot       int
 	idField     int
+	blockAll    bool
 }
 
 type stepNode[S any] struct {
@@ -60,6 +61,7 @@ type stepNode[S any] struct {
 	parents      []int
 	children     []int
 	zone         Zone
+	level        int
 	action       callFunc[S]
 	compensation callFunc[S]
 }
@@ -112,14 +114,23 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 
 		n.buildCalls(name, rep, &in.methods[i], d.middleware)
 
+		s.blockAll = s.blockAll || n.policy == Halt
 		s.steps = append(s.steps, n)
 	}
 
 	zoned := zones(in.graph.children, s.pivot)
 
+	compensable := make([]bool, len(s.steps))
+	for i := range s.steps {
+		compensable[i] = s.steps[i].compensation != nil
+	}
+
+	levels := levelsOf(in.graph.children, s.order, compensable)
+
 	for i := range s.steps {
 		s.steps[i].children = in.graph.children[i]
 		s.steps[i].zone = zoned[i]
+		s.steps[i].level = levels[i]
 	}
 
 	return s

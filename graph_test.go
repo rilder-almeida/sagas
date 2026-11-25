@@ -284,3 +284,56 @@ func Test_graph_concurrent(t *testing.T) {
 		})
 	}
 }
+
+func Test_levelsOf(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		parents     [][]int
+		compensable []bool
+		want        []int
+	}{
+		{
+			name:        "[Success] When: a single compensable leaf ; Should: level 0",
+			parents:     [][]int{{}},
+			compensable: []bool{true},
+			want:        []int{0},
+		},
+		{
+			name:        "[Success] When: a chain A to B to C, all compensable ; Should: C 0, B 1, A 2",
+			parents:     [][]int{{}, {0}, {1}},
+			compensable: []bool{true, true, true},
+			want:        []int{2, 1, 0},
+		},
+		{
+			name:        "[Success] When: A compensable over a leaf B with no Compensate ; Should: A 0, B 0",
+			parents:     [][]int{{}, {0}},
+			compensable: []bool{true, false},
+			want:        []int{0, 0},
+		},
+		{
+			name: "[Success] When: P over N with no Compensate over M compensable, and Q over R compensable ; " +
+				"Should: M 0, N 1, P 1, R 0, Q 1",
+			parents:     [][]int{{}, {0}, {1}, {}, {3}},
+			compensable: []bool{true, false, true, true, true},
+			want:        []int{1, 1, 0, 1, 0},
+		},
+		{
+			name:        "[Success] When: a diamond A over B and C over D ; Should: D 0, B 1, C 1, A 2",
+			parents:     [][]int{{}, {0}, {0}, {1, 2}},
+			compensable: []bool{true, true, true, true},
+			want:        []int{2, 1, 1, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			children := childrenOf(tt.parents)
+			order := topoOrder(tt.parents, children).order
+			assert.Equal(t, tt.want, levelsOf(children, order, tt.compensable))
+		})
+	}
+}

@@ -134,6 +134,23 @@ func zones(children [][]int, pivot int) []Zone {
 	return out
 }
 
+func levelsOf(children [][]int, order []int, compensable []bool) []int {
+	levels := make([]int, len(children))
+
+	for _, i := range slices.Backward(order) {
+		for _, c := range children[i] {
+			below := levels[c]
+			if compensable[c] {
+				below++
+			}
+
+			levels[i] = max(levels[i], below)
+		}
+	}
+
+	return levels
+}
+
 func pivotsOf(reports []StepReport) []int {
 	var pivots []int
 
