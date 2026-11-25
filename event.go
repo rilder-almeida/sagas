@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// EventVersion is the semantic version of the package that writes an event. A version is compatible with it when it
-// has the same 0.minor before v1.0.0, and the same major from v1.0.0 on.
+// EventVersion is the version of the package that writes an event, as vMAJOR.MINOR.PATCH with no pre-release. A
+// version of that form is compatible when it has the same 0.minor before v1.0.0, and the same major from v1.0.0 on.
 const EventVersion = "v0.2.0"
 
 // Event is one journal record of an execution. Writer is the token of the run that wrote it, and Seq counts from 1.
@@ -31,8 +31,8 @@ type Event struct {
 	Time      time.Time
 }
 
-// EventError is an Error as text. Kind is the name of the error kind, Message is the text of Err, and Previous holds
-// the texts of the earlier errors. The zero value means no error.
+// EventError is an Error as text. Kind is the name of the error kind, Message is the text of Error.Err, and Previous
+// holds the texts of the earlier errors. The zero value means no error.
 type EventError struct {
 	Kind     string
 	Message  string
