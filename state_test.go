@@ -1169,23 +1169,24 @@ func errText(err error) string {
 }
 
 type fieldChange struct {
-	field int
-	value any
+	field  int
+	value  any
+	output *encodedOutput
 }
 
 func commitChange[S any](st *store[S], step string, snap snapshot[S], c fieldChange) (commitResult, error) {
-	out, isOutput := c.value.(encodedOutput)
-	if !isOutput {
-		name := ""
-		if c.field >= 0 {
-			name = st.names[c.field]
-		}
-
-		data, err := encodeField(name, c.value)
-		out = encodedOutput{data: data, err: err}
+	if c.output != nil {
+		return st.commit(step, snap, c.field, *c.output)
 	}
 
-	return st.commit(step, snap, c.field, out)
+	name := ""
+	if c.field >= 0 {
+		name = st.names[c.field]
+	}
+
+	data, err := encodeField(name, c.value)
+
+	return st.commit(step, snap, c.field, encodedOutput{data: data, err: err})
 }
 
 func assertMoved(t *testing.T, st *store[testState], snap snapshot[testState], want []string) {
@@ -1546,7 +1547,7 @@ func Test_store_commit(t *testing.T) {
 		{
 			name:        "[Success] When: the step hands no bytes ; Should: return an empty list, write nothing",
 			earlier:     []fieldChange{reserved},
-			second:      fieldChange{field: seatsAt, value: encodedOutput{}},
+			second:      fieldChange{field: seatsAt, output: &encodedOutput{}},
 			wantChanged: []string{},
 			wantMoved:   []string{seatsField},
 			wantState:   committed,

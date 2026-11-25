@@ -126,7 +126,7 @@ func Test_indexSteps(t *testing.T) {
 
 			named := make([]namedStep, 0, len(tt.flows))
 			for _, f := range tt.flows {
-				named = append(named, nameStep(f))
+				named = append(named, nameStep(f, settingsFor(f)))
 			}
 
 			errs := indexSteps(named)

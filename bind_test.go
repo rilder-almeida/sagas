@@ -3,6 +3,7 @@ package sagas
 import (
 	"context"
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,6 +67,7 @@ type bindRow struct {
 	wantRules      ruleList
 	wantCallOut    string
 	wantCallOutErr error
+	wantCallOutMsg string
 	wantUndoOut    string
 }
 
@@ -104,11 +106,16 @@ func runBindRow(t *testing.T, tt *bindRow) {
 
 	assert.Equal(t, tt.wantCallOut, string(callOut.data))
 	require.ErrorIs(t, callOut.err, tt.wantCallOutErr)
+	assert.Contains(t, errText(callOut.err), tt.wantCallOutMsg)
 	assert.Equal(t, tt.wantUndoOut, string(undoOut.data))
 	assert.Equal(t, start, state)
 }
 
 func nanRate(context.Context, tripState) (Rate, error) { return Rate(math.NaN()), nil }
+
+type nanFeeStep struct{ Step[tripState, Charge] }
+
+func (nanFeeStep) Execute(context.Context, tripState) (Charge, error) { return Charge(math.NaN()), nil }
 
 func Test_typed_bind(t *testing.T) {
 	t.Parallel()
@@ -131,6 +138,12 @@ func Test_typed_bind(t *testing.T) {
 		{
 			name: "[Fail] When: Execute returns a Rate that does not encode ; Should: hand the encoding error over",
 			flow: producingRate("a", nanRate), field: 1, wantCallOutErr: ErrInvalidState,
+			wantCallOutMsg: "sagas: invalid state: Rate: ",
+		},
+		{
+			name: "[Fail] When: the output field name differs from its type ; Should: name the field in the error",
+			flow: &nanFeeStep{}, field: 2, wantCallOutErr: ErrInvalidState,
+			wantCallOutMsg: "sagas: invalid state: Fee: ",
 		},
 		{
 			name: "[Success] When: the output is None ; Should: return no bytes",
@@ -209,6 +222,55 @@ func Test_typed_bind(t *testing.T) {
 			t.Parallel()
 
 			runBindRow(t, &tt)
+		})
+	}
+}
+
+func Test_method(t *testing.T) {
+	t.Parallel()
+
+	restore := reflect.TypeFor[func(context.Context, tripState) error]()
+	replace := reflect.TypeFor[func(context.Context, tripState) (Hotel, error)]()
+
+	tests := []struct {
+		name     string
+		flow     Flow
+		method   string
+		accepted []reflect.Type
+		want     ruleList
+	}{
+		{
+			name: "[Success] When: the method has an accepted shape ; Should: add no rule",
+			flow: &Reserve{}, method: executeMethod, accepted: []reflect.Type{restore},
+		},
+		{
+			name: "[Success] When: the method is missing ; Should: add no rule",
+			flow: &Reserve{}, method: "Compensate", accepted: []reflect.Type{restore},
+		},
+		{
+			name: "[Fail] When: the method has another shape ; Should: name the shape it has and the one it wants",
+			flow: &wrongStep{}, method: executeMethod, accepted: []reflect.Type{restore},
+			want: ruleList{
+				"method Execute of type *sagas.wrongStep is func(context.Context, *sagas.tripState) error, " +
+					"want func(context.Context, sagas.tripState) error",
+			},
+		},
+		{
+			name: "[Fail] When: two shapes are accepted and neither matches ; Should: name both joined by or",
+			flow: &oldShapes{}, method: "Compensate", accepted: []reflect.Type{restore, replace},
+			want: ruleList{
+				"method Compensate of type *sagas.oldShapes is func(context.Context, *sagas.tripState) error, " +
+					"want func(context.Context, sagas.tripState) error or " +
+					"func(context.Context, sagas.tripState) (sagas.Hotel, error)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, method(tt.flow, tt.method, tt.accepted...))
 		})
 	}
 }

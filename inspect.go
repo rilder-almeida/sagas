@@ -80,9 +80,9 @@ func examine[S any](flow Flow) (inspection[S], error) {
 			fieldRules ruleList
 		)
 
-		named[i], outputs[i] = nameStep(b), b.output()
+		named[i], outputs[i] = nameStep(b, &r.settings[i]), b.output()
 		in.fields[i], fieldRules = outputField(reflect.TypeFor[S](), outputs[i])
-		in.reports[i], in.methods[i], stepErrs = inspectStep[S](b, named[i], in.fields[i], fieldRules)
+		in.reports[i], in.methods[i], stepErrs = inspectStep[S](b, &r.settings[i], named[i], in.fields[i], fieldRules)
 		errs = append(errs, stepErrs...)
 	}
 
@@ -108,9 +108,9 @@ func examine[S any](flow Flow) (inspection[S], error) {
 	return in, errors.Join(errs...)
 }
 
-func nameStep(b binder) namedStep {
+func nameStep(b binder, set *stepSettings) namedStep {
 	t := reflect.TypeOf(b)
-	if name := b.settings().name; name != "" {
+	if name := set.name; name != "" {
 		return namedStep{name: name, typ: t}
 	}
 
@@ -140,9 +140,9 @@ func nameOf(typeName string) string {
 	return string(name)
 }
 
-func inspectStep[S any](b binder, n namedStep, field int, fieldRules ruleList) (StepReport, stepMethods[S], []error) {
-	set := b.settings()
-
+func inspectStep[S any](
+	b binder, set *stepSettings, n namedStep, field int, fieldRules ruleList,
+) (StepReport, stepMethods[S], []error) {
 	rules := checkName(n.name)
 	if len(rules) > 0 && n.derived {
 		rules[0] += "; set Name"
@@ -179,8 +179,10 @@ func bindStep[S any](b binder, field int, fieldRules ruleList) (stepMethods[S], 
 	if !ok {
 		embed, _ := embedsStep(reflect.TypeOf(b))
 
-		return stepMethods[S]{}, ruleList{fmt.Sprintf("type %T embeds %s, want the state %s",
-			b, shortType(embed), shortType(reflect.TypeFor[S]()))}
+		mismatch := fmt.Sprintf("type %T embeds %s, want the state %s",
+			b, shortType(embed.Type), shortType(reflect.TypeFor[S]()))
+
+		return stepMethods[S]{}, append(ruleList{mismatch}, namedOutput(b.output())...)
 	}
 
 	m, rules := sb.bind(b, field)

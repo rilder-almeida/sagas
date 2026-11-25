@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Flow is a step or a group of steps in the order they run. A pointer to a type that embeds Step or Pivot is a Flow,
@@ -37,10 +38,11 @@ type ends struct {
 }
 
 type resolution struct {
-	flows   []binder
-	parents [][]int
-	index   map[Flow]int
-	errs    []error
+	flows    []binder
+	settings []stepSettings
+	parents  [][]int
+	index    map[Flow]int
+	errs     []error
 }
 
 func resolve(flow Flow) resolution {
@@ -104,7 +106,9 @@ func (r *resolution) group(g *Group) ends {
 
 func (r *resolution) step(f Flow, at string) ends {
 	b, ok := f.(binder)
-	if _, embeds := embedsStep(reflect.TypeOf(f)); !ok || !embeds {
+
+	embed, embeds := embedsStep(reflect.TypeOf(f))
+	if !ok || !embeds {
 		r.errs = append(r.errs, fmt.Errorf("%w: %s has type %s, want a pointer to a struct that embeds Step or Pivot "+
 			"by value", ErrInvalidStep, at, reflect.TypeOf(f)))
 
@@ -116,39 +120,57 @@ func (r *resolution) step(f Flow, at string) ends {
 		i = len(r.flows)
 		r.index[f] = i
 		r.flows = append(r.flows, b)
+		r.settings = append(r.settings, settingsOf(f, &embed))
 		r.parents = append(r.parents, []int{})
 	}
 
 	return ends{heads: []int{i}, tails: []int{i}}
 }
 
-func embedsStep(t reflect.Type) (reflect.Type, bool) {
+func embedsStep(t reflect.Type) (reflect.StructField, bool) {
 	if t.Kind() != reflect.Pointer || t.Elem().Kind() != reflect.Struct {
-		return nil, false
+		return reflect.StructField{}, false
 	}
 
-	f, ok := t.Elem().FieldByName("Step")
-	if !ok {
-		f, ok = t.Elem().FieldByName("Pivot")
-	}
-
-	if !ok || !f.Anonymous || f.Type.Kind() != reflect.Struct {
-		return nil, false
-	}
-
-	if !reflect.PointerTo(f.Type).Implements(reflect.TypeFor[binder]()) {
-		return nil, false
-	}
-
-	outer := t.Elem()
-	for _, i := range f.Index[:len(f.Index)-1] {
-		outer = outer.Field(i).Type
-		if outer.Kind() != reflect.Struct {
-			return nil, false
+	for _, name := range []string{"Step", "Pivot"} {
+		if f, ok := t.Elem().FieldByName(name); ok && embedsByValue(t.Elem(), &f) {
+			return f, true
 		}
 	}
 
-	return f.Type, true
+	return reflect.StructField{}, false
+}
+
+func settingsOf(f Flow, embed *reflect.StructField) stepSettings {
+	v := reflect.ValueOf(f).Elem().FieldByIndex(embed.Index)
+	s := stepSettings{
+		name: v.FieldByName("Name").String(), description: v.FieldByName("Description").String(),
+		pivot: embed.Name == "Pivot",
+	}
+	s.retry, _ = reflect.TypeAssert[RetryPolicy](v.FieldByName("RetryPolicy"))
+	s.timeout, _ = reflect.TypeAssert[time.Duration](v.FieldByName("AttemptTimeout"))
+
+	if failure := v.FieldByName("FailurePolicy"); failure.IsValid() {
+		s.failure, _ = reflect.TypeAssert[FailurePolicy](failure)
+	}
+
+	return s
+}
+
+func embedsByValue(outer reflect.Type, f *reflect.StructField) bool {
+	if !f.Anonymous || f.Type.Kind() != reflect.Struct ||
+		!reflect.PointerTo(f.Type).Implements(reflect.TypeFor[binder]()) {
+		return false
+	}
+
+	for _, i := range f.Index[:len(f.Index)-1] {
+		outer = outer.Field(i).Type
+		if outer.Kind() != reflect.Struct {
+			return false
+		}
+	}
+
+	return true
 }
 
 func shortType(t reflect.Type) string {

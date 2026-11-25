@@ -14,13 +14,15 @@ import (
 )
 
 type (
-	Hotel string
-	Rate  float64
+	Hotel  string
+	Rate   float64
+	Charge float64
 )
 
 type tripState struct {
 	Hotel Hotel
 	Rate  Rate
+	Fee   Charge
 }
 
 type otherState struct {
@@ -75,6 +77,10 @@ func twice[T any](v T) []T { return []T{v, v} }
 func oneStep() (*Saga[tripState], error) {
 	return New[tripState](tripName, act("a", okAction))
 }
+
+type otherStringStep struct{ Step[otherState, string] }
+
+func (otherStringStep) Execute(context.Context, otherState) (string, error) { return "", nil }
 
 type stringOutput struct{ Step[tripState, string] }
 
@@ -200,7 +206,7 @@ func Test_New(t *testing.T) {
 			name: "[Fail] When: the saga and a step are both bad ; Should: join both errors",
 			flow: &idleStep{}, opts: []Option{nil},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`saga ""`, nilOptionText, neitherText},
+			wantContains: []string{`saga ""`, nilOptionText, noExecuteText},
 		},
 		{
 			name:         "[Fail] When: two concurrent steps produce one type ; Should: refuse it naming both steps",
@@ -234,7 +240,7 @@ func Test_New(t *testing.T) {
 			name: "[Fail] When: the step has no Execute ; Should: refuse it naming the step",
 			saga: tripName, flow: &idleStep{},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "idle-step"`, neitherText},
+			wantContains: []string{`step "idle-step"`, noExecuteText},
 		},
 		{
 			name: "[Fail] When: the embed state type differs from the saga state ; Should: name both types",
@@ -244,6 +250,14 @@ func Test_New(t *testing.T) {
 				`step "other-state-step"`,
 				"embeds sagas.Step[sagas.otherState, sagas.None]",
 				"want the state sagas.tripState",
+			},
+		},
+		{
+			name: "[Fail] When: the embed has another state and a predeclared output ; Should: report both problems",
+			saga: tripName, flow: &otherStringStep{},
+			wantErrs: []error{ErrInvalidStep},
+			wantContains: []string{
+				"embeds sagas.Step[sagas.otherState, string]", "output type string", outputNamedText,
 			},
 		},
 		{
@@ -281,8 +295,11 @@ func Test_New(t *testing.T) {
 	}
 }
 
-func newErr[S any]() error {
-	_, err := New[S](tripName, &hotelStep[S]{})
+func sagaRefusal[S any](t *testing.T) error {
+	t.Helper()
+
+	s, err := New[S](tripName, &hotelStep[S]{})
+	assert.Nil(t, s)
 
 	return err
 }
@@ -292,25 +309,25 @@ func Test_New_stateType(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		build        func() error
+		build        func(*testing.T) error
 		wantErr      error
 		wantContains []string
 	}{
 		{
 			name:         "[Fail] When: the state keeps the old execution ID method ; Should: refuse it, name the tag",
-			build:        newErr[valueMethodState],
+			build:        sagaRefusal[valueMethodState],
 			wantErr:      ErrInvalidState,
 			wantContains: []string{"valueMethodState", tagLiteral},
 		},
 		{
 			name:         "[Fail] When: two state fields have the output type ; Should: refuse the step naming both",
-			build:        newErr[twoHotelState],
+			build:        sagaRefusal[twoHotelState],
 			wantErr:      ErrInvalidStep,
 			wantContains: []string{"output type sagas.Hotel: fields Booked and Wanted of state sagas.twoHotelState"},
 		},
 		{
 			name:         "[Fail] When: a state field has the type None ; Should: refuse the state naming the field",
-			build:        newErr[noneFieldState],
+			build:        sagaRefusal[noneFieldState],
 			wantErr:      ErrInvalidState,
 			wantContains: []string{"noneFieldState.Nothing", "rejected type sagas.None"},
 		},
@@ -320,7 +337,7 @@ func Test_New_stateType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			requireErrs(t, tt.build(), []error{tt.wantErr}, tt.wantContains)
+			requireErrs(t, tt.build(t), []error{tt.wantErr}, tt.wantContains)
 		})
 	}
 }

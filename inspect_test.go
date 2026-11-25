@@ -201,7 +201,7 @@ const (
 	quotedA       = `"a"`
 	negAttempts   = "RetryPolicy.Attempts is negative"
 	badName       = "name may hold only ASCII letters"
-	neitherText   = "has no Execute"
+	noExecuteText = "has no Execute"
 	fullName      = "full"
 	executeMethod = "Execute"
 	wrapMethod    = "Wrap"
@@ -326,7 +326,7 @@ func inspectStepRows() []inspectRow {
 			name:    "[Fail] When: the type has neither Execute nor Pivot ; Should: name the step and the type",
 			inspect: trip, flow: &idleStep{},
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "idle-step"`, "*sagas.idleStep", neitherText},
+			wantContains: []string{`step "idle-step"`, "*sagas.idleStep", noExecuteText},
 		},
 		{
 			name:    "[Fail] When: Execute has the wrong signature ; Should: name the step and the method",
@@ -471,7 +471,7 @@ func inspectStepRows() []inspectRow {
 			name:    "[Fail] When: a step and the state type are both bad ; Should: join both errors",
 			inspect: Inspect[chanState], flow: &idleStep{},
 			wantErrs:     []error{ErrInvalidStep, ErrInvalidState},
-			wantContains: []string{neitherText, "chanState"},
+			wantContains: []string{noExecuteText, "chanState"},
 		},
 		{
 			name:    "[Fail] When: two state fields have the output type ; Should: name both fields",
@@ -546,7 +546,7 @@ func inspectEmbedRows() []inspectRow {
 			wantContains: []string{
 				`step "nested-doers"`, "declares no Execute and embeds one in pairDoers.doer and pairDoers.otherDoer",
 			},
-			wantAbsent: []string{neitherText},
+			wantAbsent: []string{noExecuteText},
 		},
 		{
 			name:    "[Fail] When: two Wrap sit at depth one and one deeper ; Should: name only the depth one fields",
@@ -580,7 +580,7 @@ func inspectEmbedRows() []inspectRow {
 			wantContains: []string{
 				`step "two-doers"`, "declares no Execute and embeds one in doer and otherDoer",
 			},
-			wantAbsent: []string{neitherText},
+			wantAbsent: []string{noExecuteText},
 		},
 		{
 			name:     "[Fail] When: two embedded fields promote Compensate ; Should: name the method and both fields",
@@ -879,7 +879,7 @@ func Test_nameStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := nameStep(tt.flow)
+			got := nameStep(tt.flow, settingsFor(tt.flow))
 
 			assert.Equal(t, tt.wantName, got.name)
 			assert.Equal(t, tt.wantDerived, got.derived)
@@ -926,7 +926,7 @@ func Test_inspectStep(t *testing.T) {
 			name:       "[Fail] When: a step has no action ; Should: return the rule and no call",
 			flow:       &idleStep{},
 			wantReport: StepReport{Name: "idle-step"},
-			wantErrs:   []string{neitherText},
+			wantErrs:   []string{noExecuteText},
 		},
 		{
 			name:       "[Fail] When: a derived name breaks the name rule ; Should: say to set Name",
@@ -949,7 +949,9 @@ func Test_inspectStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			report, m, errs := inspectStep[tripState](tt.flow, nameStep(tt.flow), -1, tt.fieldRules)
+			report, m, errs := inspectStep[tripState](
+				tt.flow, settingsFor(tt.flow), nameStep(tt.flow, settingsFor(tt.flow)), -1, tt.fieldRules,
+			)
 
 			assert.Equal(t, tt.wantReport, report)
 			assert.Equal(t, tt.wantCall, m.call != nil)
@@ -962,55 +964,6 @@ func Test_inspectStep(t *testing.T) {
 				require.ErrorIs(t, errs[i], ErrInvalidStep)
 				assert.Contains(t, errs[i].Error(), want)
 			}
-		})
-	}
-}
-
-func Test_method(t *testing.T) {
-	t.Parallel()
-
-	restore := reflect.TypeFor[func(context.Context, tripState) error]()
-	replace := reflect.TypeFor[func(context.Context, tripState) (Hotel, error)]()
-
-	tests := []struct {
-		name     string
-		flow     Flow
-		method   string
-		accepted []reflect.Type
-		want     ruleList
-	}{
-		{
-			name: "[Success] When: the method has an accepted shape ; Should: add no rule",
-			flow: &Reserve{}, method: executeMethod, accepted: []reflect.Type{restore},
-		},
-		{
-			name: "[Success] When: the method is missing ; Should: add no rule",
-			flow: &Reserve{}, method: "Compensate", accepted: []reflect.Type{restore},
-		},
-		{
-			name: "[Fail] When: the method has another shape ; Should: name the shape it has and the one it wants",
-			flow: &wrongStep{}, method: executeMethod, accepted: []reflect.Type{restore},
-			want: ruleList{
-				"method Execute of type *sagas.wrongStep is func(context.Context, *sagas.tripState) error, " +
-					"want func(context.Context, sagas.tripState) error",
-			},
-		},
-		{
-			name: "[Fail] When: two shapes are accepted and neither matches ; Should: name both joined by or",
-			flow: &oldShapes{}, method: "Compensate", accepted: []reflect.Type{restore, replace},
-			want: ruleList{
-				"method Compensate of type *sagas.oldShapes is func(context.Context, *sagas.tripState) error, " +
-					"want func(context.Context, sagas.tripState) error or " +
-					"func(context.Context, sagas.tripState) (sagas.Hotel, error)",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, method(tt.flow, tt.method, tt.accepted...))
 		})
 	}
 }
@@ -1175,6 +1128,18 @@ func Test_provides(t *testing.T) {
 		{
 			name: "[Fail] When: the type lacks the method ; Should: not provide it",
 			typ:  reflect.TypeFor[doer](), method: wrapMethod, want: false,
+		},
+		{
+			name: "[Success] When: the type declares Execute ; Should: provide Execute",
+			typ:  reflect.TypeFor[doer](), method: executeMethod, want: true,
+		},
+		{
+			name: "[Success] When: the type declares Compensate ; Should: provide Compensate",
+			typ:  reflect.TypeFor[undoer](), method: "Compensate", want: true,
+		},
+		{
+			name: "[Fail] When: the type has Wrap but not Execute ; Should: not provide Execute",
+			typ:  reflect.TypeFor[wrapper](), method: executeMethod, want: false,
 		},
 	}
 

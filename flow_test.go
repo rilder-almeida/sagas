@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -367,6 +368,13 @@ func Test_resolution_step(t *testing.T) {
 	}
 }
 
+type pivotBesideStepField struct {
+	Pivot[tripState, None]
+	doer
+
+	Step string
+}
+
 func Test_embedsStep(t *testing.T) {
 	t.Parallel()
 
@@ -387,6 +395,12 @@ func Test_embedsStep(t *testing.T) {
 		{
 			name: "[Success] When: a pointer to a struct embeds Pivot ; Should: accept it",
 			typ:  reflect.TypeFor[*pivotStep](), want: true, wantEmbed: reflect.TypeFor[Pivot[tripState, None]](),
+		},
+		{
+			name:      "[Success] When: a Pivot embed sits beside a plain field named Step ; Should: accept the Pivot",
+			typ:       reflect.TypeFor[*pivotBesideStepField](),
+			want:      true,
+			wantEmbed: reflect.TypeFor[Pivot[tripState, None]](),
 		},
 		{
 			name: "[Fail] When: the struct embeds *Pivot ; Should: reject it",
@@ -421,7 +435,106 @@ func Test_embedsStep(t *testing.T) {
 			embed, ok := embedsStep(tt.typ)
 
 			assert.Equal(t, tt.want, ok)
-			assert.Equal(t, tt.wantEmbed, embed)
+			assert.Equal(t, tt.wantEmbed, embed.Type)
+		})
+	}
+}
+
+func Test_shortType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{
+			name: "[Success] When: the type is a plain named type ; Should: keep the package name only",
+			typ:  reflect.TypeFor[tripState](), want: "sagas.tripState",
+		},
+		{
+			name: "[Success] When: the type has type arguments ; Should: strip each import path and space the list",
+			typ:  reflect.TypeFor[Step[otherState, None]](), want: "sagas.Step[sagas.otherState, sagas.None]",
+		},
+		{
+			name: "[Success] When: a type argument is generic ; Should: strip the nested paths too",
+			typ:  reflect.TypeFor[Step[otherState, typed[tripState, Hotel]]](),
+			want: "sagas.Step[sagas.otherState, sagas.typed[sagas.tripState, sagas.Hotel]]",
+		},
+		{
+			name: "[Success] When: the type is a pointer to a generic type ; Should: keep the star",
+			typ:  reflect.TypeFor[*Pivot[tripState, Hotel]](), want: "*sagas.Pivot[sagas.tripState, sagas.Hotel]",
+		},
+		{
+			name: "[Success] When: the type is a slice and a map of generic types ; Should: strip inside both",
+			typ:  reflect.TypeFor[map[string][]Step[tripState, None]](),
+			want: "map[string][]sagas.Step[sagas.tripState, sagas.None]",
+		},
+		{
+			name: "[Success] When: the type is predeclared ; Should: keep it as it is",
+			typ:  reflect.TypeFor[string](), want: "string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, shortType(tt.typ))
+		})
+	}
+}
+
+func settingsFor(f Flow) *stepSettings {
+	embed, _ := embedsStep(reflect.TypeOf(f))
+	s := settingsOf(f, &embed)
+
+	return &s
+}
+
+func Test_settingsOf(t *testing.T) {
+	t.Parallel()
+
+	step := act("a", okAction)
+	step.Description, step.RetryPolicy, step.AttemptTimeout, step.FailurePolicy = "books", NoRetry(), time.Second, Halt
+
+	pivot := paying("p", okAction)
+	pivot.Description, pivot.RetryPolicy, pivot.AttemptTimeout = "charges", RetryPolicy{Attempts: 2}, time.Minute
+
+	tests := []struct {
+		name string
+		flow Flow
+		want stepSettings
+	}{
+		{
+			name: "[Success] When: a Step sets every field ; Should: read each one and no pivot mark",
+			flow: step,
+			want: stepSettings{
+				name: "a", description: "books", retry: NoRetry(), timeout: time.Second, failure: Halt,
+			},
+		},
+		{
+			name: "[Success] When: a Pivot sets every field ; Should: read each one and mark the pivot",
+			flow: pivot,
+			want: stepSettings{
+				name: "p", description: "charges", retry: RetryPolicy{Attempts: 2}, timeout: time.Minute, pivot: true,
+			},
+		},
+		{
+			name: "[Success] When: the Step comes through an embedded struct ; Should: read its fields",
+			flow: &nestedReserve{Name: "nested"},
+			want: stepSettings{name: "nested"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			embed, ok := embedsStep(reflect.TypeOf(tt.flow))
+			require.True(t, ok)
+
+			assert.Equal(t, tt.want, settingsOf(tt.flow, &embed))
 		})
 	}
 }

@@ -1814,6 +1814,21 @@ func Benchmark_Saga_Run(b *testing.B) {
 	}
 }
 
+func Benchmark_Saga_Run_producing(b *testing.B) {
+	s, err := New[tripState]("trip", Sequence(producing("a", makeHotel), producingRate("b", makeRate)))
+	require.NoError(b, err)
+
+	ctx := context.Background()
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if runErr := s.Run(ctx, &tripState{}); runErr != nil {
+			b.Fatal(runErr)
+		}
+	}
+}
+
 func Test_callerCause(t *testing.T) {
 	t.Parallel()
 

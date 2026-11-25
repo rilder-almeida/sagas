@@ -12,38 +12,38 @@ import (
 // None is the output type of a step that produces nothing. Its Execute returns only an error.
 type None struct{}
 
-// Step holds the name and settings of a step whose state is S and whose output is R. A step is a pointer to a type
-// that embeds Step and has Execute, and optionally Compensate, Enabled and Wrap. Step has the fields Name, Description,
-// RetryPolicy, AttemptTimeout and FailurePolicy. All step methods must be safe for concurrent use and idempotent, and
-// Execute, Compensate and Wrap must honor their context. An empty Name takes the type name in kebab case. New cannot
-// see a step method lost to a same-name field or to two embedded providers.
+// Step declares a step whose state is S and whose output is R. A step is a pointer to a type that embeds Step and has
+// Execute, and optionally Compensate, Enabled and Wrap. Declare step methods on the step type: New cannot see one lost
+// to a same-name field or to two embedded providers. All of them must be safe for concurrent use and idempotent, and
+// Execute, Compensate and Wrap must honor their context. A call that returns after the grace period can miss the
+// journal, but Run reports it.
 type Step[S, R any] struct {
-	stepFields
 	typed[S, R]
-}
 
-// Pivot holds the name and settings of the pivot step, whose state is S and whose output is R. A pivot is a pointer
-// to a type that embeds Pivot and has Execute, and optionally Wrap. It has the fields of Step except FailurePolicy.
-type Pivot[S, R any] struct {
-	pivotFields
-	typed[S, R]
-}
-
-type stepFields struct {
-	// Set Name for a durable journal, so a rename of the step type keeps the step name that the journal holds.
-	Name        string
+	// Name names the step, or the type name in kebab case when empty. Set it for a journal that outlives a rename.
+	Name string
+	// Description is free text that Inspect reports.
 	Description string
-	// RetryPolicy governs the action and the compensation, so under NoRetry the compensation gets one attempt. More
-	// attempts make a compensation persist, bounded by the caller's context, then by WithRecoveryTimeout.
-	RetryPolicy    RetryPolicy
+	// RetryPolicy retries the action and the compensation, bounded by the caller's context, then WithRecoveryTimeout.
+	RetryPolicy RetryPolicy
+	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
 	AttemptTimeout time.Duration
-	FailurePolicy  FailurePolicy
+	// FailurePolicy sets what the saga does when the compensation of this step fails. Empty means Block.
+	FailurePolicy FailurePolicy
 }
 
-type pivotFields struct {
-	Name           string
-	Description    string
-	RetryPolicy    RetryPolicy
+// Pivot declares the pivot step, whose state is S and whose output is R. A pivot is a pointer to a type that embeds
+// Pivot and has Execute, and optionally Wrap. Its rules for methods are the rules of Step.
+type Pivot[S, R any] struct {
+	typed[S, R]
+
+	// Name names the pivot, or the type name in kebab case when empty. Set it for a journal that outlives a rename.
+	Name string
+	// Description is free text that Inspect reports.
+	Description string
+	// RetryPolicy retries the pivot action, bounded by the caller's context.
+	RetryPolicy RetryPolicy
+	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
 	AttemptTimeout time.Duration
 }
 
@@ -62,7 +62,6 @@ type ruleList []string
 
 type binder interface {
 	Flow
-	settings() stepSettings
 	output() reflect.Type
 }
 
@@ -73,19 +72,6 @@ type stateBinder[S any] interface {
 type encodedOutput struct {
 	data []byte
 	err  error
-}
-
-func (f *stepFields) settings() stepSettings {
-	return stepSettings{
-		name: f.Name, description: f.Description, retry: f.RetryPolicy, timeout: f.AttemptTimeout,
-		failure: f.FailurePolicy,
-	}
-}
-
-func (f *pivotFields) settings() stepSettings {
-	return stepSettings{
-		name: f.Name, description: f.Description, retry: f.RetryPolicy, timeout: f.AttemptTimeout, pivot: true,
-	}
 }
 
 func (*typed[S, R]) flow() {}
@@ -234,14 +220,17 @@ func method(outer any, name string, accepted ...reflect.Type) ruleList {
 	}
 }
 
+func namedOutput(output reflect.Type) ruleList {
+	if output != nil && (output.Name() == "" || output.PkgPath() == "") {
+		return ruleList{fmt.Sprintf("output type %s: want a type declared with a name", output)}
+	}
+
+	return nil
+}
+
 func outputField(state, output reflect.Type) (int, ruleList) {
-	switch {
-	case output == nil:
-		return -1, nil
-	case output.Name() == "" || output.PkgPath() == "":
-		return -1, ruleList{fmt.Sprintf("output type %s: want a type declared with a name", output)}
-	case state.Kind() != reflect.Struct:
-		return -1, nil
+	if rules := namedOutput(output); output == nil || rules != nil || state.Kind() != reflect.Struct {
+		return -1, rules
 	}
 
 	field := -1

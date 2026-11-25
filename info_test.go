@@ -143,17 +143,17 @@ func Test_callMeta_closeAttempt(t *testing.T) {
 		{
 			name:         "[Success] When: an error was replaced and a cause is set ; Should: record both",
 			meta:         &callMeta{replaced: []error{errCall}, cause: errStop},
-			err:          errBoom,
-			wantPrevious: []error{errCall, errBoom},
+			err:          errA,
+			wantPrevious: []error{errCall, errA},
 			wantCause:    errStop,
-			wantAfter:    []error{errCall, errBoom, errC},
+			wantAfter:    []error{errCall, errA, errC},
 		},
 		{
 			name:         "[Success] When: an earlier attempt is recorded ; Should: keep it first",
 			meta:         &callMeta{previous: []error{errA}},
-			err:          errBoom,
-			wantPrevious: []error{errA, errBoom},
-			wantAfter:    []error{errA, errBoom, errC},
+			err:          errCall,
+			wantPrevious: []error{errA, errCall},
+			wantAfter:    []error{errA, errCall, errC},
 		},
 		{
 			name: "[Success] When: the meta is nil ; Should: do nothing",
