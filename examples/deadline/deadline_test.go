@@ -263,12 +263,14 @@ func Test_newSaga_blockAllRepeat(t *testing.T) {
 		name     string
 		scenario string
 		runs     int
+		timeout  time.Duration
 		want     []string
 	}{
 		{
 			name:     "[Success] When: the halt scenario runs with no gate many times ; Should: print one report line",
 			scenario: "halt",
 			runs:     100,
+			timeout:  2 * time.Second,
 			want:     []string{"halt: compensation_failed, pending: [reserve invoice pack], undone: [tag]\n"},
 		},
 	}
@@ -295,7 +297,7 @@ func Test_newSaga_blockAllRepeat(t *testing.T) {
 						return
 					}
 
-					ctx, cancel := context.WithTimeout(t.Context(), callerTimeout)
+					ctx, cancel := context.WithTimeout(t.Context(), tt.timeout)
 					defer cancel()
 
 					o := order{ID: sc.name, Fault: sc.fault}

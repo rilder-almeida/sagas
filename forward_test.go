@@ -122,7 +122,9 @@ func serialVerdictRow() runRow {
 
 func serialCallerEndRow() runRow {
 	return runRow{
-		name: "[Fail] When: the caller context ends during a serial run ; Should: no step starts after the end",
+		name: "[Fail] When: the caller context ends during a serial run ; " +
+			"Should: no step starts after the end",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			slow := undoing("a", func(context.Context, tripState) error {
 				time.Sleep(pause)
@@ -525,18 +527,19 @@ func pivotErrorAppendRow() runRow {
 	return runRow{
 		name: "[Fail] When: the pivot returns an error and its failure append fails once ; " +
 			"Should: append the failure again before compensating and match ErrJournal",
-		steps:        failingPivot(),
-		script:       map[int]error{5: errJournalDown},
-		wantStatus:   StatusCompensated,
-		wantKind:     ErrCompensated,
-		wantKinds:    map[string]*KindError{"p": ErrFailed},
-		wantFailed:   []string{"p"},
-		wantErrText:  map[string]string{"p": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{"p": 1},
-		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
-		wantNotErrs:  []error{ErrIncomplete},
-		wantSteps:    map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
-		wantOrder:    [][2]string{{"a", undoA}},
+		wantCompensated: []string{"a"},
+		steps:           failingPivot(),
+		script:          map[int]error{5: errJournalDown},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantKinds:       map[string]*KindError{"p": ErrFailed},
+		wantFailed:      []string{"p"},
+		wantErrText:     map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{"p": 1},
+		wantErrs:        []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantNotErrs:     []error{ErrIncomplete},
+		wantSteps:       map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
+		wantOrder:       [][2]string{{"a", undoA}},
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
@@ -548,18 +551,19 @@ func pivotErrorAppendTwiceRow() runRow {
 	return runRow{
 		name: "[Fail] When: the pivot returns an error and its failure append fails twice ; " +
 			"Should: still compensate the steps before it and match ErrJournal",
-		steps:        failingPivot(),
-		script:       map[int]error{5: failing(errJournalDown, 2)},
-		wantStatus:   StatusCompensated,
-		wantKind:     ErrCompensated,
-		wantKinds:    map[string]*KindError{"p": ErrFailed},
-		wantFailed:   []string{"p"},
-		wantErrText:  map[string]string{"p": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{"p": 1},
-		wantErrs:     []error{errAlwaysFails, ErrJournal, errJournalDown},
-		wantNotErrs:  []error{ErrIncomplete},
-		wantSteps:    map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
-		wantOrder:    [][2]string{{"a", undoA}},
+		wantCompensated: []string{"a"},
+		steps:           failingPivot(),
+		script:          map[int]error{5: failing(errJournalDown, 2)},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantKinds:       map[string]*KindError{"p": ErrFailed},
+		wantFailed:      []string{"p"},
+		wantErrText:     map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{"p": 1},
+		wantErrs:        []error{errAlwaysFails, ErrJournal, errJournalDown},
+		wantNotErrs:     []error{ErrIncomplete},
+		wantSteps:       map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
+		wantOrder:       [][2]string{{"a", undoA}},
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
@@ -607,7 +611,8 @@ func lateFailure(context.Context, tripState) error {
 
 func pivotErrorRow() runRow {
 	return runRow{
-		name: "[Fail] When: the pivot returns an error ; Should: compensate the steps before it",
+		name:            "[Fail] When: the pivot returns an error ; Should: compensate the steps before it",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			p := paying("p", alwaysFails)
 			p.RetryPolicy = NoRetry()
@@ -857,6 +862,7 @@ func cancelBeforePivotRow() runRow {
 	return runRow{
 		name: "[Fail] When: the caller cancels before the pivot starts ; " +
 			"Should: not start the pivot and still run the compensations on the grace context",
+		wantCompensated: []string{"a", "b"},
 		steps: func(rec *recorder) Flow {
 			slowUndo := func(ctx context.Context, _ tripState) error {
 				time.Sleep(pause / 2)
@@ -898,6 +904,7 @@ func cancelBeforePivotLaunchRow() runRow {
 	return runRow{
 		name: "[Fail] When: the caller cancels while the step before the pivot runs and it succeeds ; " +
 			"Should: not start the pivot and compensate that step",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			slow := func(context.Context, tripState) error {
 				time.Sleep(pause)

@@ -154,17 +154,18 @@ func restoreChain(tail ...string) [][]string {
 
 func restoreRow(name string, steps func(rec *recorder) Flow) runRow {
 	return runRow{
-		name:         name,
-		steps:        steps,
-		wantStatus:   StatusCompensated,
-		wantKind:     ErrCompensated,
-		wantKinds:    map[string]*KindError{"x": ErrFailed},
-		wantFailed:   []string{"x"},
-		wantErrText:  map[string]string{"x": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{"x": 1},
-		wantErrs:     []error{errAlwaysFails},
-		wantSteps:    map[string]stepStatus{"a": stepCompensated, "x": stepFailed},
-		wantTrail:    restoreChain(compStartOf("a"), undoneOf("a"), closed),
+		name:            name,
+		steps:           steps,
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantKinds:       map[string]*KindError{"x": ErrFailed},
+		wantFailed:      []string{"x"},
+		wantErrText:     map[string]string{"x": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{"x": 1},
+		wantErrs:        []error{errAlwaysFails},
+		wantSteps:       map[string]stepStatus{"a": stepCompensated, "x": stepFailed},
+		wantCompensated: []string{"a"},
+		wantTrail:       restoreChain(compStartOf("a"), undoneOf("a"), closed),
 	}
 }
 
@@ -197,6 +198,7 @@ func sequenceRestoreRow() runRow {
 	return runRow{
 		name: "[Fail] When: two steps in sequence produce one field and restore it ; " +
 			"Should: give each compensation its own output and end on the initial value",
+		wantCompensated: []string{"r1", "r2"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.restorable("r1", "r1"), rec.restorable("r2", "r2"), once("x", alwaysFails))
 		},
@@ -221,6 +223,7 @@ func failedStepInputRow() runRow {
 	return runRow{
 		name: "[Fail] When: the failing step has a restore compensation ; " +
 			"Should: give it no output of its own and leave the field unchanged",
+		wantCompensated: []string{"f"},
 		steps: func(rec *recorder) Flow {
 			failing := undoingMade("f", func(context.Context, tripState) (Hotel, error) {
 				return "", errAlwaysFails
@@ -250,6 +253,7 @@ func continuePastFailedUndoRow() runRow {
 	return runRow{
 		name: "[Fail] When: a later compensation fails under Continue and an earlier restore succeeds ; " +
 			"Should: keep the output of the failed compensation",
+		wantCompensated: []string{"a1"},
 		steps: func(rec *recorder) Flow {
 			kept := undoingMade("a2", rec.book("a2", "a2"), alwaysFails)
 			kept.RetryPolicy, kept.FailurePolicy = NoRetry(), Continue
@@ -279,7 +283,9 @@ func continuePastFailedUndoRow() runRow {
 
 func reversedOrderRow() runRow {
 	return runRow{
-		name: "[Fail] When: the last step of a chain fails ; Should: compensate the chain in reverse, commit each undo",
+		name: "[Fail] When: the last step of a chain fails ; " +
+			"Should: compensate the chain in reverse, commit each undo",
+		wantCompensated: []string{"a", "b"},
 		steps: func(rec *recorder) Flow {
 			b := replaceOnce("b", rec.book("b", hotelRitz), rec.book(undoB, refunded))
 
@@ -307,6 +313,7 @@ func serialUndoRow() runRow {
 	return runRow{
 		name: "[Success] When: a serial run fails with three compensable parallel steps done ; " +
 			"Should: compensation events arrive one at a time in reverse graph order",
+		wantCompensated: []string{"a", "b", "c"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(
 				Parallel(rec.undoable("a"), rec.undoable("b"), rec.undoable("c")), once("x", alwaysFails),
@@ -334,7 +341,9 @@ func serialUndoRow() runRow {
 
 func failedAndUnknownRow() runRow {
 	return runRow{
-		name: "[Fail] When: one step fails and its sibling ends unknown ; Should: compensate both, then the parent",
+		name: "[Fail] When: one step fails and its sibling ends unknown ; " +
+			"Should: compensate both, then the parent",
+		wantCompensated: []string{"a", "b", "c"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
 				undoOnce("b", alwaysFails, rec.do(undoB)),
@@ -361,7 +370,9 @@ func failedAndUnknownRow() runRow {
 
 func undoGoexitRow() runRow {
 	return runRow{
-		name: "[Fail] When: an Execute ends by runtime.Goexit ; Should: compensate the unknown step and return",
+		name: "[Fail] When: an Execute ends by runtime.Goexit ; " +
+			"Should: compensate the unknown step and return",
+		wantCompensated: []string{"a", "b"},
 		steps: func(rec *recorder) Flow {
 			leave := func(context.Context, tripState) error {
 				runtime.Goexit()
@@ -389,7 +400,9 @@ func undoGoexitRow() runRow {
 
 func unknownBarrierRow() runRow {
 	return runRow{
-		name: "[Fail] When: a step before the pivot ends unknown ; Should: cancel and wait for its sibling, compensate",
+		name: "[Fail] When: a step before the pivot ends unknown ; " +
+			"Should: cancel and wait for its sibling, compensate",
+		wantCompensated: []string{"a", "b", "c"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
 				undoOnce("b", panics, rec.do(undoB)),
@@ -425,7 +438,9 @@ func unknownBarrierRow() runRow {
 
 func siblingBarrierRow() runRow {
 	return runRow{
-		name: "[Fail] When: a step fails beside a slow sibling ; Should: compensate the sibling only after it returns",
+		name: "[Fail] When: a step fails beside a slow sibling ; " +
+			"Should: compensate the sibling only after it returns",
+		wantCompensated: []string{"a", "c"},
 		steps: func(rec *recorder) Flow {
 			slow := func(ctx context.Context, _ tripState) error {
 				<-ctx.Done()
@@ -526,6 +541,7 @@ func predicateJournalRow() runRow {
 	return runRow{
 		name: "[Fail] When: an Enabled method panics and its failure append fails ; " +
 			"Should: compensate the earlier step only and match ErrJournal",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), panicGuarded(rec))
 		},
@@ -550,6 +566,7 @@ func predicateSiblingRow() runRow {
 	return runRow{
 		name: "[Fail] When: an Enabled method panics beside a compensable sibling ; " +
 			"Should: compensate the sibling, not the panicking step",
+		wantCompensated: []string{"a", "c"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(panicGuarded(rec), undoOnce("c", blockedOnCtx, rec.do(undoC))))
 		},
@@ -599,10 +616,13 @@ func blockRow() runRow {
 }
 
 func continueRow() runRow {
-	return policyRow(
+	row := policyRow(
 		"[Fail] When: a compensation with Continue fails ; Should: still run the earlier compensation",
 		Continue, stepCompensated, []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"},
 	)
+	row.wantCompensated = []string{"a"}
+
+	return row
 }
 
 func haltRow() runRow {
@@ -683,6 +703,7 @@ func haltAtOnceRow() runRow {
 	return runRow{
 		name: "[Fail] When: a BlockAll failure happens while another compensation still runs ; " +
 			"Should: halt the waiting compensation at once",
+		wantCompensated: []string{"b"},
 		steps: func(rec *recorder) Flow {
 			slow := func(context.Context, tripState) error {
 				time.Sleep(pause)
@@ -743,7 +764,9 @@ func lateRate(context.Context, tripState) (Rate, error) {
 
 func undoOwnFieldRow() runRow {
 	return runRow{
-		name: "[Fail] When: two parallel compensations replace their outputs ; Should: each write only its own field",
+		name: "[Fail] When: two parallel compensations replace their outputs ; " +
+			"Should: each write only its own field",
+		wantCompensated: []string{"b", "d"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				replaceOnce("b", rec.book("b", hotelRitz), rec.book(undoB, undoneHotel)),
@@ -793,6 +816,7 @@ func undoOutcomeRow() runRow {
 	return runRow{
 		name: "[Fail] When: the outcome append of a successful compensation fails once ; " +
 			"Should: count it compensated once its resent success lands and go on with the next one",
+		wantCompensated: []string{"a", "b"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
@@ -818,20 +842,21 @@ func undoOutcomeTwiceRow() runRow {
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
-		script:         map[int]error{9: failing(errJournalDown, 2)},
-		wantStatus:     StatusCompensationFailed,
-		wantKind:       ErrCompensationFailed,
-		wantKinds:      map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
-		wantFailed:     []string{"c", comp("b")},
-		wantErrText:    map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
-		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
-		wantUnrecorded: []string{comp("b")},
-		wantErrs:       []error{ErrJournal, errJournalDown},
-		wantSteps:      map[string]stepStatus{"a": stepBlocked, "b": stepCompensated, "c": stepFailed},
-		wantPending:    []string{"a", "b"},
-		wantRunOnly:    []string{"b"},
-		wantOrder:      [][2]string{{"b", undoB}},
-		wantTrail:      chainTrail(compStartOf("b"), undoneOf("b"), blockedOf("a"), closed),
+		script:          map[int]error{9: failing(errJournalDown, 2)},
+		wantStatus:      StatusCompensationFailed,
+		wantKind:        ErrCompensationFailed,
+		wantKinds:       map[string]*KindError{comp("b"): ErrJournal, "c": ErrFailed},
+		wantFailed:      []string{"c", comp("b")},
+		wantErrText:     map[string]string{comp("b"): errJournalDown.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{comp("b"): 1, "c": 1},
+		wantUnrecorded:  []string{comp("b")},
+		wantErrs:        []error{ErrJournal, errJournalDown},
+		wantSteps:       map[string]stepStatus{"a": stepBlocked, "b": stepCompensated, "c": stepFailed},
+		wantCompensated: nil,
+		wantPending:     []string{"a", "b"},
+		wantRunOnly:     []string{"b"},
+		wantOrder:       [][2]string{{"b", undoB}},
+		wantTrail:       chainTrail(compStartOf("b"), undoneOf("b"), blockedOf("a"), closed),
 	}
 }
 
@@ -985,6 +1010,7 @@ func graceLateOwnFieldRow() runRow {
 	return runRow{
 		name: "[Fail] When: a parallel compensation replaces its output after the grace period ; " +
 			"Should: write only its own field and fail it with ErrGraceEnded",
+		wantCompensated: []string{"b"},
 		steps: func(rec *recorder) Flow {
 			late := func(ctx context.Context, _ tripState) (Rate, error) {
 				<-ctx.Done()
@@ -1048,6 +1074,7 @@ func graceSuccessCommittedRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation returns success before the grace end ; " +
 			"Should: commit it as compensated and match neither the caller cause nor ErrGraceEnded",
+		wantCompensated: []string{"b", "d"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				slowUndo(rec, nil, ""), undoOnce("d", okAction, rec.do("undo:d")),
@@ -1075,6 +1102,7 @@ func graceReadLateFailureRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation fails before the grace end and is read after it ; " +
 			"Should: not join ErrGraceEnded to its error",
+		wantCompensated: []string{"d"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				slowUndo(rec, errAlwaysFails, ""), undoOnce("d", okAction, rec.do("undo:d")),
@@ -1162,7 +1190,9 @@ func graceIntentRow() runRow {
 
 func callerDuringPredicateRow() runRow {
 	return runRow{
-		name: "[Fail] When: the caller cancels while an Enabled method runs ; Should: not start that step, compensate",
+		name: "[Fail] When: the caller cancels while an Enabled method runs ; " +
+			"Should: not start that step, compensate",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			slow := func(context.Context, tripState) bool {
 				time.Sleep(pause)
@@ -1355,6 +1385,7 @@ func graceTurnAfterReadRow() runRow {
 	return runRow{
 		name: "[Fail] When: a compensation's turn comes after the grace end and no call returned late ; " +
 			"Should: fail it with ErrGraceEnded and match the caller cause",
+		wantCompensated: []string{"b", "d"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
 				slowUndo(rec, nil, ""), undoOnce("d", okAction, rec.do("undo:d")),
@@ -1389,6 +1420,7 @@ func graceHaltAfterReadRow() runRow {
 	return runRow{
 		name: "[Fail] When: a BlockAll failure is read after the grace end ; " +
 			"Should: halt the waiting compensation and match the caller cause and context.Canceled",
+		wantCompensated: []string{"d"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), Parallel(
 				slowUndo(rec, errAlwaysFails, BlockAll),
@@ -1450,9 +1482,9 @@ func haltBeforeGraceEndRow() runRow {
 }
 
 func policyCopyRow(given, later FailurePolicy, a stepStatus) runRow {
-	tail, pending := []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"}
+	tail, pending, compensated := []string{compStartOf("a"), undoneOf("a"), closed}, []string{"b"}, []string{"a"}
 	if a == stepBlocked {
-		tail, pending = []string{blockedOf("a"), closed}, []string{"a", "b"}
+		tail, pending, compensated = []string{blockedOf("a"), closed}, []string{"a", "b"}, nil
 	}
 
 	return runRow{
@@ -1468,17 +1500,18 @@ func policyCopyRow(given, later FailurePolicy, a stepStatus) runRow {
 
 			return Sequence(rec.undoable("a"), b, c)
 		},
-		runs:         2,
-		wantStatus:   StatusCompensationFailed,
-		wantKind:     ErrCompensationFailed,
-		wantKinds:    map[string]*KindError{comp("b"): ErrFailed, "c": ErrFailed},
-		wantFailed:   []string{"c", comp("b")},
-		wantErrText:  map[string]string{comp("b"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{comp("b"): 1, "c": 1},
-		wantErrs:     []error{errAlwaysFails},
-		wantSteps:    map[string]stepStatus{"a": a, "b": stepCompensationFailed, "c": stepFailed},
-		wantPending:  pending,
-		wantTrail:    chainTrail(slices.Concat([]string{compStartOf("b"), undoFailedOf("b")}, tail)...),
+		runs:            2,
+		wantStatus:      StatusCompensationFailed,
+		wantKind:        ErrCompensationFailed,
+		wantKinds:       map[string]*KindError{comp("b"): ErrFailed, "c": ErrFailed},
+		wantFailed:      []string{"c", comp("b")},
+		wantErrText:     map[string]string{comp("b"): errAlwaysFails.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{comp("b"): 1, "c": 1},
+		wantErrs:        []error{errAlwaysFails},
+		wantSteps:       map[string]stepStatus{"a": a, "b": stepCompensationFailed, "c": stepFailed},
+		wantPending:     pending,
+		wantCompensated: compensated,
+		wantTrail:       chainTrail(slices.Concat([]string{compStartOf("b"), undoFailedOf("b")}, tail)...),
 	}
 }
 
@@ -1613,6 +1646,7 @@ func levelWaitRow() runRow {
 	return runRow{
 		name: "[Success] When: BlockAll saga, a level-0 compensation fails while a level-0 sibling runs " +
 			"and a level-1 step waits ; Should: the sibling ends compensated, the level-1 step is blocked",
+		wantCompensated: []string{"z", "y"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				Sequence(rec.undoable("w"), rec.undoable("z")),
@@ -1649,6 +1683,7 @@ func serialLevelRow() runRow {
 	return runRow{
 		name: "[Success] When: a serial run of a BlockAll saga reaches a level-1 step before a level-0 one ; " +
 			"Should: run the level-0 compensations one at a time first and halt the level-1 step",
+		wantCompensated: []string{"z"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				failingUndo("x", BlockAll, alwaysFails), Sequence(rec.undoable("w"), rec.undoable("z")),
@@ -1678,6 +1713,7 @@ func compensableLevelRow() runRow {
 	return runRow{
 		name: "[Success] When: BlockAll saga, P over N with no Compensate over M, and Q2 over Q over R, " +
 			"and Q's compensation fails ; Should: P is compensated in level 1 beside Q, Q2 is blocked",
+		wantCompensated: []string{"p", "m", "r"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				Sequence(rec.undoableWith("p", Block), rec.step("n"), rec.undoableAfter("m", pause)),
@@ -1719,6 +1755,7 @@ func emptyLevelRow() runRow {
 	return runRow{
 		name: "[Success] When: BlockAll saga with a level that holds no owed compensation ; " +
 			"Should: the run ends with the next level compensated",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoableWith("a", BlockAll), once("c", alwaysFails), rec.undoable("d"))
 		},
@@ -1740,6 +1777,7 @@ func graceLevelRow() runRow {
 	return runRow{
 		name: "[Fail] When: BlockAll saga and the grace period ends while level 0 runs ; " +
 			"Should: the later levels end with ErrGraceEnded and Run returns",
+		wantCompensated: []string{"y"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				Sequence(
@@ -1822,6 +1860,7 @@ func branchNoWaitRow() runRow {
 	return runRow{
 		name: "[Success] When: Block saga with two independent branches and one stuck compensation ; " +
 			"Should: the other branch compensates without waiting",
+		wantCompensated: []string{"a", "b", "d", "e"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(Parallel(
 				Sequence(rec.undoable("a"), rec.undoableAfter("b", pause)),

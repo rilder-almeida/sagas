@@ -964,6 +964,7 @@ type runRow struct {
 	wantUnrecorded     []string
 	wantSteps          map[string]stepStatus
 	wantPending        []string
+	wantCompensated    []string
 	wantJournalOnly    []string
 	wantRunOnly        []string
 	wantOrder          [][2]string
@@ -1015,7 +1016,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 		require.NotErrorIs(t, err, no)
 	}
 
-	var pending, failed []string
+	var pending, failed, compensated []string
 
 	if tt.wantKind == nil {
 		require.NoError(t, err)
@@ -1026,8 +1027,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 		require.ErrorIs(t, err, tt.wantKind)
 		assertExclusive(t, err)
 
-		pending = runErr.Pending
-		assert.Equal(t, compensatedOf(res, tt), runErr.Compensated)
+		pending, compensated = runErr.Pending, runErr.Compensated
 
 		for _, se := range runErr.Steps {
 			failed = append(failed, keyOf(se))
@@ -1035,6 +1035,7 @@ func assertRun(t *testing.T, tt *runRow, got *ran, res *runRecord, journal *scri
 	}
 
 	assert.Equal(t, tt.wantFailed, failed)
+	assert.Equal(t, tt.wantCompensated, compensated)
 
 	assert.Equal(t, tt.wantStatus, res.Status)
 	assert.Equal(t, tt.wantPending, pending)
@@ -1443,6 +1444,7 @@ func finishedAtGraceEndRow() runRow {
 	return runRow{
 		name: "[Fail] When: the saga-finished append of a compensated run fails at the grace end ; " +
 			"Should: keep ErrCompensated and match ErrGraceEnded and the caller cause, not ErrJournal",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), once("b", alwaysFails))
 		},
@@ -1509,6 +1511,7 @@ func finishedBeforeGraceEndRow() runRow {
 	return runRow{
 		name: "[Fail] When: the saga-finished append fails after a caller cancel and before any grace end ; " +
 			"Should: keep ErrCompensated and match neither ErrGraceEnded nor the caller cause",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			slowUndo := func(context.Context, tripState) error {
 				time.Sleep(pause)
@@ -1542,6 +1545,7 @@ func finishedAfterCompensatedRow() runRow {
 	return runRow{
 		name: "[Fail] When: the saga-finished append of a compensated run fails ; " +
 			"Should: keep ErrCompensated and match ErrJournal",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), once("b", alwaysFails))
 		},
@@ -1766,6 +1770,7 @@ func undoneThenRejectedRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal rejects a compensation intent after another compensation is recorded ; " +
 			"Should: end ErrConcurrentWriter and list only the unstarted compensation in Pending",
+		wantCompensated: []string{"b"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(rec.undoable("a"), rec.undoable("b"), once("c", alwaysFails))
 		},
@@ -2079,18 +2084,19 @@ func pivotStoredFailureRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal stores the pivot failure and then returns an error ; " +
 			"Should: resend the same event, compensate and end ErrCompensated, not ErrConcurrentWriter",
-		steps:        failingPivot(),
-		script:       map[int]error{5: errStoreThenFail},
-		wantStatus:   StatusCompensated,
-		wantKind:     ErrCompensated,
-		wantKinds:    map[string]*KindError{"p": ErrFailed},
-		wantFailed:   []string{"p"},
-		wantErrText:  map[string]string{"p": errAlwaysFails.Error()},
-		wantAttempts: map[string]int{"p": 1},
-		wantErrs:     []error{errAlwaysFails, ErrJournal, errStoreThenFail},
-		wantNotErrs:  []error{ErrIncomplete, ErrConcurrentWriter},
-		wantSteps:    map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
-		wantOrder:    [][2]string{{"a", undoA}},
+		wantCompensated: []string{"a"},
+		steps:           failingPivot(),
+		script:          map[int]error{5: errStoreThenFail},
+		wantStatus:      StatusCompensated,
+		wantKind:        ErrCompensated,
+		wantKinds:       map[string]*KindError{"p": ErrFailed},
+		wantFailed:      []string{"p"},
+		wantErrText:     map[string]string{"p": errAlwaysFails.Error()},
+		wantAttempts:    map[string]int{"p": 1},
+		wantErrs:        []error{errAlwaysFails, ErrJournal, errStoreThenFail},
+		wantNotErrs:     []error{ErrIncomplete, ErrConcurrentWriter},
+		wantSteps:       map[string]stepStatus{"a": stepCompensated, "p": stepFailed},
+		wantOrder:       [][2]string{{"a", undoA}},
 		wantTrail: seq(
 			opened, startOf("a"), doneOf("a"), startOf("p"), failedOf("p"), compStartOf("a"), undoneOf("a"), closed,
 		),
@@ -2102,6 +2108,7 @@ func forwardStoredOutcomeRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal stores the outcome of a compensable step and then returns an error, and a " +
 			"sibling fails later ; Should: resend the outcome first and compensate, not end ErrConcurrentWriter",
+		wantCompensated: []string{"a", "b"},
 		steps: func(rec *recorder) Flow {
 			c := once("c", func(context.Context, tripState) error {
 				time.Sleep(pause)
@@ -2135,6 +2142,7 @@ func backwardStoredIntentRow() runRow {
 	return runRow{
 		name: "[Fail] When: the journal stores a compensation intent and then returns an error ; " +
 			"Should: resend the intent first and record the next compensation, not end ErrConcurrentWriter",
+		wantCompensated: []string{"a"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(
 				rec.undoable("a"), failingUndo("b", Continue, rec.do(undoB)), once("c", alwaysFails),
@@ -2182,19 +2190,6 @@ func storedThenDownRow() runRow {
 	}
 }
 
-func compensatedOf(res *runRecord, tt *runRow) []string {
-	var names []string
-
-	for i := range res.Steps {
-		name := res.Steps[i].Name
-		if _, failed := tt.wantKinds[comp(name)]; !failed && tt.wantSteps[name] == stepCompensated {
-			names = append(names, res.Steps[i].Name)
-		}
-	}
-
-	return names
-}
-
 func parallelFailuresRow() runRow {
 	return runRow{
 		name:         "[Success] When: two parallel steps fail ; Should: Steps lists them in step order",
@@ -2220,6 +2215,7 @@ func compensatedListRow() runRow {
 		name: "[Success] When: a step fails and two compensations succeed, one fails ; " +
 			"Should: Compensated lists the two in step order " +
 			"and Steps lists the action error then the compensation error",
+		wantCompensated: []string{"a", "b"},
 		steps: func(rec *recorder) Flow {
 			return Sequence(
 				rec.undoable("a"), rec.undoable("b"), failingUndo("d", Continue, alwaysFails), once("c", alwaysFails),
