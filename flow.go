@@ -132,45 +132,76 @@ func embedsStep(t reflect.Type) (reflect.StructField, bool) {
 		return reflect.StructField{}, false
 	}
 
-	for _, name := range []string{"Step", "Pivot"} {
-		if f, ok := t.Elem().FieldByName(name); ok && embedsByValue(t.Elem(), &f) {
-			return f, true
+	for level := []reflect.StructField{{Type: t.Elem()}}; len(level) > 0; {
+		scan := scanEmbeds(level)
+		if len(scan.found) > 0 {
+			return scan.found[0], len(scan.found) == 1
 		}
+
+		level = scan.next
 	}
 
 	return reflect.StructField{}, false
 }
 
-func settingsOf(f Flow, embed *reflect.StructField) stepSettings {
-	v := reflect.ValueOf(f).Elem().FieldByIndex(embed.Index)
-	s := stepSettings{
-		name: v.FieldByName("Name").String(), description: v.FieldByName("Description").String(),
-		pivot: embed.Name == "Pivot",
-	}
-	s.retry, _ = reflect.TypeAssert[RetryPolicy](v.FieldByName("RetryPolicy"))
-	s.timeout, _ = reflect.TypeAssert[time.Duration](v.FieldByName("AttemptTimeout"))
-
-	if failure := v.FieldByName("FailurePolicy"); failure.IsValid() {
-		s.failure, _ = reflect.TypeAssert[FailurePolicy](failure)
-	}
-
-	return s
+type embedScan struct {
+	found []reflect.StructField
+	next  []reflect.StructField
 }
 
-func embedsByValue(outer reflect.Type, f *reflect.StructField) bool {
-	if !f.Anonymous || f.Type.Kind() != reflect.Struct ||
-		!reflect.PointerTo(f.Type).Implements(reflect.TypeFor[binder]()) {
-		return false
-	}
+func scanEmbeds(level []reflect.StructField) embedScan {
+	var scan embedScan
 
-	for _, i := range f.Index[:len(f.Index)-1] {
-		outer = outer.Field(i).Type
-		if outer.Kind() != reflect.Struct {
-			return false
+	for _, parent := range level {
+		for f := range parent.Type.Fields() {
+			if !f.Anonymous || f.Type.Kind() != reflect.Struct {
+				continue
+			}
+
+			f.Index = append(slices.Clone(parent.Index), f.Index...)
+			if libraryEmbed(f.Type) != "" {
+				scan.found = append(scan.found, f)
+			} else {
+				scan.next = append(scan.next, f)
+			}
 		}
 	}
 
-	return true
+	return scan
+}
+
+func libraryEmbed(t reflect.Type) string {
+	base, args, generic := strings.Cut(t.Name(), "[")
+	if !generic || args == "" || t.PkgPath() != reflect.TypeFor[None]().PkgPath() {
+		return ""
+	}
+
+	if base != "Step" && base != "Pivot" {
+		return ""
+	}
+
+	return base
+}
+
+func settingsOf(f Flow, embed *reflect.StructField) stepSettings {
+	v := reflect.ValueOf(f).Elem().FieldByIndex(embed.Index)
+	pivot := libraryEmbed(embed.Type) == "Pivot"
+
+	retry, ok := reflect.TypeAssert[RetryPolicy](v.FieldByName("RetryPolicy"))
+	if !ok {
+		panic(fmt.Sprintf("sagas: field RetryPolicy of %s is not a RetryPolicy", v.Type()))
+	}
+
+	s := stepSettings{
+		name: v.FieldByName("Name").String(), description: v.FieldByName("Description").String(), retry: retry,
+		timeout: time.Duration(v.FieldByName("AttemptTimeout").Int()), pivot: pivot,
+	}
+
+	if !pivot {
+		s.failure = FailurePolicy(v.FieldByName("FailurePolicy").String())
+	}
+
+	return s
 }
 
 func shortType(t reflect.Type) string {

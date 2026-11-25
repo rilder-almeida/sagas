@@ -375,6 +375,32 @@ type pivotBesideStepField struct {
 	Step string
 }
 
+const heldName = "held"
+
+type stepHolder struct {
+	Step[tripState, None]
+	doer
+}
+
+type pivotHolder struct {
+	Pivot[tripState, None]
+	doer
+}
+
+type stepBehindPlainStep struct {
+	stepHolder
+
+	Step string
+	Name string
+}
+
+type pivotBehindPlainPivot struct {
+	pivotHolder
+
+	Pivot string
+	Name  string
+}
+
 func Test_embedsStep(t *testing.T) {
 	t.Parallel()
 
@@ -399,6 +425,18 @@ func Test_embedsStep(t *testing.T) {
 		{
 			name:      "[Success] When: a Pivot embed sits beside a plain field named Step ; Should: accept the Pivot",
 			typ:       reflect.TypeFor[*pivotBesideStepField](),
+			want:      true,
+			wantEmbed: reflect.TypeFor[Pivot[tripState, None]](),
+		},
+		{
+			name:      "[Success] When: a plain Step field hides a deeper Step embed ; Should: find the embed by type",
+			typ:       reflect.TypeFor[*stepBehindPlainStep](),
+			want:      true,
+			wantEmbed: reflect.TypeFor[Step[tripState, None]](),
+		},
+		{
+			name:      "[Success] When: a plain Pivot field hides a deeper Pivot embed ; Should: find it by type",
+			typ:       reflect.TypeFor[*pivotBehindPlainPivot](),
 			want:      true,
 			wantEmbed: reflect.TypeFor[Pivot[tripState, None]](),
 		},
@@ -521,6 +559,24 @@ func Test_settingsOf(t *testing.T) {
 			},
 		},
 		{
+			name: "[Success] When: a wrapper hides a Step and shadows Name ; Should: read the library fields, no pivot",
+			flow: &stepBehindPlainStep{
+				stepHolder: stepHolder{
+					Step: Step[tripState, None]{Name: heldName, RetryPolicy: NoRetry()},
+				},
+				Name: "outer",
+			},
+			want: stepSettings{name: heldName, retry: NoRetry()},
+		},
+		{
+			name: "[Success] When: a wrapper hides a Pivot and shadows Name ; Should: read its fields and the mark",
+			flow: &pivotBehindPlainPivot{
+				pivotHolder: pivotHolder{Pivot: Pivot[tripState, None]{Name: heldName, AttemptTimeout: time.Second}},
+				Name:        "outer",
+			},
+			want: stepSettings{name: heldName, timeout: time.Second, pivot: true},
+		},
+		{
 			name: "[Success] When: the Step comes through an embedded struct ; Should: read its fields",
 			flow: &nestedReserve{Name: "nested"},
 			want: stepSettings{name: "nested"},
@@ -535,6 +591,49 @@ func Test_settingsOf(t *testing.T) {
 			require.True(t, ok)
 
 			assert.Equal(t, tt.want, settingsOf(tt.flow, &embed))
+		})
+	}
+}
+
+func Test_libraryEmbed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{
+			name: "[Success] When: the type is a Step of this package ; Should: return Step",
+			typ:  reflect.TypeFor[Step[tripState, Hotel]](), want: "Step",
+		},
+		{
+			name: "[Success] When: the type is a Pivot of this package ; Should: return Pivot",
+			typ:  reflect.TypeFor[Pivot[tripState, None]](), want: "Pivot",
+		},
+		{
+			name: "[Fail] When: the type is another generic type of this package ; Should: return nothing",
+			typ:  reflect.TypeFor[typed[tripState, None]](),
+		},
+		{
+			name: "[Fail] When: the type wraps a Pivot under another name ; Should: return nothing",
+			typ:  reflect.TypeFor[pivotHolder](),
+		},
+		{
+			name: "[Fail] When: the type is a plain named type ; Should: return nothing",
+			typ:  reflect.TypeFor[Hotel](),
+		},
+		{
+			name: "[Fail] When: the type is predeclared ; Should: return nothing",
+			typ:  reflect.TypeFor[string](),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, libraryEmbed(tt.typ))
 		})
 	}
 }
