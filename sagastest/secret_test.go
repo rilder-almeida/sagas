@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
-	"fmt"
 	"io/fs"
 	"sync"
 	"testing"
@@ -94,6 +93,12 @@ func holdingSecret(t *testing.T) *sagas.MemorySecretStore {
 	return s
 }
 
+func sharedStore() func(*testing.T) sagas.SecretStore {
+	s := sagas.NewMemorySecretStore()
+
+	return func(*testing.T) sagas.SecretStore { return s }
+}
+
 func secretRules() []string {
 	return []string{ruleMissingKey, ruleStoredValue, ruleReplacingPut}
 }
@@ -106,11 +111,18 @@ func Test_SecretStoreCases(t *testing.T) {
 		newStore     func(*testing.T) sagas.SecretStore
 		wantProbeErr bool
 		wantFailing  []string
+		wantFresh    []string
 		wantWrapped  []error
 	}{
 		{
 			name:     "[Success] When: the store is the memory store ; Should: report nothing",
 			newStore: func(*testing.T) sagas.SecretStore { return sagas.NewMemorySecretStore() },
+		},
+		{
+			name: "[Fail] When: the factory returns one shared store ; " +
+				"Should: fail every case after the first with the fresh store rule only",
+			newStore:  sharedStore(),
+			wantFresh: secretRules()[1:],
 		},
 		{
 			name: "[Fail] When: Get returns nil and a nil error for a missing key beside a held key ; " +
@@ -171,6 +183,7 @@ func Test_SecretStoreCases(t *testing.T) {
 				require.ErrorIs(t, err, ErrSecretStoreContract)
 				assert.Nil(t, cases)
 				assert.Empty(t, tt.wantFailing)
+				assert.Empty(t, tt.wantFresh)
 				assertWrapped(t, tt.wantWrapped, err)
 
 				return
@@ -179,24 +192,25 @@ func Test_SecretStoreCases(t *testing.T) {
 			require.NoError(t, err)
 
 			var (
-				names, failing []string
-				runErrs        []error
+				names   []string
+				runErrs []error
 			)
+
+			rules := map[string]string{}
 
 			for c := range cases {
 				names = append(names, c.Name)
 
 				if runErr := c.Run(t.Context(), tt.newStore(t)); runErr != nil {
 					assert.ErrorIs(t, runErr, ErrSecretStoreContract)
-					assert.Contains(t, runErr.Error(), fmt.Sprintf("rule %q", c.Name))
 
-					failing = append(failing, c.Name)
+					rules[c.Name] = namedRule(t, runErr, c.Name, ruleFreshStore)
 					runErrs = append(runErrs, runErr)
 				}
 			}
 
 			assert.Equal(t, secretRules(), names)
-			assert.Equal(t, tt.wantFailing, failing)
+			assert.Equal(t, wantRules(tt.wantFailing, tt.wantFresh, ruleFreshStore), rules)
 			assertWrapped(t, tt.wantWrapped, errors.Join(runErrs...))
 		})
 	}

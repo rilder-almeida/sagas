@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 
@@ -91,6 +92,20 @@ func kitFailure(sentinel error, subject, what string, cause error) error {
 	}
 
 	return fmt.Errorf("%w: %w", err, cause)
+}
+
+func freshCases[W any](fresh func(context.Context, W) error, cases []Case[W]) iter.Seq[Case[W]] {
+	for i, c := range cases {
+		cases[i].run = func(ctx context.Context, services W) error {
+			if err := fresh(ctx, services); err != nil {
+				return err
+			}
+
+			return c.run(ctx, services)
+		}
+	}
+
+	return slices.Values(cases)
 }
 
 func ruleFailure(sentinel error, rule, what string, cause error) error {

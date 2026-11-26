@@ -505,8 +505,15 @@ type journalRow struct {
 	newJournal   func(*testing.T) sagas.Journal
 	wantProbeErr bool
 	wantFailing  []string
+	wantFresh    []string
 	wantCauses   []string
 	wantWrapped  []error
+}
+
+func sharedJournal() func(*testing.T) sagas.Journal {
+	j := sagas.NewMemoryJournal()
+
+	return func(*testing.T) sagas.Journal { return j }
 }
 
 func journalRows() []journalRow {
@@ -514,6 +521,12 @@ func journalRows() []journalRow {
 		{
 			name:       "[Success] When: the journal is the memory journal ; Should: report nothing",
 			newJournal: func(*testing.T) sagas.Journal { return sagas.NewMemoryJournal() },
+		},
+		{
+			name: "[Fail] When: the factory returns one shared journal ; " +
+				"Should: fail every case after the first with the fresh journal rule only",
+			newJournal: sharedJournal(),
+			wantFresh:  journalRules()[1:],
 		},
 		{
 			name: "[Fail] When: the journal keeps the caller pointer ; Should: report an accepted changed resend",
@@ -805,6 +818,7 @@ func Test_JournalCases(t *testing.T) {
 				require.ErrorIs(t, err, ErrJournalContract)
 				assert.Nil(t, cases)
 				assert.Empty(t, tt.wantFailing)
+				assert.Empty(t, tt.wantFresh)
 				assertCauses(t, tt.wantCauses, []string{err.Error()})
 				assertWrapped(t, tt.wantWrapped, err)
 
@@ -814,29 +828,58 @@ func Test_JournalCases(t *testing.T) {
 			require.NoError(t, err)
 
 			var (
-				names, failing, reports []string
-				runErrs                 []error
+				names, reports []string
+				runErrs        []error
 			)
+
+			rules := map[string]string{}
 
 			for c := range cases {
 				names = append(names, c.Name)
 
 				if runErr := c.Run(t.Context(), tt.newJournal(t)); runErr != nil {
 					assert.ErrorIs(t, runErr, ErrJournalContract)
-					assert.Contains(t, runErr.Error(), fmt.Sprintf("rule %q", c.Name))
 
-					failing = append(failing, c.Name)
+					rules[c.Name] = namedRule(t, runErr, c.Name, ruleFresh)
 					reports = append(reports, runErr.Error())
 					runErrs = append(runErrs, runErr)
 				}
 			}
 
 			assert.Equal(t, journalRules(), names)
-			assert.ElementsMatch(t, tt.wantFailing, failing, "reports: %v", reports)
+			assert.Equal(t, wantRules(tt.wantFailing, tt.wantFresh, ruleFresh), rules, "reports: %v", reports)
 			assertCauses(t, tt.wantCauses, reports)
 			assertWrapped(t, tt.wantWrapped, errors.Join(runErrs...))
 		})
 	}
+}
+
+func namedRule(t *testing.T, err error, rule, fresh string) string {
+	t.Helper()
+
+	if strings.Contains(err.Error(), fmt.Sprintf("rule %q", fresh)) {
+		assert.NotContains(t, err.Error(), fmt.Sprintf("rule %q", rule))
+
+		return fresh
+	}
+
+	assert.Contains(t, err.Error(), fmt.Sprintf("rule %q", rule))
+
+	return rule
+}
+
+func wantRules(failing, fresh []string, freshRule string) map[string]string {
+	rules := make(map[string]string, len(failing)+len(fresh))
+
+	for _, name := range failing {
+		rules[name] = name
+	}
+
+	for _, name := range fresh {
+		rules[name] = freshRule
+	}
+
+	return rules
 }
 
 func assertCauses(t *testing.T, causes, reports []string) {

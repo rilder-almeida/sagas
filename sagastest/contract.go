@@ -32,12 +32,12 @@ func cleanRun[S any, W Services[S]](ctx context.Context, name string, state S, p
 
 	final, err := runCase(ctx, name, state, probe, rec)
 	if err != nil {
-		return plan{}, nil, fmt.Errorf("%w: the run failed: %w", ErrCleanRun, err)
+		return plan{}, nil, fmt.Errorf("%w: Run returned an error: %w", ErrCleanRun, err)
 	}
 
 	attempts := rec.Attempts()
 	if len(attempts) == 0 {
-		return plan{}, nil, fmt.Errorf("%w: the run recorded no call, so every step is disabled in the given state",
+		return plan{}, nil, fmt.Errorf("%w: Run recorded no call, so every step is disabled in the given state",
 			ErrCleanRun)
 	}
 
@@ -75,7 +75,7 @@ func CompensationCases[S any, W CompensationServices[S]](
 	}
 
 	if len(steps) == 0 {
-		return nil, fmt.Errorf("%w: the flow has no step with a compensation", ErrNoStepToTest)
+		return nil, fmt.Errorf("%w: the flow has no compensation", ErrNoStepToTest)
 	}
 
 	return func(yield func(Case[W]) bool) {

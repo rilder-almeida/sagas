@@ -904,11 +904,11 @@ func Test_TestCompensations(t *testing.T) {
 		},
 		{
 			name: "[Success] When: the factory makes an event queue per case and closes it in t.Cleanup ; " +
-				"Should: close each case queue with nil after its observer got each event once",
+				"Should: close the probe queue and each case queue with nil after its observer got each event once",
 			flow:       chargeThenShip,
 			wire:       observed,
 			wantCases:  compensationNames(stepCharge),
-			wantQueues: 3,
+			wantQueues: 4,
 		},
 	}
 
@@ -918,16 +918,18 @@ func Test_TestCompensations(t *testing.T) {
 
 			log := &factoryLog{}
 
-			TestCompensations(t, "shop", probeState{ID: runID}, func(t *testing.T) *shopServices {
-				t.Helper()
+			t.Run("kit", func(t *testing.T) {
+				TestCompensations(t, "shop", probeState{ID: runID}, func(t *testing.T) *shopServices {
+					t.Helper()
 
-				s := newShopServices(sound, log.called(t.Name()), tt.flow, lateCharge)
-				tt.wire(t, log, s)
+					s := newShopServices(sound, log.called(t.Name()), tt.flow, lateCharge)
+					tt.wire(t, log, s)
 
-				return s
+					return s
+				})
 			})
 
-			assert.Equal(t, subtestNames(t.Name(), tt.wantCases), log.names)
+			assert.Equal(t, subtestNames(t.Name()+"/kit", tt.wantCases), log.names)
 			assertQueues(t, log.closes, tt.wantQueues)
 		})
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
-	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -53,7 +52,7 @@ func JournalCases(ctx context.Context, probe sagas.Journal) (iter.Seq[Case[sagas
 		return nil, err
 	}
 
-	return slices.Values([]Case[sagas.Journal]{
+	return freshCases(freshRules, []Case[sagas.Journal]{
 		{Name: ruleNextEvent, run: nextEventCase},
 		{Name: ruleGap, run: gapCase},
 		{Name: ruleSeqBelowOne, run: seqBelowOneCase},

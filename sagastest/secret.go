@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"slices"
 	"testing"
 
 	"github.com/rilder-almeida/sagas"
@@ -29,15 +28,11 @@ func secretKey(field string) sagas.SecretKey {
 // SecretStoreCases checks that probe holds no value for the keys of the cases, then returns the cases missing key,
 // stored value and replacing put. Each case needs a fresh empty store. Each error wraps ErrSecretStoreContract.
 func SecretStoreCases(ctx context.Context, probe sagas.SecretStore) (iter.Seq[Case[sagas.SecretStore]], error) {
-	err := errors.Join(
-		wantNoSecret(ctx, ruleFreshStore, probe, secretKey(fieldHeld)),
-		wantNoSecret(ctx, ruleFreshStore, probe, secretKey(fieldMissing)),
-	)
-	if err != nil {
+	if err := freshStore(ctx, probe); err != nil {
 		return nil, err
 	}
 
-	return slices.Values([]Case[sagas.SecretStore]{
+	return freshCases(freshStore, []Case[sagas.SecretStore]{
 		{Name: ruleMissingKey, run: missingKeyCase},
 		{Name: ruleStoredValue, run: storedValueCase},
 		{Name: ruleReplacingPut, run: replacingPutCase},
@@ -55,6 +50,13 @@ func TestSecretStore(t *testing.T, newStore func(*testing.T) sagas.SecretStore) 
 	}
 
 	runCases(t, cases, newStore)
+}
+
+func freshStore(ctx context.Context, s sagas.SecretStore) error {
+	return errors.Join(
+		wantNoSecret(ctx, ruleFreshStore, s, secretKey(fieldHeld)),
+		wantNoSecret(ctx, ruleFreshStore, s, secretKey(fieldMissing)),
+	)
 }
 
 func wantNoSecret(ctx context.Context, rule string, s sagas.SecretStore, key sagas.SecretKey) error {
