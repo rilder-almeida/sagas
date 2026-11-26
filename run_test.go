@@ -882,6 +882,7 @@ type runRow struct {
 	wantPreviousIs     map[string][]error
 	wantCauseIs        map[string]error
 	wantNotCauseIs     map[string]error
+	wantCauseKind      map[string]*KindError
 	wantCauseText      map[string]string
 	wantEventCauseText map[string]string
 	wantClosed         map[string]EventError
@@ -2807,7 +2808,9 @@ func deadlineRows() []runRow {
 		deadlineGraceCutRow(),
 		deadlineTieRow(),
 		nestedGraceRow(),
+		nestedDetachedRow(),
 		callerGraceCauseRow(),
+		cancelInstantRow(),
 	}
 }
 
@@ -2917,6 +2920,7 @@ func graceCutRow() runRow {
 		wantErrText:    map[string]string{comp("b"): context.DeadlineExceeded.Error(), "c": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
 		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded, "c": errStop},
+		wantCauseKind:  map[string]*KindError{comp("b"): ErrGraceEnded},
 		wantUnrecorded: []string{comp("b")},
 		wantNotErrs:    []error{ErrJournal},
 		wantErrs:       []error{ErrGraceEnded, errStop},
@@ -2951,6 +2955,7 @@ func forwardGraceCutRow() runRow {
 		wantErrText:    map[string]string{"z": context.DeadlineExceeded.Error()},
 		wantAttempts:   map[string]int{"z": 1},
 		wantCauseIs:    map[string]error{"z": ErrGraceEnded},
+		wantCauseKind:  map[string]*KindError{"z": ErrGraceEnded},
 		wantUnrecorded: []string{"z"},
 		wantErrs:       []error{ErrGraceEnded, errStop},
 		wantNotErrs:    []error{ErrCompensated, ErrJournal},
@@ -2977,6 +2982,7 @@ func deadlineGraceCutRow() runRow {
 		wantErrText:    map[string]string{comp("b"): context.DeadlineExceeded.Error(), "c": errAlwaysFails.Error()},
 		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
 		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded},
+		wantCauseKind:  map[string]*KindError{comp("b"): ErrGraceEnded},
 		wantUnrecorded: []string{comp("b")},
 		wantNotErrs:    []error{ErrJournal},
 		wantErrs:       []error{ErrGraceEnded, context.DeadlineExceeded},
@@ -3081,5 +3087,113 @@ func callerGraceCauseRow() runRow {
 		wantErrs:     []error{context.Canceled, ErrGraceEnded},
 		wantSteps:    map[string]stepStatus{"a": stepUnknown},
 		wantTrail:    seq(opened, startOf("a"), lostOf("a"), closed),
+	}
+}
+
+func nestedDetachedRow() runRow {
+	return runRow{
+		name: "[Fail] When: a detached compensation runs a nested saga after the caller ended ; " +
+			"Should: let the nested run end at the outer grace bound and not wait for its own grace period",
+		steps: func(rec *recorder) Flow {
+			start := time.Now()
+			x := undoing("x", func(ctx context.Context, _ tripState) error {
+				rec.add(deadlineText(ctx, "x", start))
+				<-ctx.Done()
+				rec.add("x end " + time.Since(start).String())
+
+				return ctx.Err()
+			}, okAction)
+			w := act("w", func(context.Context, tripState) error {
+				time.Sleep(2 * pause)
+
+				return nil
+			})
+
+			inner, err := New[tripState]("inner", Sequence(w, x))
+			if err != nil {
+				panic(err)
+			}
+
+			b := undoOnce("b", okAction, func(ctx context.Context, _ tripState) error {
+				runErr := inner.Run(ctx, &tripState{})
+				rec.add(
+					fmt.Sprintf(
+						"inner returned %v compensated %v",
+						time.Since(start),
+						errors.Is(runErr, ErrCompensated),
+					),
+				)
+
+				return ctx.Err()
+			})
+			late := once("c", func(context.Context, tripState) error {
+				time.Sleep(2 * pause)
+
+				return errAlwaysFails
+			})
+
+			return Sequence(b, late)
+		},
+		opts:           []Option{WithRecoveryTimeout(10 * pause)},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     noEndStatus,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): context.DeadlineExceeded.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
+		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded, "c": errStop},
+		wantCauseKind:  map[string]*KindError{comp("b"): ErrGraceEnded},
+		wantUnrecorded: []string{comp("b")},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{ErrGraceEnded, errStop},
+		wantSteps:      map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:    []string{"b"},
+		wantOrder: [][2]string{
+			{"x deadline 11s", "x end 11s"}, {"x end 11s", "inner returned 11s compensated true"},
+		},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"),
+		),
+	}
+}
+
+func cancelInstantRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation starts at the instant the caller ends ; " +
+			"Should: give it the grace bound and cut it there with ErrGraceEnded",
+		steps: func(rec *recorder) Flow {
+			start := time.Now()
+			undo := func(ctx context.Context, _ tripState) error {
+				rec.add(deadlineText(ctx, "b", start))
+				<-ctx.Done()
+				rec.add("b end " + time.Since(start).String())
+
+				return ctx.Err()
+			}
+
+			return Sequence(undoOnce("b", okAction, undo), once("c", blockedOnCtx))
+		},
+		opts:           []Option{WithRecoveryTimeout(10 * pause)},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     noEndStatus,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrUnknown, "c": ErrUnknown},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): context.DeadlineExceeded.Error(), "c": canceledTxt},
+		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
+		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded, "c": errStop},
+		wantCauseKind:  map[string]*KindError{comp("b"): ErrGraceEnded},
+		wantUnrecorded: []string{comp("b")},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{ErrGraceEnded, errStop},
+		wantSteps:      map[string]stepStatus{"b": stepCompensationFailed, "c": stepUnknown},
+		wantPending:    []string{"b"},
+		wantOrder:      [][2]string{{"b deadline 11s", "b end 11s"}},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), lostOf("c"), compStartOf("b"),
+		),
 	}
 }

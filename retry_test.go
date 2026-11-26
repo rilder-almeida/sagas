@@ -441,7 +441,8 @@ func Test_runAttempts(t *testing.T) {
 	tests := []struct {
 		name        string
 		draw        func(int64) int64
-		cause       func(*graceBound) error
+		grace       time.Duration
+		cause       error
 		wantSeen    []int
 		wantErr     error
 		wantElapsed time.Duration
@@ -465,18 +466,19 @@ func Test_runAttempts(t *testing.T) {
 			wantElapsed: 600*time.Millisecond - 2,
 		},
 		{
-			name: "[Fail] When: an attempt ends with the grace end of this run as its cause and the context lives ; " +
-				"Should: stop without a retry",
+			name: "[Fail] When: an attempt ends with ErrGraceEnded once this run's grace bound passed ; " +
+				"Should: stop without a retry while the context lives",
 			draw:     func(int64) int64 { return 0 },
-			cause:    func(b *graceBound) error { return b.cause },
+			cause:    ErrGraceEnded,
 			wantSeen: []int{1},
 			wantErr:  errA,
 		},
 		{
-			name: "[Success] When: an attempt ends with ErrGraceEnded that did not come from this run ; " +
+			name: "[Success] When: an attempt ends with ErrGraceEnded before this run's grace bound ; " +
 				"Should: retry as usual",
 			draw:     func(int64) int64 { return 0 },
-			cause:    func(*graceBound) error { return ErrGraceEnded },
+			grace:    time.Minute,
+			cause:    ErrGraceEnded,
 			wantSeen: []int{1, 2, 3},
 		},
 	}
@@ -486,15 +488,14 @@ func Test_runAttempts(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				bound := newGraceBound(time.Minute)
-				meta := &callMeta{execution: infoExecution, bound: bound}
+				meta := &callMeta{execution: infoExecution, bound: endedBound(t, tt.grace)}
 
 				var seen []int
 
 				script := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
 				call := func(ctx context.Context) error {
 					if tt.cause != nil {
-						meta.end(tt.cause(bound))
+						meta.end(tt.cause)
 					}
 
 					return script(ctx)
@@ -516,22 +517,16 @@ func Test_NoRetry(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		change       func(*RetryPolicy)
-		wantPolicy   RetryPolicy
-		wantAttempts int
+		name   string
+		change func(*RetryPolicy)
 	}{
 		{
-			name:         "[Success] When: NoRetry is called ; Should: return one attempt and defaults for the rest",
-			change:       func(*RetryPolicy) {},
-			wantPolicy:   RetryPolicy{Attempts: 1},
-			wantAttempts: 1,
+			name:   "[Success] When: NoRetry is called ; Should: return one attempt and defaults for the rest",
+			change: func(*RetryPolicy) {},
 		},
 		{
-			name:         "[Success] When: a caller changes a returned policy ; Should: leave the next call unchanged",
-			change:       func(p *RetryPolicy) { p.Attempts = 9 },
-			wantPolicy:   RetryPolicy{Attempts: 1},
-			wantAttempts: 1,
+			name:   "[Success] When: a caller changes a returned policy ; Should: leave the next call unchanged",
+			change: func(p *RetryPolicy) { p.Attempts = 9 },
 		},
 	}
 
@@ -543,8 +538,8 @@ func Test_NoRetry(t *testing.T) {
 			tt.change(&first)
 
 			got := NoRetry()
-			assert.Equal(t, tt.wantPolicy, got)
-			assert.Equal(t, tt.wantAttempts, got.attempts())
+			assert.Equal(t, RetryPolicy{Attempts: 1}, got)
+			assert.Equal(t, 1, got.attempts())
 		})
 	}
 }

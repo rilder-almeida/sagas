@@ -2,13 +2,13 @@ package sagas
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func callerContext(t *testing.T, start time.Time, deadline time.Duration) (context.Context, context.CancelFunc) {
@@ -20,6 +20,18 @@ func callerContext(t *testing.T, start time.Time, deadline time.Duration) (conte
 	}
 
 	return context.WithDeadline(ctx, start.Add(deadline))
+}
+
+func endedBound(t *testing.T, d time.Duration) *graceBound {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, bound, release := graceContext(ctx, d)
+	t.Cleanup(release)
+
+	return bound
 }
 
 func deadlineAfter(ctx context.Context, start time.Time) time.Duration {
@@ -123,8 +135,7 @@ func Test_graceContext(t *testing.T) {
 				synctest.Wait()
 
 				assert.Equal(t, tt.wantOpen, g.Err() == nil)
-				require.ErrorIs(t, context.Cause(g), tt.wantCause)
-				assert.Equal(t, tt.wantCause == nil, context.Cause(g) == nil)
+				assert.Equal(t, tt.wantCause, context.Cause(g))
 				assert.Equal(t, "kept", g.Value(graceKey{}))
 
 				assert.Equal(t, tt.wantDeadline, deadlineAfter(g, start))
@@ -148,7 +159,7 @@ func Test_graceContext_releaseWaits(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				gate := make(chan struct{})
-				_, _, release := graceContext(gatedContext{gate: gate}, time.Minute)
+				_, _, release := graceContext(&gatedContext{gate: gate}, time.Minute)
 
 				returned := make(chan struct{})
 
@@ -169,20 +180,23 @@ func Test_graceContext_releaseWaits(t *testing.T) {
 }
 
 type gatedContext struct {
-	gate chan struct{}
+	gate  chan struct{}
+	calls atomic.Int32
 }
 
-func (gatedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (*gatedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
 
-func (c gatedContext) Done() <-chan struct{} {
-	<-c.gate
+func (c *gatedContext) Done() <-chan struct{} {
+	if c.calls.Add(1) > 1 {
+		<-c.gate
+	}
 
 	return nil
 }
 
-func (gatedContext) Err() error { return nil }
+func (*gatedContext) Err() error { return nil }
 
-func (gatedContext) Value(any) any { return nil }
+func (*gatedContext) Value(any) any { return nil }
 
 func isClosed(ch <-chan struct{}) bool {
 	select {
@@ -193,25 +207,48 @@ func isClosed(ch <-chan struct{}) bool {
 	}
 }
 
+func boundAfter(b *graceBound, start time.Time) time.Duration {
+	if end, ok := b.deadline(); ok {
+		return end.Sub(start)
+	}
+
+	return 0
+}
+
 func Test_graceBound_deadline(t *testing.T) {
 	t.Parallel()
 
-	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const grace = time.Minute
 
 	tests := []struct {
-		name   string
-		ended  time.Time
-		want   time.Time
-		wantOK bool
+		name     string
+		deadline time.Duration
+		cancelAt time.Duration
+		readAt   time.Duration
+		wantEnd  time.Duration
 	}{
 		{
-			name: "[Success] When: the caller did not end ; Should: report no bound",
+			name:   "[Success] When: the caller did not end ; Should: report no bound",
+			readAt: time.Hour,
 		},
 		{
-			name:   "[Success] When: the caller ended at t ; Should: report t plus the grace period",
-			ended:  epoch.Add(time.Second),
-			want:   epoch.Add(time.Second + time.Minute),
-			wantOK: true,
+			name: "[Success] When: the bound is read at the instant the caller cancels ; " +
+				"Should: report t plus the grace period",
+			cancelAt: time.Second,
+			readAt:   time.Second,
+			wantEnd:  time.Second + grace,
+		},
+		{
+			name:     "[Success] When: the bound is read after the caller cancelled at t ; Should: keep t",
+			cancelAt: time.Second,
+			readAt:   time.Hour,
+			wantEnd:  time.Second + grace,
+		},
+		{
+			name:     "[Success] When: the caller deadline D passed ; Should: report D plus the grace period",
+			deadline: time.Hour,
+			readAt:   2 * time.Hour,
+			wantEnd:  time.Hour + grace,
 		},
 	}
 
@@ -219,71 +256,70 @@ func Test_graceBound_deadline(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			b := &graceBound{grace: time.Minute}
-			b.end(tt.ended)
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
 
-			got, ok := b.deadline()
-			assert.Equal(t, tt.want, got)
-			assert.Equal(t, tt.wantOK, ok)
+				ctx, cancel := callerContext(t, start, tt.deadline)
+				defer cancel()
+
+				_, bound, release := graceContext(ctx, grace)
+				defer release()
+
+				if tt.cancelAt > 0 {
+					time.Sleep(tt.cancelAt)
+					cancel()
+				}
+
+				time.Sleep(tt.readAt - tt.cancelAt)
+
+				assert.Equal(t, tt.wantEnd, boundAfter(bound, start))
+			})
 		})
 	}
 }
 
-func Test_graceEndError_Error(t *testing.T) {
+func Test_graceBound_owns(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name  string
-		grace time.Duration
-		want  string
-	}{
-		{
-			name:  "[Success] When: the grace period is one minute ; Should: read as ErrGraceEnded",
-			grace: time.Minute,
-			want:  "sagas: recovery grace period ended",
-		},
-		{
-			name: "[Success] When: the grace period is zero ; Should: read as ErrGraceEnded",
-			want: "sagas: recovery grace period ended",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, (&graceEndError{grace: tt.grace}).Error())
-		})
-	}
-}
-
-func Test_graceEndError_Is(t *testing.T) {
-	t.Parallel()
-
-	own := newGraceBound(time.Minute).cause
+	const grace = time.Minute
 
 	tests := []struct {
 		name   string
-		target error
+		cancel bool
+		wait   time.Duration
+		cause  error
 		want   bool
 	}{
 		{
-			name:   "[Success] When: the target is ErrGraceEnded ; Should: match it",
-			target: ErrGraceEnded,
+			name:  "[Fail] When: the caller did not end ; Should: not own ErrGraceEnded",
+			wait:  time.Hour,
+			cause: ErrGraceEnded,
+		},
+		{
+			name:   "[Fail] When: ErrGraceEnded arrives before the bound ; Should: not own it",
+			cancel: true,
+			wait:   grace - time.Nanosecond,
+			cause:  ErrGraceEnded,
+		},
+		{
+			name:   "[Success] When: ErrGraceEnded arrives at the bound ; Should: own it",
+			cancel: true,
+			wait:   grace,
+			cause:  ErrGraceEnded,
 			want:   true,
 		},
 		{
-			name:   "[Fail] When: the target is another kind ; Should: not match it",
-			target: ErrFailed,
-		},
-		{
-			name:   "[Fail] When: the target is the grace end of another run ; Should: not match it",
-			target: newGraceBound(time.Minute).cause,
-		},
-		{
-			name:   "[Success] When: the target is the same grace end ; Should: match it",
-			target: own,
+			name:   "[Success] When: a wrapped ErrGraceEnded arrives after the bound ; Should: own it",
+			cancel: true,
+			wait:   time.Hour,
+			cause:  fmt.Errorf("outer: %w", ErrGraceEnded),
 			want:   true,
+		},
+		{
+			name:   "[Fail] When: another cause arrives after the bound ; Should: not own it",
+			cancel: true,
+			wait:   time.Hour,
+			cause:  context.DeadlineExceeded,
 		},
 	}
 
@@ -291,7 +327,21 @@ func Test_graceEndError_Is(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, errors.Is(own, tt.target))
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+
+				_, bound, release := graceContext(ctx, grace)
+				defer release()
+
+				if tt.cancel {
+					cancel()
+				}
+
+				time.Sleep(tt.wait)
+
+				assert.Equal(t, tt.want, bound.owns(tt.cause))
+			})
 		})
 	}
 }

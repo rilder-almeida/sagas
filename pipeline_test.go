@@ -420,11 +420,10 @@ func pipelineGraceBoundRow() pipelineRow {
 		name: "[Fail] When: the caller ended and the grace bound comes before the attempt timeout ; " +
 			"Should: end the attempt at the bound with the cause ErrGraceEnded",
 		spec: spec,
-		bound: func() *graceBound {
-			b := newGraceBound(time.Second / 2)
-			b.end(time.Now())
+		bound: func(t *testing.T) *graceBound {
+			t.Helper()
 
-			return b
+			return endedBound(t, time.Second/2)
 		},
 		call: func(r *recorder) func(context.Context, *pipeState) error {
 			return func(ctx context.Context, _ *pipeState) error {
@@ -969,7 +968,7 @@ type pipelineRow struct {
 	wantLabel    *KindError
 	cancelAfter  time.Duration
 	cancelCause  error
-	bound        func() *graceBound
+	bound        func(*testing.T) *graceBound
 }
 
 func actionSpec() callSpec {
@@ -1471,10 +1470,12 @@ func pipelineContext(t *testing.T, tt *pipelineRow) (context.Context, context.Ca
 	return ctx, cancel
 }
 
-func rowMeta(tt *pipelineRow) *callMeta {
+func rowMeta(t *testing.T, tt *pipelineRow) *callMeta {
+	t.Helper()
+
 	meta := &callMeta{execution: infoExecution}
 	if tt.bound != nil {
-		meta.bound = tt.bound()
+		meta.bound = tt.bound(t)
 	}
 
 	return meta
@@ -1543,7 +1544,7 @@ func Test_pipeline(t *testing.T) {
 				defer cancel(nil)
 
 				call := pipeline(&spec, stateOutput(tt.call(rec)))
-				got := call(ctx, rowMeta(&tt), baseFor(t, &tt))
+				got := call(ctx, rowMeta(t, &tt), baseFor(t, &tt))
 
 				time.Sleep(time.Minute)
 

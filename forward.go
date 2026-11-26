@@ -194,12 +194,12 @@ func (r *runner[S]) launch(stepCtx, grace context.Context, c *crew[S]) {
 		r.runs[i].status = runRunning
 		c.running++
 
-		ctx := stepCtx
+		ctx, bound := stepCtx, (*graceBound)(nil)
 		if r.saga.steps[i].zone != ZoneCompensable {
-			ctx = grace
+			ctx, bound = grace, r.bound
 		}
 
-		c.wg.Go(func() { r.work(ctx, grace, c.reports, j) })
+		c.wg.Go(func() { r.work(ctx, grace, bound, c.reports, j) })
 	}
 }
 
@@ -218,22 +218,15 @@ func (r *runner[S]) receive(stepCtx, grace context.Context, c *crew[S]) {
 	}
 }
 
-func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j job[S]) {
+func (r *runner[S]) work(ctx, grace context.Context, bound *graceBound, reports chan<- report, j job[S]) {
 	if pred := r.saga.steps[j.step].pred; pred != nil {
 		if !vet(ctx, pred, reports, j) || !<-j.answer {
 			return
 		}
 	}
 
-	onGrace := r.saga.steps[j.step].zone != ZoneCompensable
-
-	var bound *graceBound
-	if onGrace {
-		bound = r.bound
-	}
-
 	r.act(ctx, bound, j, r.saga.steps[j.step].action, func(done settled[S]) {
-		done.late, done.onGrace = r.bound.cut(grace, &done.out), onGrace
+		done.late, done.onGrace = r.bound.cut(grace, &done.out), bound != nil
 		reports <- done
 	})
 }
