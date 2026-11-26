@@ -140,25 +140,45 @@ func change(events []*Event) {
 	}
 }
 
+func assertCapacity(t *testing.T, opts []QueueOption, want int) {
+	t.Helper()
+
+	synctest.Test(t, func(t *testing.T) {
+		q := NewMemoryEventQueue(opts...)
+		log := heldLog()
+		q.Subscribe(log)
+
+		require.NoError(t, q.Enqueue(t.Context(), &Event{Seq: 1}))
+		synctest.Wait()
+
+		held := 0
+		for held <= want && q.Enqueue(t.Context(), &Event{Seq: held + 2}) == nil {
+			held++
+		}
+
+		log.release()
+		require.NoError(t, q.Close(t.Context()))
+
+		assert.Equal(t, want, held)
+		assert.Equal(t, seqsUpTo(want+1), log.seqs())
+	})
+}
+
 func Test_NewMemoryEventQueue(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name         string
-		size         int
+		opts         []QueueOption
 		wantCapacity int
 	}{
 		{
-			name: "[Success] When: the size is zero ; Should: hold DefaultEventQueueSize events",
-			size: 0, wantCapacity: DefaultEventQueueSize,
+			name:         "[Success] When: no option is given ; Should: hold DefaultEventQueueSize events",
+			wantCapacity: DefaultEventQueueSize,
 		},
 		{
-			name: "[Success] When: the size is negative ; Should: hold DefaultEventQueueSize events",
-			size: -3, wantCapacity: DefaultEventQueueSize,
-		},
-		{
-			name: "[Success] When: the size is four ; Should: hold four events",
-			size: 4, wantCapacity: 4,
+			name: "[Success] When: an option is nil ; Should: skip it and apply the others",
+			opts: []QueueOption{nil, WithQueueSize(4)}, wantCapacity: 4,
 		},
 	}
 
@@ -166,25 +186,47 @@ func Test_NewMemoryEventQueue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			synctest.Test(t, func(t *testing.T) {
-				q := NewMemoryEventQueue(tt.size)
-				log := heldLog()
-				q.Subscribe(log)
+			assertCapacity(t, tt.opts, tt.wantCapacity)
+		})
+	}
+}
 
-				require.NoError(t, q.Enqueue(t.Context(), &Event{Seq: 1}))
-				synctest.Wait()
+func Test_WithQueueSize(t *testing.T) {
+	t.Parallel()
 
-				held := 0
-				for held <= tt.wantCapacity && q.Enqueue(t.Context(), &Event{Seq: held + 2}) == nil {
-					held++
-				}
+	tests := []struct {
+		name         string
+		sizes        []int
+		wantCapacity int
+	}{
+		{
+			name:  "[Success] When: the size is zero ; Should: hold DefaultEventQueueSize events",
+			sizes: []int{0}, wantCapacity: DefaultEventQueueSize,
+		},
+		{
+			name:  "[Success] When: the size is negative ; Should: hold DefaultEventQueueSize events",
+			sizes: []int{-3}, wantCapacity: DefaultEventQueueSize,
+		},
+		{
+			name:  "[Success] When: the size is four ; Should: hold four events",
+			sizes: []int{4}, wantCapacity: 4,
+		},
+		{
+			name:  "[Success] When: the option is given twice ; Should: keep the last size",
+			sizes: []int{2, 4}, wantCapacity: 4,
+		},
+	}
 
-				log.release()
-				require.NoError(t, q.Close(t.Context()))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-				assert.Equal(t, tt.wantCapacity, held)
-				assert.Equal(t, seqsUpTo(tt.wantCapacity+1), log.seqs())
-			})
+			opts := make([]QueueOption, 0, len(tt.sizes))
+			for _, n := range tt.sizes {
+				opts = append(opts, WithQueueSize(n))
+			}
+
+			assertCapacity(t, opts, tt.wantCapacity)
 		})
 	}
 }
@@ -225,7 +267,7 @@ func Test_MemoryEventQueue_Enqueue(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				q := NewMemoryEventQueue(tt.size)
+				q := NewMemoryEventQueue(WithQueueSize(tt.size))
 
 				first, second := &eventLog{}, &eventLog{}
 				if tt.hold {
@@ -279,7 +321,7 @@ func Test_MemoryEventQueue_Subscribe(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				q := NewMemoryEventQueue(0)
+				q := NewMemoryEventQueue()
 
 				subscribe := func(n int) []*eventLog {
 					logs := make([]*eventLog, n)
@@ -340,7 +382,7 @@ func Test_MemoryEventQueue_Close(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				q := NewMemoryEventQueue(0)
+				q := NewMemoryEventQueue()
 
 				log := &eventLog{delay: tt.delay}
 				if tt.hold {

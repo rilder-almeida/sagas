@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// DefaultEventQueueSize is the number of events that NewMemoryEventQueue holds when its size is zero or less.
+// DefaultEventQueueSize is the number of events that a MemoryEventQueue holds unless WithQueueSize sets more than zero.
 const DefaultEventQueueSize = 1024
 
 var (
@@ -31,14 +31,37 @@ type MemoryEventQueue struct {
 	observers []Observer
 }
 
-// NewMemoryEventQueue returns a queue that holds up to size events, or DefaultEventQueueSize when size is zero or
-// less. Its goroutine runs until Close.
-func NewMemoryEventQueue(size int) *MemoryEventQueue {
-	if size <= 0 {
-		size = DefaultEventQueueSize
+// QueueOption configures a MemoryEventQueue that NewMemoryEventQueue builds.
+type QueueOption func(*queueConfig)
+
+type queueConfig struct {
+	size int
+}
+
+// WithQueueSize sets the number of events that the queue holds. A size of zero or less keeps DefaultEventQueueSize. If
+// the option is given more than once, the last one wins.
+func WithQueueSize(n int) QueueOption {
+	return func(c *queueConfig) {
+		c.size = n
+	}
+}
+
+// NewMemoryEventQueue returns a queue that holds DefaultEventQueueSize events, or the size that WithQueueSize sets. It
+// skips a nil option. Its goroutine runs until Close.
+func NewMemoryEventQueue(opts ...QueueOption) *MemoryEventQueue {
+	c := queueConfig{}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&c)
+		}
 	}
 
-	q := &MemoryEventQueue{deliveries: make(chan func(Observer), size), done: make(chan struct{})}
+	if c.size <= 0 {
+		c.size = DefaultEventQueueSize
+	}
+
+	q := &MemoryEventQueue{deliveries: make(chan func(Observer), c.size), done: make(chan struct{})}
 
 	go q.deliver()
 
