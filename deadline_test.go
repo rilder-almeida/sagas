@@ -179,20 +179,82 @@ func Test_graceContext_releaseWaits(t *testing.T) {
 	}
 }
 
-type gatedContext struct {
-	gate  chan struct{}
-	free  int32
-	calls atomic.Int32
+func Test_graceContext_firstReader(t *testing.T) {
+	t.Parallel()
+
+	const grace = time.Minute
+
+	tests := []struct {
+		name     string
+		deadline time.Duration
+		closeAt  time.Duration
+		wantEnd  time.Duration
+	}{
+		{
+			name: "[Success] When: the caller has no deadline and ends before the first read ; " +
+				"Should: record the read instant",
+			closeAt: time.Hour,
+			wantEnd: 2*time.Hour + grace,
+		},
+		{
+			name: "[Success] When: the caller ends at its deadline D and the first read comes after D ; " +
+				"Should: record D",
+			deadline: time.Hour,
+			closeAt:  time.Hour,
+			wantEnd:  time.Hour + grace,
+		},
+		{
+			name: "[Success] When: the caller cancels before its deadline D and the first read comes after D ; " +
+				"Should: record D",
+			deadline: time.Hour,
+			closeAt:  time.Second,
+			wantEnd:  time.Hour + grace,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				caller := &gatedContext{gate: make(chan struct{}), free: 1, caller: make(chan struct{})}
+
+				if tt.deadline > 0 {
+					caller.deadline = start.Add(tt.deadline)
+				}
+
+				time.AfterFunc(tt.closeAt, func() { close(caller.caller) })
+
+				_, bound, release := graceContext(caller, grace)
+
+				time.Sleep(2 * time.Hour)
+
+				assert.Equal(t, tt.wantEnd, boundAfter(bound, start))
+
+				close(caller.gate)
+				release()
+			})
+		})
+	}
 }
 
-func (*gatedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+type gatedContext struct {
+	gate     chan struct{}
+	free     int32
+	calls    atomic.Int32
+	caller   chan struct{}
+	deadline time.Time
+}
+
+func (c *gatedContext) Deadline() (time.Time, bool) { return c.deadline, !c.deadline.IsZero() }
 
 func (c *gatedContext) Done() <-chan struct{} {
 	if c.calls.Add(1) > c.free {
 		<-c.gate
 	}
 
-	return nil
+	return c.caller
 }
 
 func (*gatedContext) Err() error { return nil }
