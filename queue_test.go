@@ -19,9 +19,13 @@ const markValue = "mark"
 
 var errStopWaiting = errors.New("sagas: test: stop waiting")
 
+var errObserverPanic = errors.New("sagas: test: the observer panics")
+
 type eventLog struct {
-	hold  chan struct{}
-	delay time.Duration
+	hold     chan struct{}
+	delay    time.Duration
+	panics   bool
+	scribble bool
 
 	mu      sync.Mutex
 	events  []Event
@@ -38,10 +42,23 @@ func (l *eventLog) Observe(ctx context.Context, e *Event) {
 
 	time.Sleep(l.delay)
 
+	if l.panics {
+		panic(errObserverPanic)
+	}
+
+	own := *e
+	cloneSlices(&own)
+
+	if l.scribble {
+		for _, v := range e.Values {
+			clear(v.Value)
+		}
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.events = append(l.events, *e)
+	l.events = append(l.events, own)
 	l.ctxErrs = append(l.ctxErrs, ctx.Err())
 	l.marks = append(l.marks, ctx.Value(markKey{}))
 }

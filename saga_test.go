@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -773,6 +774,294 @@ func overwrite(given [][]Middleware) {
 		for i := range mws {
 			mws[i] = okMiddleware()
 		}
+	}
+}
+
+func Test_checkSaga(t *testing.T) {
+	t.Parallel()
+
+	queue := NewMemoryEventQueue(WithQueueSize(1))
+
+	t.Cleanup(func() { assert.NoError(t, queue.Close(context.Background())) })
+
+	tests := []struct {
+		name      string
+		opts      []Option
+		wantRules []string
+	}{
+		{
+			name: "[Fail] When: WithEventQueue is nil ; Should: report it",
+			opts: []Option{WithEventQueue(nil)}, wantRules: []string{"WithEventQueue queue is nil"},
+		},
+		{
+			name: "[Fail] When: WithEventQueue is given twice ; Should: report it",
+			opts: twice(WithEventQueue(queue)), wantRules: []string{"WithEventQueue given more than once"},
+		},
+		{
+			name:      "[Fail] When: the second WithObserver holds a nil entry ; Should: report it",
+			opts:      []Option{WithObserver(&eventLog{}), WithObserver(nil)},
+			wantRules: []string{"nil Observer in WithObserver"},
+		},
+		{
+			name: "[Success] When: WithObserver is given twice with a queue ; Should: report nothing",
+			opts: []Option{WithObserver(&eventLog{}), WithObserver(&eventLog{}), WithEventQueue(queue)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := &definition{given: map[string]int{}}
+			for _, opt := range tt.opts {
+				opt(d)
+			}
+
+			errs := checkSaga(tripName, d, 0)
+			require.Len(t, errs, len(tt.wantRules))
+
+			for i, rule := range tt.wantRules {
+				require.ErrorIs(t, errs[i], ErrInvalidStep)
+				assert.ErrorContains(t, errs[i], rule)
+			}
+		})
+	}
+}
+
+func observerGroups(calls, perCall int) ([]Option, []*eventLog) {
+	opts := make([]Option, 0, calls+2)
+	logs := make([]*eventLog, 0, calls*perCall)
+
+	for range calls {
+		group := make([]Observer, 0, perCall)
+
+		for range perCall {
+			log := &eventLog{}
+			logs = append(logs, log)
+			group = append(group, log)
+		}
+
+		opts = append(opts, WithObserver(group...))
+	}
+
+	return opts, logs
+}
+
+func Test_WithObserver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		calls             int
+		perCall           int
+		appendErrs        map[int]error
+		wantRunErr        error
+		wantFailedAppends int
+	}{
+		{
+			name:  "[Success] When: one observer ; Should: see every recorded event in order, secrets left out",
+			calls: 1, perCall: 1,
+		},
+		{
+			name:  "[Success] When: two WithObserver calls ; Should: give both observers every recorded event",
+			calls: 2, perCall: 1,
+		},
+		{
+			name:  "[Success] When: one call holds two observers ; Should: give both every recorded event",
+			calls: 1, perCall: 2,
+		},
+		{
+			name:  "[Fail] When: an append fails ; Should: not deliver the event that the journal refused",
+			calls: 1, perCall: 1, appendErrs: map[int]error{3: errJournalDown},
+			wantRunErr: ErrJournal, wantFailedAppends: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				q := NewMemoryEventQueue()
+				journal := newScriptJournal(tt.appendErrs)
+				opts, logs := observerGroups(tt.calls, tt.perCall)
+				execution := newID()
+
+				s := namedLedger(t, ledgerName, append(opts, WithJournal(journal), WithEventQueue(q))...)
+
+				_, runErr := runTimed(t, s, execution)
+				require.ErrorIs(t, runErr, tt.wantRunErr)
+				require.NoError(t, q.Close(t.Context()))
+
+				want := journalEvents(t, journal, execution)
+
+				assert.Len(t, journal.ctxs, len(want)+tt.wantFailedAppends)
+
+				for _, log := range logs {
+					assert.Equal(t, want, log.seen())
+					assertSecretsLeftOut(t, log.seen())
+				}
+			})
+		})
+	}
+}
+
+func assertSecretsLeftOut(tb testing.TB, events []Event) {
+	tb.Helper()
+
+	cards := 0
+
+	for i := range events {
+		for _, v := range events[i].Values {
+			if v.Field == "Card" {
+				cards++
+
+				assert.Empty(tb, v.Value)
+			}
+		}
+	}
+
+	assert.Positive(tb, cards)
+}
+
+type queueRow struct {
+	name      string
+	size      int
+	names     []string
+	observed  bool
+	raw       bool
+	hold      bool
+	wantDrops int
+}
+
+func (r *queueRow) observerWant(events []Event) []Event {
+	if !r.observed {
+		return nil
+	}
+
+	return events
+}
+
+func (r *queueRow) rawWant(events []Event) []Event {
+	if !r.raw {
+		return nil
+	}
+
+	return events
+}
+
+type sharedQueue struct {
+	queue   *MemoryEventQueue
+	raw     *eventLog
+	rawWant []Event
+}
+
+func newSharedQueue(tb testing.TB, row *queueRow) *sharedQueue {
+	tb.Helper()
+
+	shared := &sharedQueue{queue: NewMemoryEventQueue(WithQueueSize(row.size)), raw: &eventLog{}}
+	if row.hold {
+		shared.raw = heldLog()
+	}
+
+	if row.raw {
+		shared.queue.Subscribe(shared.raw)
+	}
+
+	if row.hold {
+		primer := Event{Saga: "primer", Seq: 1}
+		require.NoError(tb, shared.queue.Enqueue(tb.Context(), &primer))
+		synctest.Wait()
+
+		shared.rawWant = append(shared.rawWant, primer)
+	}
+
+	return shared
+}
+
+type sharedRun struct {
+	journal *MemoryJournal
+	log     *eventLog
+}
+
+func (q *sharedQueue) run(tb testing.TB, row *queueRow, name, execution string) sharedRun {
+	tb.Helper()
+
+	r := sharedRun{journal: NewMemoryJournal(), log: &eventLog{}}
+	opts := []Option{WithJournal(r.journal), WithEventQueue(q.queue)}
+
+	if row.observed {
+		opts = append(opts, WithObserver(r.log))
+	}
+
+	elapsed, err := runTimed(tb, namedLedger(tb, name, opts...), execution)
+	require.NoError(tb, err)
+	assert.Zero(tb, elapsed)
+
+	return r
+}
+
+func Test_WithEventQueue(t *testing.T) {
+	t.Parallel()
+
+	tests := []queueRow{
+		{
+			name:  "[Success] When: two sagas of different names share a queue ; Should: give each observer its saga",
+			names: []string{ledgerName, "audit"}, observed: true,
+		},
+		{
+			name: "[Fail] When: a queue of size 1 is blocked ; Should: drop events, log each drop and return at once",
+			size: 1, names: []string{ledgerName}, observed: true, raw: true, hold: true, wantDrops: 5,
+		},
+		{
+			name:  "[Success] When: a saga has a queue and no observer ; Should: publish every event to the queue",
+			names: []string{ledgerName}, raw: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				shared := newSharedQueue(t, &tt)
+				execution := newID()
+
+				runs := make([]sharedRun, 0, len(tt.names))
+				for _, name := range tt.names {
+					runs = append(runs, shared.run(t, &tt, name, execution))
+				}
+
+				shared.raw.release()
+				require.NoError(t, shared.queue.Close(t.Context()))
+
+				var dropped []Event
+
+				for _, r := range runs {
+					want := journalEvents(t, r.journal, execution)
+					kept := len(want) - tt.wantDrops
+					dropped = append(dropped, want[kept:]...)
+					shared.rawWant = append(shared.rawWant, want[:kept]...)
+
+					assert.Equal(t, tt.observerWant(want[:kept]), r.log.seen())
+				}
+
+				assert.Equal(t, tt.rawWant(shared.rawWant), shared.raw.seen())
+				assertDropLogs(t, defaultLog(t).records(t, execution, slog.LevelWarn.String()), dropped)
+			})
+		})
+	}
+}
+
+func assertDropLogs(tb testing.TB, logged []map[string]any, dropped []Event) {
+	tb.Helper()
+
+	require.Len(tb, logged, len(dropped))
+
+	for i, rec := range logged {
+		assert.Equal(tb, "sagas: event not observed", rec["msg"])
+		assert.InDelta(tb, float64(dropped[i].Seq), rec["seq"], 0)
+		assert.Equal(tb, errQueueFull.Error(), rec["error"])
 	}
 }
 

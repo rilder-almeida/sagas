@@ -192,6 +192,7 @@ func (r *runner[S]) send(ctx context.Context, e *Event, secrets []FieldValue) er
 	r.seq++
 	r.events = append(r.events, *e)
 	r.unsent, r.unsentPuts = nil, nil
+	r.publish(ctx, e)
 
 	return nil
 }

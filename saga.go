@@ -23,6 +23,7 @@ var (
 const DefaultRecoveryTimeout = 5 * time.Minute
 
 const (
+	keyWithEventQueue      = "WithEventQueue"
 	keyWithJournal         = "WithJournal"
 	keyWithRecoveryTimeout = "WithRecoveryTimeout"
 	keyWithSecretStore     = "WithSecretStore"
@@ -35,6 +36,8 @@ type definition struct {
 	journal    Journal
 	secrets    SecretStore
 	middleware []Middleware
+	observers  []Observer
+	queue      EventQueue
 	recovery   time.Duration
 	given      map[string]int
 }
@@ -46,6 +49,7 @@ type Saga[S any] struct {
 	reports     []StepReport
 	journal     Journal
 	secrets     SecretStore
+	queue       EventQueue
 	recovery    time.Duration
 	order       []int
 	ancestors   [][]bool
@@ -103,6 +107,8 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 	if s.recovery == 0 {
 		s.recovery = DefaultRecoveryTimeout
 	}
+
+	s.observe(d)
 
 	zoned := zones(in.graph.children, s.pivot)
 
@@ -190,12 +196,16 @@ func checkSaga(name string, d *definition, nilOptions int) []error {
 		rules = append(rules, "WithRecoveryTimeout is negative")
 	}
 
-	for _, mw := range d.middleware {
-		if isNilValue(mw) {
-			rules = append(rules, "nil Middleware in WithMiddleware")
+	if d.given[keyWithEventQueue] > 0 && isNilValue(d.queue) {
+		rules = append(rules, "WithEventQueue queue is nil")
+	}
 
-			break
-		}
+	if slices.ContainsFunc(d.middleware, func(mw Middleware) bool { return isNilValue(mw) }) {
+		rules = append(rules, "nil Middleware in WithMiddleware")
+	}
+
+	if slices.ContainsFunc(d.observers, func(o Observer) bool { return isNilValue(o) }) {
+		rules = append(rules, "nil Observer in WithObserver")
 	}
 
 	rules = append(rules, checkRepeats(d.given, nilOptions)...)
@@ -247,6 +257,24 @@ func WithSecretStore(s SecretStore) Option {
 func WithMiddleware(mw ...Middleware) Option {
 	return func(d *definition) {
 		d.middleware = append(d.middleware, mw...)
+	}
+}
+
+// WithObserver adds observers that get each event of the saga after the journal recorded it. The option can repeat,
+// and each call appends. Without WithEventQueue, the saga uses its own MemoryEventQueue, which never closes. To wait
+// for delivery, pass a queue with WithEventQueue and call its Close.
+func WithObserver(o ...Observer) Option {
+	return func(d *definition) {
+		d.observers = append(d.observers, o...)
+	}
+}
+
+// WithEventQueue sets the queue that carries the events of each run to the observers. Left out, a saga with an
+// observer uses a fresh MemoryEventQueue of DefaultEventQueueSize.
+func WithEventQueue(q EventQueue) Option {
+	return func(d *definition) {
+		d.queue = q
+		d.given[keyWithEventQueue]++
 	}
 }
 
