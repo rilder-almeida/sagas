@@ -57,15 +57,11 @@ func TestSecretStore(t *testing.T, newStore func(*testing.T) sagas.SecretStore) 
 	runCases(t, cases, newStore)
 }
 
-func secretFailedf(rule, format string, args ...any) error {
-	return fmt.Errorf("%w: rule %q: %s", ErrSecretStoreContract, rule, fmt.Sprintf(format, args...))
-}
-
 func wantNoSecret(ctx context.Context, rule string, s sagas.SecretStore, key sagas.SecretKey) error {
 	value, err := s.Get(ctx, key)
 	if !errors.Is(err, sagas.ErrNoSecret) {
-		return secretFailedf(rule, "Get of field %q returned %q and %v, want an error wrapping %v",
-			key.Field, value, err, sagas.ErrNoSecret)
+		return ruleFailure(ErrSecretStoreContract, rule, fmt.Sprintf(
+			"Get of field %q returned value %q, want an error wrapping %v", key.Field, value, sagas.ErrNoSecret), err)
 	}
 
 	return nil
@@ -74,7 +70,8 @@ func wantNoSecret(ctx context.Context, rule string, s sagas.SecretStore, key sag
 func wantSecret(ctx context.Context, rule string, s sagas.SecretStore, want jsontext.Value) error {
 	got, err := s.Get(ctx, secretKey(fieldHeld))
 	if err != nil || !bytes.Equal(got, want) {
-		return secretFailedf(rule, "Get of field %q returned %q and %v, want %q and nil", fieldHeld, got, err, want)
+		return ruleFailure(ErrSecretStoreContract, rule,
+			fmt.Sprintf("Get of field %q returned value %q, want %q and no error", fieldHeld, got, want), err)
 	}
 
 	return nil
@@ -82,7 +79,8 @@ func wantSecret(ctx context.Context, rule string, s sagas.SecretStore, want json
 
 func putSecret(ctx context.Context, rule string, s sagas.SecretStore, value jsontext.Value) error {
 	if err := s.Put(ctx, secretKey(fieldHeld), value); err != nil {
-		return secretFailedf(rule, "Put of %q returned %v, want nil", value, err)
+		return ruleFailure(ErrSecretStoreContract, rule,
+			fmt.Sprintf("Put of %q returned an error, want nil", value), err)
 	}
 
 	return nil

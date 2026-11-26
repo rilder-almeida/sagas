@@ -359,6 +359,29 @@ func (j acceptsGapOnEmpty) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
+type firstWriteUnchecked struct {
+	*sagas.MemoryJournal
+
+	mu     sync.Mutex
+	stored bool
+}
+
+func (j *firstWriteUnchecked) Append(ctx context.Context, e *sagas.Event) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if e != nil && e.Seq > 1 && !j.stored {
+		return nil
+	}
+
+	err := j.MemoryJournal.Append(ctx, e)
+	if err == nil {
+		j.stored = true
+	}
+
+	return err
+}
+
 type swapsSentinelForSecondWriter struct {
 	*sagas.MemoryJournal
 
@@ -457,6 +480,7 @@ type journalRow struct {
 	wantProbeErr bool
 	wantFailing  []string
 	wantCauses   []string
+	wantWrapped  []error
 }
 
 func journalRows() []journalRow {
@@ -579,6 +603,15 @@ func journalRows() []journalRow {
 			wantCauses:  []string{"Append of seq 2 on an empty execution returned nil"},
 		},
 		{
+			name: "[Fail] When: the journal skips the Seq check on its first write ; " +
+				"Should: report seq 2 on an empty journal",
+			newJournal: func(*testing.T) sagas.Journal {
+				return &firstWriteUnchecked{MemoryJournal: sagas.NewMemoryJournal()}
+			},
+			wantFailing: []string{ruleGap},
+			wantCauses:  []string{"Append of seq 2 on an empty journal returned nil"},
+		},
+		{
 			name:        "[Fail] When: the journal accepts a Seq below 1 ; Should: report the accepted seq 0 and -1",
 			newJournal:  func(*testing.T) sagas.Journal { return acceptsLowSeq{sagas.NewMemoryJournal()} },
 			wantFailing: []string{ruleSeqBelowOne, ruleInvalidEvent},
@@ -621,6 +654,7 @@ func journalRows() []journalRow {
 				"want an error wrapping " + sagas.ErrExecutionExists.Error(),
 				"a losing append of seq 1 returned",
 			},
+			wantWrapped: []error{sagas.ErrConcurrentWriter},
 		},
 		{
 			name: "[Fail] When: the journal returns ErrExecutionExists later ; Should: report the wrong sentinel",
@@ -723,14 +757,19 @@ func Test_JournalCases(t *testing.T) {
 			if tt.wantProbeErr {
 				require.ErrorIs(t, err, ErrJournalContract)
 				assert.Nil(t, cases)
+				assert.Empty(t, tt.wantFailing)
 				assertCauses(t, tt.wantCauses, []string{err.Error()})
+				assertWrapped(t, tt.wantWrapped, err)
 
 				return
 			}
 
 			require.NoError(t, err)
 
-			var names, failing, reports []string
+			var (
+				names, failing, reports []string
+				runErrs                 []error
+			)
 
 			for c := range cases {
 				names = append(names, c.Name)
@@ -741,12 +780,14 @@ func Test_JournalCases(t *testing.T) {
 
 					failing = append(failing, c.Name)
 					reports = append(reports, runErr.Error())
+					runErrs = append(runErrs, runErr)
 				}
 			}
 
 			assert.Equal(t, journalRules(), names)
 			assert.ElementsMatch(t, tt.wantFailing, failing, "reports: %v", reports)
 			assertCauses(t, tt.wantCauses, reports)
+			assertWrapped(t, tt.wantWrapped, errors.Join(runErrs...))
 		})
 	}
 }
@@ -762,6 +803,14 @@ func assertCauses(t *testing.T, causes, reports []string) {
 			cause,
 			reports,
 		)
+	}
+}
+
+func assertWrapped(t *testing.T, wrapped []error, err error) {
+	t.Helper()
+
+	for _, want := range wrapped {
+		assert.ErrorIs(t, err, want)
 	}
 }
 

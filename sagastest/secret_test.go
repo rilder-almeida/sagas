@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"fmt"
+	"io/fs"
 	"sync"
 	"testing"
 
@@ -71,6 +73,12 @@ func (s changesValueStore) Get(ctx context.Context, key sagas.SecretKey) (jsonte
 	return append(value, ' '), err
 }
 
+type failsPutStore struct{ *sagas.MemorySecretStore }
+
+func (failsPutStore) Put(context.Context, sagas.SecretKey, jsontext.Value) error {
+	return fs.ErrPermission
+}
+
 func holdingSecret(t *testing.T) *sagas.MemorySecretStore {
 	t.Helper()
 
@@ -92,6 +100,7 @@ func Test_SecretStoreCases(t *testing.T) {
 		newStore     func(*testing.T) sagas.SecretStore
 		wantProbeErr bool
 		wantFailing  []string
+		wantWrapped  []error
 	}{
 		{
 			name:     "[Success] When: the store is the memory store ; Should: report nothing",
@@ -119,6 +128,12 @@ func Test_SecretStoreCases(t *testing.T) {
 			wantFailing: []string{ruleStoredValue, ruleReplacingPut},
 		},
 		{
+			name:        "[Fail] When: Put returns an error ; Should: report every case with the error as its cause",
+			newStore:    func(*testing.T) sagas.SecretStore { return failsPutStore{sagas.NewMemorySecretStore()} },
+			wantFailing: []string{ruleMissingKey, ruleStoredValue, ruleReplacingPut},
+			wantWrapped: []error{fs.ErrPermission},
+		},
+		{
 			name:         "[Fail] When: Get returns nil and a nil error on an empty store ; Should: refuse the probe",
 			newStore:     func(*testing.T) sagas.SecretStore { return alwaysNilStore{sagas.NewMemorySecretStore()} },
 			wantProbeErr: true,
@@ -142,27 +157,34 @@ func Test_SecretStoreCases(t *testing.T) {
 			if tt.wantProbeErr {
 				require.ErrorIs(t, err, ErrSecretStoreContract)
 				assert.Nil(t, cases)
+				assert.Empty(t, tt.wantFailing)
+				assertWrapped(t, tt.wantWrapped, err)
 
 				return
 			}
 
 			require.NoError(t, err)
 
-			var names, failing []string
+			var (
+				names, failing []string
+				runErrs        []error
+			)
 
 			for c := range cases {
 				names = append(names, c.Name)
 
 				if runErr := c.Run(t.Context(), tt.newStore(t)); runErr != nil {
 					assert.ErrorIs(t, runErr, ErrSecretStoreContract)
-					assert.Contains(t, runErr.Error(), c.Name)
+					assert.Contains(t, runErr.Error(), fmt.Sprintf("rule %q", c.Name))
 
 					failing = append(failing, c.Name)
+					runErrs = append(runErrs, runErr)
 				}
 			}
 
 			assert.Equal(t, secretRules(), names)
 			assert.Equal(t, tt.wantFailing, failing)
+			assertWrapped(t, tt.wantWrapped, errors.Join(runErrs...))
 		})
 	}
 }

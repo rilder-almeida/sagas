@@ -122,12 +122,12 @@ func emptySlicesEvent(seq int) *sagas.Event {
 }
 
 func ruleFailedf(rule, format string, args ...any) error {
-	return fmt.Errorf("%w: rule %q: %s", ErrJournalContract, rule, fmt.Sprintf(format, args...))
+	return ruleFailure(ErrJournalContract, rule, fmt.Sprintf(format, args...), nil)
 }
 
 func wantNil(rule, what string, err error) error {
 	if err != nil {
-		return ruleFailedf(rule, "%s returned %v, want nil", what, err)
+		return ruleFailure(ErrJournalContract, rule, what+" returned an error, want nil", err)
 	}
 
 	return nil
@@ -143,7 +143,8 @@ func wantError(rule, what string, err error) error {
 
 func wantSentinel(rule, what string, err, sentinel error) error {
 	if err != nil && !errors.Is(err, sentinel) {
-		return ruleFailedf(rule, "%s returned %v, want an error wrapping %v", what, err, sentinel)
+		return ruleFailure(ErrJournalContract, rule,
+			fmt.Sprintf("%s returned an error, want an error wrapping %v", what, sentinel), err)
 	}
 
 	return nil
@@ -182,7 +183,8 @@ func wantStored(ctx context.Context, rule string, j sagas.Journal, execution str
 
 	got, err := reader.Events(ctx, execution)
 	if err != nil {
-		return ruleFailedf(rule, "Events of execution %q returned %v, want nil", execution, err)
+		return ruleFailure(ErrJournalContract, rule,
+			fmt.Sprintf("Events of execution %q returned an error, want nil", execution), err)
 	}
 
 	if len(got) != len(want) {
@@ -227,8 +229,9 @@ func freshRules(ctx context.Context, probe sagas.Journal) error {
 
 		switch {
 		case readErr != nil && !errors.Is(readErr, sagas.ErrNoEvents):
-			errs = append(errs, ruleFailedf(ruleFresh, "Events of execution %q returned %v, want an error wrapping %v",
-				execution, readErr, sagas.ErrNoEvents))
+			errs = append(errs, ruleFailure(ErrJournalContract, ruleFresh, fmt.Sprintf(
+				"Events of execution %q returned an error, want an error wrapping %v", execution, sagas.ErrNoEvents),
+				readErr))
 		case len(events) > 0:
 			errs = append(errs, ruleFailedf(ruleFresh, "Events of execution %q returned %d events, want 0",
 				execution, len(events)))
@@ -248,6 +251,7 @@ func nextEventCase(ctx context.Context, j sagas.Journal) error {
 
 func gapCase(ctx context.Context, j sagas.Journal) error {
 	return errors.Join(
+		wantError(ruleGap, "Append of seq 2 on an empty journal", j.Append(ctx, journalEvent(seqSecond))),
 		wantNil(ruleGap, "Append of seq 1", j.Append(ctx, journalEvent(1))),
 		wantError(ruleGap, "Append of seq 3 after seq 1", j.Append(ctx, journalEvent(seqThird))),
 		wantError(ruleGap, "Append of seq 2 on an empty execution", j.Append(ctx, eventOf(executionEmpty, seqSecond))),

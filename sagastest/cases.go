@@ -92,6 +92,15 @@ func caseFailure(sentinel error, step, kind, what string, cause error) error {
 	return fmt.Errorf("%w: %w", err, cause)
 }
 
+func ruleFailure(sentinel error, rule, what string, cause error) error {
+	err := fmt.Errorf("%w: rule %q: %s", sentinel, rule, what)
+	if cause == nil {
+		return err
+	}
+
+	return fmt.Errorf("%w: %w", err, cause)
+}
+
 type plan struct {
 	steps       []sagas.StepReport
 	pivot       string

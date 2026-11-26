@@ -207,6 +207,7 @@ func ExampleJournalCases() {
 
 	// Output:
 	// gap
+	// sagastest: journal contract broken: rule "gap": Append of seq 2 on an empty journal returned nil, want an error
 	// sagastest: journal contract broken: rule "gap": Append of seq 3 after seq 1 returned nil, want an error
 	// sagastest: journal contract broken: rule "gap": Append of seq 2 on an empty execution returned nil, want an error
 }
