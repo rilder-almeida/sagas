@@ -3,6 +3,7 @@ package sagastest
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/rilder-almeida/sagas"
@@ -12,25 +13,43 @@ type fault struct {
 	step     string
 	phase    sagas.Phase
 	attempts []int
+	given    map[string]int
 }
 
-// FaultOption narrows when a fault fires.
+// FaultOption narrows when a fault fires. Fail, Unknown and Panic panic on a nil FaultOption and on an option given
+// more than once.
 type FaultOption func(*fault)
 
 // OnPhase fires the fault only in phase p. Left out, it fires in every phase.
 func OnPhase(p sagas.Phase) FaultOption {
-	return func(f *fault) { f.phase = p }
+	return func(f *fault) {
+		f.phase = p
+		f.given["OnPhase"]++
+	}
 }
 
 // OnAttempts fires the fault only on the listed attempt numbers. Left out, it fires on every attempt.
 func OnAttempts(n ...int) FaultOption {
-	return func(f *fault) { f.attempts = slices.Clone(n) }
+	return func(f *fault) {
+		f.attempts = slices.Clone(n)
+		f.given["OnAttempts"]++
+	}
 }
 
 func newFault(step string, opts []FaultOption) *fault {
-	f := &fault{step: step}
+	if slices.ContainsFunc(opts, func(opt FaultOption) bool { return opt == nil }) {
+		panic("sagastest: nil FaultOption")
+	}
+
+	f := &fault{step: step, given: map[string]int{}}
 	for _, opt := range opts {
 		opt(f)
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(f.given)) {
+		if f.given[name] > 1 {
+			panic("sagastest: " + name + " given more than once")
+		}
 	}
 
 	return f

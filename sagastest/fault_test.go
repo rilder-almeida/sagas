@@ -466,3 +466,84 @@ func Test_OnAttempts(t *testing.T) {
 		})
 	}
 }
+
+func Test_newFault(t *testing.T) {
+	t.Parallel()
+
+	fail := func(opts ...FaultOption) { Fail(probeName, errBoom, opts...) }
+	unknown := func(opts ...FaultOption) { Unknown(probeName, opts...) }
+	panics := func(opts ...FaultOption) { Panic(probeName, opts...) }
+
+	tests := []struct {
+		name      string
+		build     func(opts ...FaultOption)
+		opts      []FaultOption
+		wantPanic string
+	}{
+		{
+			name:      "[Fail] When: Fail gets a nil option ; Should: panic with the nil rule",
+			build:     fail,
+			opts:      []FaultOption{nil},
+			wantPanic: "sagastest: nil FaultOption",
+		},
+		{
+			name:      "[Fail] When: Unknown gets a nil option after a valid one ; Should: panic with the nil rule",
+			build:     unknown,
+			opts:      []FaultOption{OnAttempts(1), nil},
+			wantPanic: "sagastest: nil FaultOption",
+		},
+		{
+			name:      "[Fail] When: Panic gets OnPhase twice ; Should: panic with the OnPhase repeat rule",
+			build:     panics,
+			opts:      []FaultOption{OnPhase(sagas.PhaseExecute), OnPhase(sagas.PhaseCompensate)},
+			wantPanic: "sagastest: OnPhase given more than once",
+		},
+		{
+			name:      "[Fail] When: Fail gets one phase twice ; Should: panic with the OnPhase repeat rule",
+			build:     fail,
+			opts:      []FaultOption{OnPhase(sagas.PhaseExecute), OnPhase(sagas.PhaseExecute)},
+			wantPanic: "sagastest: OnPhase given more than once",
+		},
+		{
+			name:      "[Fail] When: Unknown gets OnAttempts twice ; Should: panic with the OnAttempts repeat rule",
+			build:     unknown,
+			opts:      []FaultOption{OnAttempts(1), OnAttempts(2)},
+			wantPanic: "sagastest: OnAttempts given more than once",
+		},
+		{
+			name:      "[Fail] When: Panic gets OnPhase twice and a nil option ; Should: panic with the nil rule",
+			build:     panics,
+			opts:      []FaultOption{OnPhase(sagas.PhaseExecute), OnPhase(sagas.PhaseExecute), nil},
+			wantPanic: "sagastest: nil FaultOption",
+		},
+		{
+			name:  "[Success] When: Fail gets OnPhase and OnAttempts once each ; Should: build without a panic",
+			build: fail,
+			opts:  []FaultOption{OnPhase(sagas.PhaseExecute), OnAttempts(1)},
+		},
+		{
+			name:  "[Success] When: Unknown gets OnAttempts and OnPhase once each ; Should: build without a panic",
+			build: unknown,
+			opts:  []FaultOption{OnAttempts(1, 2), OnPhase(sagas.PhasePivot)},
+		},
+		{
+			name:  "[Success] When: Panic gets no option ; Should: build without a panic",
+			build: panics,
+			opts:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.wantPanic == "" {
+				assert.NotPanics(t, func() { tt.build(tt.opts...) })
+
+				return
+			}
+
+			assert.PanicsWithValue(t, tt.wantPanic, func() { tt.build(tt.opts...) })
+		})
+	}
+}
