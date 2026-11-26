@@ -24,7 +24,6 @@ const DefaultRecoveryTimeout = 5 * time.Minute
 
 const (
 	keyWithJournal         = "WithJournal"
-	keyWithMiddleware      = "WithMiddleware"
 	keyWithRecoveryTimeout = "WithRecoveryTimeout"
 	keyWithSecretStore     = "WithSecretStore"
 )
@@ -243,12 +242,11 @@ func WithSecretStore(s SecretStore) Option {
 	}
 }
 
-// WithMiddleware sets the middlewares that wrap every call of the saga, the first one outermost. Call it once with
-// every middleware.
+// WithMiddleware adds middlewares that wrap every call of the saga. The option can repeat, and each call appends to the
+// end of the list. The first middleware overall is the outermost.
 func WithMiddleware(mw ...Middleware) Option {
 	return func(d *definition) {
-		d.middleware = slices.Clone(mw)
-		d.given[keyWithMiddleware]++
+		d.middleware = append(d.middleware, mw...)
 	}
 }
 

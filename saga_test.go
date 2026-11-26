@@ -220,10 +220,8 @@ func Test_New(t *testing.T) {
 			wantContains: []string{"WithJournal given more than once"},
 		},
 		{
-			name: "[Fail] When: WithMiddleware is given twice ; Should: reject it",
+			name: "[Success] When: WithMiddleware is given twice ; Should: build",
 			saga: tripName, flow: a, opts: twice(WithMiddleware(okMiddleware())),
-			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"WithMiddleware given more than once"},
 		},
 		{
 			name: "[Fail] When: WithRecoveryTimeout is given twice ; Should: reject it",
@@ -770,10 +768,25 @@ func phased(r *recorder, name string) MiddlewareFunc {
 	}
 }
 
-func overwrite(mws []Middleware) {
-	for i := range mws {
-		mws[i] = okMiddleware()
+func overwrite(given [][]Middleware) {
+	for _, mws := range given {
+		for i := range mws {
+			mws[i] = okMiddleware()
+		}
 	}
+}
+
+func middlewareCalls(rec *recorder, calls [][]string, extra []Middleware) [][]Middleware {
+	given := make([][]Middleware, 0, len(calls))
+
+	for _, names := range calls {
+		given = append(given, middlewaresOf(rec, names))
+	}
+
+	last := len(given) - 1
+	given[last] = append(given[last], extra...)
+
+	return given
 }
 
 func Test_WithMiddleware(t *testing.T) {
@@ -786,9 +799,8 @@ func Test_WithMiddleware(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		names          []string
+		calls          [][]string
 		extra          []Middleware
-		calls          int
 		changeAfterNew bool
 		pivot          bool
 		wantTrace      []string
@@ -796,32 +808,40 @@ func Test_WithMiddleware(t *testing.T) {
 	}{
 		{
 			name:  "[Success] When: the second step is the pivot ; Should: give the middleware the phase pivot for it",
-			names: []string{outerMW}, calls: 1, pivot: true,
+			calls: [][]string{{outerMW}}, pivot: true,
 			wantTrace: []string{"outer>a:execute", closeOut, "outer>b:pivot", closeOut},
 		},
 		{
 			name:  "[Success] When: two middlewares are given in one call ; Should: wrap each step call in order",
-			names: []string{outerMW, "inner"}, calls: 1, wantTrace: both,
+			calls: [][]string{{outerMW, "inner"}}, wantTrace: both,
 		},
 		{
 			name:  "[Success] When: the caller changes its slice after New ; Should: run the original ones",
-			names: []string{outerMW, "inner"}, calls: 1, changeAfterNew: true, wantTrace: both,
+			calls: [][]string{{outerMW, "inner"}}, changeAfterNew: true, wantTrace: both,
+		},
+		{
+			name:  "[Success] When: two calls give a and then b and c ; Should: run a, b and c with a outermost",
+			calls: [][]string{{"a"}, {"b", "c"}},
+			wantTrace: []string{
+				"a>a:execute", "b>a:execute", "c>a:execute", "<c", "<b", "<a",
+				"a>b:execute", "b>b:execute", "c>b:execute", "<c", "<b", "<a",
+			},
 		},
 		{
 			name:  "[Fail] When: an entry is nil ; Should: reject it",
-			calls: 1, extra: []Middleware{nil}, wantErr: ErrInvalidStep,
+			calls: [][]string{{}}, extra: []Middleware{nil}, wantErr: ErrInvalidStep,
 		},
 		{
 			name:  "[Fail] When: an entry is a nil MiddlewareFunc ; Should: reject it",
-			calls: 1, extra: []Middleware{MiddlewareFunc(nil)}, wantErr: ErrInvalidStep,
+			calls: [][]string{{}}, extra: []Middleware{MiddlewareFunc(nil)}, wantErr: ErrInvalidStep,
 		},
 		{
 			name:  "[Fail] When: an entry is a nil pointer middleware ; Should: reject it",
-			calls: 1, extra: []Middleware{(*tagMiddleware)(nil)}, wantErr: ErrInvalidStep,
+			calls: [][]string{{}}, extra: []Middleware{(*tagMiddleware)(nil)}, wantErr: ErrInvalidStep,
 		},
 		{
-			name:  "[Fail] When: WithMiddleware is called twice ; Should: reject it",
-			names: []string{outerMW}, calls: 2, wantErr: ErrInvalidStep,
+			name:  "[Fail] When: the second call holds a nil entry ; Should: reject it",
+			calls: [][]string{{outerMW}, {}}, extra: []Middleware{nil}, wantErr: ErrInvalidStep,
 		},
 	}
 
@@ -831,20 +851,23 @@ func Test_WithMiddleware(t *testing.T) {
 
 			rec := &recorder{}
 
-			mws := append(middlewaresOf(rec, tt.names), tt.extra...)
+			given := middlewareCalls(rec, tt.calls, tt.extra)
+
+			opts := make([]Option, 0, len(given))
+			for _, mws := range given {
+				opts = append(opts, WithMiddleware(mws...))
+			}
 
 			var second Flow = act("b", okAction)
 			if tt.pivot {
 				second = paying("b", okAction)
 			}
 
-			opts := slices.Repeat([]Option{WithMiddleware(mws...)}, tt.calls)
-
 			s, err := New[tripState](tripName, Sequence(act("a", okAction), second), opts...)
 			require.ErrorIs(t, err, tt.wantErr)
 
 			if tt.changeAfterNew {
-				overwrite(mws)
+				overwrite(given)
 			}
 
 			if s != nil {
@@ -952,7 +975,7 @@ func Test_checkRepeats(t *testing.T) {
 	}{
 		{
 			name:  "[Success] When: each option is given once ; Should: find nothing",
-			given: map[string]int{"WithJournal": 1, "WithMiddleware": 1},
+			given: map[string]int{"WithJournal": 1, "WithSecretStore": 1},
 			want:  nil,
 		},
 		{
@@ -963,7 +986,7 @@ func Test_checkRepeats(t *testing.T) {
 		},
 		{
 			name:  "[Fail] When: two options repeat ; Should: report each one in name order",
-			given: map[string]int{"WithRecoveryTimeout": 2, "WithJournal": 3, "WithMiddleware": 1},
+			given: map[string]int{"WithRecoveryTimeout": 2, "WithJournal": 3, "WithSecretStore": 1},
 			want:  []string{"WithJournal given more than once", "WithRecoveryTimeout given more than once"},
 		},
 		{
