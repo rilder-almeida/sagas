@@ -31,6 +31,10 @@ func (b *lockedBuffer) records(tb testing.TB, execution, level string) []map[str
 	lines := bytes.NewBufferString(b.buf.String())
 	b.mu.Unlock()
 
+	if lines.Len() == 0 {
+		return nil
+	}
+
 	var found []map[string]any
 
 	for _, rec := range decodeRecords(tb, lines) {
