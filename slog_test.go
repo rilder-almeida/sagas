@@ -33,7 +33,7 @@ func decodeRecords(tb testing.TB, out *bytes.Buffer) []map[string]any {
 func assertErrorAttr(tb testing.TB, rec map[string]any, want string) {
 	tb.Helper()
 
-	const baseKeys = 9
+	const baseKeys = 10
 
 	if want == "" {
 		assert.Len(tb, rec, baseKeys)
@@ -184,6 +184,7 @@ func Test_Slog_Wrap(t *testing.T) {
 					assert.Equal(t, tt.attempts[i].wantLevel, rec["level"])
 					assert.Equal(t, tt.info.Saga, rec["saga"])
 					assert.Equal(t, tt.info.Execution, rec["execution"])
+					assert.Equal(t, tt.info.IdempotencyKey(), rec["idempotency_key"])
 					assert.Equal(t, tt.info.Step, rec["step"])
 					assert.Equal(t, tt.wantPhase, rec["phase"])
 					assert.InDelta(t, float64(tt.attempts[i].wantAttempt), rec["attempt"], 0)

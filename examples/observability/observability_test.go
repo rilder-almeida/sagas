@@ -69,13 +69,15 @@ func Test_run(t *testing.T) {
 		{
 			name:      "[Success] When: the writer accepts all writes ; Should: log each attempt and the retry",
 			newWriter: bufferWriter,
-			wantOutput: `{"level":"INFO","msg":"sagas: attempt","idempotency_key":"order/order-1/reserve",` +
-				`"saga":"order","execution":"order-1","step":"reserve","phase":"execute","attempt":1}` + "\n" +
-				`{"level":"WARN","msg":"sagas: attempt","idempotency_key":"order/order-1/charge",` +
-				`"saga":"order","execution":"order-1","step":"charge","phase":"execute","attempt":1,` +
-				`"error":"provider busy"}` + "\n" +
-				`{"level":"INFO","msg":"sagas: attempt","idempotency_key":"order/order-1/charge",` +
-				`"saga":"order","execution":"order-1","step":"charge","phase":"execute","attempt":2}` + "\n",
+			wantOutput: `{"level":"INFO","msg":"sagas: attempt","request_id":"req-7","saga":"order",` +
+				`"execution":"order-1","idempotency_key":"order/order-1/reserve","step":"reserve",` +
+				`"phase":"execute","attempt":1}` + "\n" +
+				`{"level":"WARN","msg":"sagas: attempt","request_id":"req-7","saga":"order",` +
+				`"execution":"order-1","idempotency_key":"order/order-1/charge","step":"charge",` +
+				`"phase":"execute","attempt":1,"error":"provider busy"}` + "\n" +
+				`{"level":"INFO","msg":"sagas: attempt","request_id":"req-7","saga":"order",` +
+				`"execution":"order-1","idempotency_key":"order/order-1/charge","step":"charge",` +
+				`"phase":"execute","attempt":2}` + "\n",
 		},
 		{
 			name:      "[Fail] When: the writer fails ; Should: return the write error and write nothing",
@@ -148,27 +150,36 @@ func Test_execute(t *testing.T) {
 	}
 }
 
-func Test_keyLog_Wrap(t *testing.T) {
+func Test_requestLog_Wrap(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
+		request  string
 		info     sagas.CallInfo
 		callErr  error
 		wantLine string
 	}{
 		{
-			name: "[Success] When: the call succeeds ; Should: log at info with the idempotency key",
-			info: sagas.CallInfo{Saga: "s", Execution: "e-1", Step: "a", Phase: sagas.PhaseExecute, Attempt: 1},
-			wantLine: `{"level":"INFO","msg":"sagas: attempt","idempotency_key":"s/e-1/a",` +
-				`"saga":"s","execution":"e-1","step":"a","phase":"execute","attempt":1}` + "\n",
+			name:    "[Success] When: the call succeeds ; Should: log at info with the request ID and the key once",
+			request: "req-1",
+			info:    sagas.CallInfo{Saga: "s", Execution: "e-1", Step: "a", Phase: sagas.PhaseExecute, Attempt: 1},
+			wantLine: `{"level":"INFO","msg":"sagas: attempt","request_id":"req-1","saga":"s","execution":"e-1",` +
+				`"idempotency_key":"s/e-1/a","step":"a","phase":"execute","attempt":1}` + "\n",
 		},
 		{
-			name:    "[Fail] When: the call fails ; Should: log at warn with key and error, and return it",
+			name:    "[Fail] When: the call fails ; Should: log at warn with the request ID and error, and return it",
+			request: "req-2",
 			info:    sagas.CallInfo{Saga: "s", Execution: "e-2", Step: "b", Phase: sagas.PhaseCompensate, Attempt: 3},
 			callErr: errRefused,
-			wantLine: `{"level":"WARN","msg":"sagas: attempt","idempotency_key":"s/e-2/b",` +
-				`"saga":"s","execution":"e-2","step":"b","phase":"compensate","attempt":3,"error":"refused"}` + "\n",
+			wantLine: `{"level":"WARN","msg":"sagas: attempt","request_id":"req-2","saga":"s","execution":"e-2",` +
+				`"idempotency_key":"s/e-2/b","step":"b","phase":"compensate","attempt":3,"error":"refused"}` + "\n",
+		},
+		{
+			name: "[Success] When: the context holds no request ID ; Should: log the request ID none",
+			info: sagas.CallInfo{Saga: "s", Execution: "e-3", Step: "c", Phase: sagas.PhaseExecute, Attempt: 1},
+			wantLine: `{"level":"INFO","msg":"sagas: attempt","request_id":"none","saga":"s","execution":"e-3",` +
+				`"idempotency_key":"s/e-3/c","step":"c","phase":"execute","attempt":1}` + "\n",
 		},
 	}
 
@@ -178,9 +189,14 @@ func Test_keyLog_Wrap(t *testing.T) {
 
 			var out bytes.Buffer
 
-			mw := keyLog{logger: newLogger(&out)}
+			ctx := t.Context()
+			if tt.request != "" {
+				ctx = withRequest(ctx, tt.request)
+			}
 
-			err := mw.Wrap(t.Context(), tt.info, func(context.Context) error { return tt.callErr })
+			mw := requestLog{logger: newLogger(&out)}
+
+			err := mw.Wrap(ctx, tt.info, func(context.Context) error { return tt.callErr })
 
 			require.ErrorIs(t, err, tt.callErr)
 			assert.Equal(t, tt.wantLine, out.String())

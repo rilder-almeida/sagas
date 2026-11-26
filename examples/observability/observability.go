@@ -99,19 +99,28 @@ func newLogger(w io.Writer) *slog.Logger {
 
 // --8<-- [end:slog]
 
-// --8<-- [start:keylog]
+// --8<-- [start:requestlog]
 
-type keyLog struct {
+type requestKey struct{}
+
+func withRequest(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestKey{}, id)
+}
+
+type requestLog struct {
 	logger *slog.Logger
 }
 
-func (k keyLog) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
-	keyed := k.logger.With("idempotency_key", info.IdempotencyKey())
+func (r requestLog) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
+	id, ok := ctx.Value(requestKey{}).(string)
+	if !ok {
+		id = "none"
+	}
 
-	return sagas.Slog{Logger: keyed}.Wrap(ctx, info, call)
+	return sagas.Slog{Logger: r.logger.With("request_id", id)}.Wrap(ctx, info, call)
 }
 
-// --8<-- [end:keylog]
+// --8<-- [end:requestlog]
 
 // --8<-- [start:saga]
 
@@ -124,7 +133,7 @@ func newSaga(logger *slog.Logger) (*sagas.Saga[order], error) {
 	retry := sagas.RetryPolicy{Attempts: attempts, Initial: retryDelay, NoJitter: true}
 	flow := sagas.Sequence(&reserve{}, &charge{RetryPolicy: retry, provider: newProvider()})
 
-	return sagas.New[order]("order", flow, sagas.WithMiddleware(keyLog{logger: logger}))
+	return sagas.New[order]("order", flow, sagas.WithMiddleware(requestLog{logger: logger}))
 }
 
 // --8<-- [end:saga]
@@ -164,7 +173,7 @@ func run(w io.Writer) error {
 		return err
 	}
 
-	runErr := saga.Run(context.Background(), &order{ID: "order-1"})
+	runErr := saga.Run(withRequest(context.Background(), "req-7"), &order{ID: "order-1"})
 
 	return errors.Join(runErr, out.failure())
 }

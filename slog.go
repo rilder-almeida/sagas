@@ -20,6 +20,7 @@ func (s Slog) Wrap(ctx context.Context, info CallInfo, call Call) error {
 	attrs := []slog.Attr{
 		slog.String("saga", info.Saga),
 		slog.String("execution", info.Execution),
+		slog.String("idempotency_key", info.IdempotencyKey()),
 		slog.String("step", info.Step),
 		slog.String("phase", string(info.Phase)),
 		slog.Int("attempt", info.Attempt),

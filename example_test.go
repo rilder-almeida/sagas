@@ -195,7 +195,7 @@ func ExampleIdempotencyKey() {
 
 func ExampleSlog() {
 	drop := func(_ []string, a slog.Attr) slog.Attr {
-		if a.Key == slog.TimeKey || a.Key == "duration" {
+		if a.Key == slog.TimeKey || a.Key == slog.MessageKey || a.Key == "duration" {
 			return slog.Attr{}
 		}
 
@@ -209,10 +209,10 @@ func ExampleSlog() {
 	}
 
 	// Output:
-	// level=INFO msg="sagas: attempt" saga=trip execution=trip-42 step=flight phase=execute attempt=1
-	// level=INFO msg="sagas: attempt" saga=trip execution=trip-42 step=hotel phase=execute attempt=1
-	// level=INFO msg="sagas: attempt" saga=trip execution=trip-42 step=charge phase=pivot attempt=1
-	// level=INFO msg="sagas: attempt" saga=trip execution=trip-42 step=email phase=execute attempt=1
+	// level=INFO saga=trip execution=trip-42 idempotency_key=trip/trip-42/flight step=flight phase=execute attempt=1
+	// level=INFO saga=trip execution=trip-42 idempotency_key=trip/trip-42/hotel step=hotel phase=execute attempt=1
+	// level=INFO saga=trip execution=trip-42 idempotency_key=trip/trip-42/charge step=charge phase=pivot attempt=1
+	// level=INFO saga=trip execution=trip-42 idempotency_key=trip/trip-42/email step=email phase=execute attempt=1
 }
 
 type seat struct{ sagas.Step[trip, hotelRef] }
