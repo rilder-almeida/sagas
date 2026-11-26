@@ -601,7 +601,7 @@ func Test_WithSecretStore(t *testing.T) {
 				return
 			}
 
-			require.NoError(t, s.Run(t.Context(), &ledgerState{ID: ledgerID, Card: "4111"}))
+			require.NoError(t, s.Run(t.Context(), &ledgerState{ID: ledgerID, Card: visa4111}))
 
 			events, err := journal.Events(t.Context(), ledgerID)
 			require.NoError(t, err)

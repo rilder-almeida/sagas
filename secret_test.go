@@ -13,7 +13,7 @@ const (
 	secretExecution = "exec-1"
 	secretWriter    = "w1"
 	cardField       = "Card"
-	cardJSON        = `"4111"`
+	cardJSON        = `"visa-4111"`
 )
 
 type secretPut struct {

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1110,6 +1111,10 @@ func assertPanic(t *testing.T, err, want error) {
 	t.Helper()
 
 	if want == nil {
+		for _, other := range []error{errJournalPanic, errSecretsPanic} {
+			require.NotErrorIs(t, err, other, "a journal or secret store panic in the chain")
+		}
+
 		return
 	}
 
@@ -2434,16 +2439,16 @@ func (s *scriptSecrets) storedByAnyWriter(execution string, seq int, field strin
 	})
 }
 
-type secretReadingJournal struct {
+type secretReadingJournal[S any] struct {
 	*MemoryJournal
 
 	secrets SecretStore
 	misses  []string
 }
 
-func (j *secretReadingJournal) Append(ctx context.Context, e *Event) error {
+func (j *secretReadingJournal[S]) Append(ctx context.Context, e *Event) error {
 	for _, v := range e.Values {
-		field, found := reflect.TypeFor[ledgerState]().FieldByName(v.Field)
+		field, found := reflect.TypeFor[S]().FieldByName(v.Field)
 		if !found || !fieldTagRules(&field).secret {
 			continue
 		}
@@ -2486,11 +2491,12 @@ type ledgerSecret struct {
 	value string
 }
 
-func ledgerPut(seq int, field, value string) ledgerSecret {
-	return ledgerSecret{seq: seq, field: field, value: value}
+type ledgerSlot struct {
+	seq   int
+	field string
 }
 
-func assertSecrets(t *testing.T, secrets *scriptSecrets, writer string, held, missing []ledgerSecret) {
+func assertSecrets(t *testing.T, secrets *scriptSecrets, writer string, held []ledgerSecret, missing []ledgerSlot) {
 	t.Helper()
 
 	for _, p := range held {
@@ -2507,6 +2513,11 @@ func assertSecrets(t *testing.T, secrets *scriptSecrets, writer string, held, mi
 	}
 }
 
+const (
+	visa4111 = "visa-4111"
+	visa5500 = "visa-5500"
+)
+
 type ledgerRerun struct {
 	initial ledgerState
 	wantErr error
@@ -2522,16 +2533,6 @@ func rerunLedger(t *testing.T, s *Saga[ledgerState], rerun *ledgerRerun) {
 	st := rerun.initial
 	st.ID = ledgerID
 	require.ErrorIs(t, s.Run(t.Context(), &st), rerun.wantErr)
-}
-
-func eventTexts(events []Event) string {
-	var b strings.Builder
-
-	for i := range events {
-		fmt.Fprintf(&b, "%+v %+v\n", events[i].Values, events[i].Err)
-	}
-
-	return b.String()
 }
 
 func writerOf(events []Event) string {
@@ -2560,15 +2561,15 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		wantEvents  int
 		wantValues  map[int][]FieldValue
 		wantSecrets []ledgerSecret
-		wantMissing []ledgerSecret
+		wantMissing []ledgerSlot
 		wantPanic   error
 	}{
 		{
 			name: "[Success] When: the steps return a nil slice and a secret card ; " +
 				"Should: record null, name each secret field with an empty value and keep its value in the store",
-			initial:    ledgerState{Card: "4111"},
-			card:       "5500",
-			wantHidden: []string{"4111", "5500"},
+			initial:    ledgerState{Card: visa4111},
+			card:       visa5500,
+			wantHidden: []string{visa4111, visa5500},
 			wantEvents: 8,
 			wantValues: map[int][]FieldValue{
 				1:       ledgerStarted("null"),
@@ -2577,19 +2578,28 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 				seqTip:  {secretValue(tipField)},
 			},
 			wantSecrets: []ledgerSecret{
-				ledgerPut(1, cardField, cardJSON), ledgerPut(1, tipField, "0"),
-				ledgerPut(seqCard, cardField, `"5500"`), ledgerPut(seqTip, tipField, "0"),
+				{seq: 1, field: cardField, value: cardJSON},
+				{seq: 1, field: tipField, value: "0"},
+				{seq: seqCard, field: cardField, value: strconv.Quote(visa5500)},
+				{seq: seqTip, field: tipField, value: "0"},
 			},
 		},
 		{
 			name: "[Success] When: a second run of the same execution shares the journal and the secret store ; " +
 				"Should: refuse it with ErrExecutionExists and keep the secret of the first run",
-			initial:     ledgerState{Card: "4111"},
-			card:        "5500",
-			rerun:       &ledgerRerun{initial: ledgerState{Card: "9999"}, wantErr: ErrExecutionExists},
-			wantHidden:  []string{"4111", "9999"},
-			wantEvents:  8,
-			wantSecrets: []ledgerSecret{ledgerPut(1, cardField, cardJSON), ledgerPut(seqCard, cardField, `"5500"`)},
+			initial:    ledgerState{Card: visa4111},
+			card:       visa5500,
+			rerun:      &ledgerRerun{initial: ledgerState{Card: "visa-9999"}, wantErr: ErrExecutionExists},
+			wantHidden: []string{visa4111, "visa-9999"},
+			wantEvents: 8,
+			wantSecrets: []ledgerSecret{
+				{
+					seq:   1,
+					field: cardField,
+					value: cardJSON,
+				},
+				{seq: seqCard, field: cardField, value: strconv.Quote(visa5500)},
+			},
 		},
 		{
 			name: "[Success] When: a step returns the rooms the state already held ; " +
@@ -2605,51 +2615,51 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 		{
 			name: "[Fail] When: the put of the card success fails once ; " +
 				"Should: end as a journal failure and put the card again under the same seq before the resend",
-			card:        "5500",
+			card:        visa5500,
 			putFails:    map[int]int{seqCard: 1},
 			wantErrs:    []error{ErrJournal, errSecretsDown},
-			wantHidden:  []string{"5500"},
+			wantHidden:  []string{visa5500},
 			wantEvents:  6,
 			wantValues:  map[int][]FieldValue{seqCard: {secretValue(cardField)}},
-			wantSecrets: []ledgerSecret{ledgerPut(seqCard, cardField, `"5500"`)},
+			wantSecrets: []ledgerSecret{{seq: seqCard, field: cardField, value: strconv.Quote(visa5500)}},
 		},
 		{
 			name: "[Fail] When: every put of the card success fails ; " +
 				"Should: end as a journal failure and never append the card success",
-			card:        "5500",
+			card:        visa5500,
 			putFails:    map[int]int{seqCard: forever},
 			wantErrs:    []error{ErrJournal, errSecretsDown},
-			wantHidden:  []string{"5500"},
+			wantHidden:  []string{visa5500},
 			wantEvents:  4,
-			wantMissing: []ledgerSecret{ledgerPut(seqCard, cardField, "")},
+			wantMissing: []ledgerSlot{{seq: seqCard, field: cardField}},
 		},
 		{
 			name: "[Fail] When: the put of saga-started fails ; " +
 				"Should: return the journal failure and append nothing",
-			initial:     ledgerState{Card: "4111"},
+			initial:     ledgerState{Card: visa4111},
 			putFails:    map[int]int{1: forever},
 			wantErrs:    []error{ErrJournal, errSecretsDown},
-			wantHidden:  []string{"4111"},
-			wantMissing: []ledgerSecret{ledgerPut(1, cardField, "")},
+			wantHidden:  []string{visa4111},
+			wantMissing: []ledgerSlot{{seq: 1, field: cardField}},
 		},
 		{
 			name: "[Fail] When: every put of the card success panics ; " +
 				"Should: end as a journal failure with the panic in the chain and never append the card success",
-			card:        "5500",
+			card:        visa5500,
 			putPanics:   map[int]bool{seqCard: true},
 			wantErrs:    []error{ErrJournal, errSecretsPanic},
-			wantHidden:  []string{"5500"},
+			wantHidden:  []string{visa5500},
 			wantEvents:  4,
-			wantMissing: []ledgerSecret{ledgerPut(seqCard, cardField, "")},
+			wantMissing: []ledgerSlot{{seq: seqCard, field: cardField}},
 			wantPanic:   errSecretsPanic,
 		},
 		{
 			name: "[Fail] When: the put of saga-started panics ; " +
 				"Should: return the journal failure with the panic in the chain and append nothing",
-			initial:    ledgerState{Card: "4111"},
+			initial:    ledgerState{Card: visa4111},
 			putPanics:  map[int]bool{1: true},
 			wantErrs:   []error{ErrJournal, errSecretsPanic},
-			wantHidden: []string{"4111"},
+			wantHidden: []string{visa4111},
 			wantPanic:  errSecretsPanic,
 		},
 		{
@@ -2679,7 +2689,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 				MemorySecretStore: NewMemorySecretStore(), fails: tt.putFails, failed: map[int]int{},
 				panics: tt.putPanics,
 			}
-			journal := &secretReadingJournal{MemoryJournal: NewMemoryJournal(), secrets: secrets}
+			journal := &secretReadingJournal[ledgerState]{MemoryJournal: NewMemoryJournal(), secrets: secrets}
 			s := ledgerSaga(t, tt.rooms, tt.card, tt.tip, WithJournal(journal), WithSecretStore(secrets))
 
 			st := tt.initial
@@ -2704,7 +2714,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 			assert.Empty(t, journal.misses)
 
 			for _, hidden := range tt.wantHidden {
-				assert.NotContains(t, eventTexts(events), hidden)
+				assert.NotContains(t, fmt.Sprintf("%+v", events), hidden)
 			}
 
 			for seq, want := range tt.wantValues {
