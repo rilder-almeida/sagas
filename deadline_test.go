@@ -159,7 +159,7 @@ func Test_graceContext_releaseWaits(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				gate := make(chan struct{})
-				_, _, release := graceContext(&gatedContext{gate: gate}, time.Minute)
+				_, _, release := graceContext(&gatedContext{gate: gate, free: 1}, time.Minute)
 
 				returned := make(chan struct{})
 
@@ -181,13 +181,14 @@ func Test_graceContext_releaseWaits(t *testing.T) {
 
 type gatedContext struct {
 	gate  chan struct{}
+	free  int32
 	calls atomic.Int32
 }
 
 func (*gatedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
 
 func (c *gatedContext) Done() <-chan struct{} {
-	if c.calls.Add(1) > 1 {
+	if c.calls.Add(1) > c.free {
 		<-c.gate
 	}
 
@@ -221,34 +222,58 @@ func Test_graceBound_deadline(t *testing.T) {
 	const grace = time.Minute
 
 	tests := []struct {
-		name     string
-		deadline time.Duration
-		cancelAt time.Duration
-		readAt   time.Duration
-		wantEnd  time.Duration
+		name    string
+		limit   time.Duration
+		closeAt time.Duration
+		reads   []time.Duration
+		wantEnd time.Duration
 	}{
 		{
-			name:   "[Success] When: the caller did not end ; Should: report no bound",
-			readAt: time.Hour,
+			name:  "[Success] When: the caller channel never closes ; Should: report no bound",
+			reads: []time.Duration{time.Hour},
 		},
 		{
-			name: "[Success] When: the bound is read at the instant the caller cancels ; " +
-				"Should: report t plus the grace period",
-			cancelAt: time.Second,
-			readAt:   time.Second,
-			wantEnd:  time.Second + grace,
+			name: "[Success] When: the bound is read at the instant the caller channel closes ; " +
+				"Should: record that instant",
+			closeAt: time.Second,
+			reads:   []time.Duration{time.Second},
+			wantEnd: time.Second + grace,
 		},
 		{
-			name:     "[Success] When: the bound is read after the caller cancelled at t ; Should: keep t",
-			cancelAt: time.Second,
-			readAt:   time.Hour,
-			wantEnd:  time.Second + grace,
+			name:    "[Success] When: the bound is read again later ; Should: keep the instant of the first read",
+			closeAt: time.Second,
+			reads:   []time.Duration{time.Second, time.Hour},
+			wantEnd: time.Second + grace,
 		},
 		{
-			name:     "[Success] When: the caller deadline D passed ; Should: report D plus the grace period",
-			deadline: time.Hour,
-			readAt:   2 * time.Hour,
-			wantEnd:  time.Hour + grace,
+			name: "[Success] When: the first read comes after the caller channel closed ; " +
+				"Should: record the read instant",
+			closeAt: time.Second,
+			reads:   []time.Duration{time.Hour},
+			wantEnd: time.Hour + grace,
+		},
+		{
+			name:    "[Success] When: the first read comes before the caller limit ; Should: record the read instant",
+			limit:   time.Hour,
+			closeAt: time.Second,
+			reads:   []time.Duration{time.Second},
+			wantEnd: time.Second + grace,
+		},
+		{
+			name: "[Success] When: the caller channel closed at its limit and the first read comes later ; " +
+				"Should: record the limit",
+			limit:   time.Hour,
+			closeAt: time.Hour,
+			reads:   []time.Duration{2 * time.Hour},
+			wantEnd: time.Hour + grace,
+		},
+		{
+			name: "[Success] When: the caller channel closed before its limit and the first read comes after it ; " +
+				"Should: record the limit",
+			limit:   time.Hour,
+			closeAt: time.Second,
+			reads:   []time.Duration{2 * time.Hour},
+			wantEnd: time.Hour + grace,
 		},
 	}
 
@@ -258,21 +283,27 @@ func Test_graceBound_deadline(t *testing.T) {
 
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
+				caller := make(chan struct{})
+				bound := &graceBound{grace: grace, caller: caller}
 
-				ctx, cancel := callerContext(t, start, tt.deadline)
-				defer cancel()
-
-				_, bound, release := graceContext(ctx, grace)
-				defer release()
-
-				if tt.cancelAt > 0 {
-					time.Sleep(tt.cancelAt)
-					cancel()
+				if tt.limit > 0 {
+					bound.limit = start.Add(tt.limit)
 				}
 
-				time.Sleep(tt.readAt - tt.cancelAt)
+				if tt.closeAt > 0 {
+					time.AfterFunc(tt.closeAt, func() { close(caller) })
+				}
 
-				assert.Equal(t, tt.wantEnd, boundAfter(bound, start))
+				var got time.Duration
+
+				for _, at := range tt.reads {
+					time.Sleep(at - time.Since(start))
+					synctest.Wait()
+
+					got = boundAfter(bound, start)
+				}
+
+				assert.Equal(t, tt.wantEnd, got)
 			})
 		})
 	}
