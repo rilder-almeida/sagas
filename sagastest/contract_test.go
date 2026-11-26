@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
+	"iter"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/rilder-almeida/sagas"
@@ -50,9 +51,6 @@ var (
 	errShipAgain    = errors.New("ship already sent")
 	errNoLateAction = errors.New("no late action")
 )
-
-const noCallReport = "the clean run recorded no call: Setup must pass mw to sagas.WithMiddleware, " +
-	"or every step is disabled in the setup state"
 
 type ledger struct {
 	mu      sync.Mutex
@@ -325,51 +323,283 @@ func newNotify() *notifyStep {
 
 func (*notifyStep) Execute(context.Context, probeState) error { return nil }
 
-func Test_planOf(t *testing.T) {
+type shopServices struct {
+	book      *ledger
+	nth       int
+	flowCalls int
+	build     func(s *shopServices) *sagas.Group
+	late      lateAction
+	opts      []sagas.Option
+}
+
+type lateAction func(book *ledger, step, key string) error
+
+func newShopServices(d defect, nth int, build func(*shopServices) *sagas.Group, late lateAction) *shopServices {
+	return &shopServices{book: newLedger(d), nth: nth, build: build, late: late}
+}
+
+func (s *shopServices) Flow() *sagas.Group {
+	s.flowCalls++
+
+	return s.build(s)
+}
+
+func (s *shopServices) Check(context.Context, *probeState) error { return s.book.check() }
+
+func (s *shopServices) ExecuteLate(_ context.Context, _ *probeState, step, key string) error {
+	return s.late(s.book, step, key)
+}
+
+func (s *shopServices) Options() []sagas.Option { return s.opts }
+
+func lateCharge(book *ledger, step, key string) error {
+	if step != stepCharge {
+		return fmt.Errorf("%w: step %q", errNoLateAction, step)
+	}
+
+	return book.charge(key)
+}
+
+func lateRefused(*ledger, string, string) error { return errRefused }
+
+func lateChargeRefused(book *ledger, step, key string) error {
+	return errors.Join(lateCharge(book, step, key), errRefused)
+}
+
+func chargeThenShip(s *shopServices) *sagas.Group {
+	return sagas.Sequence(newCharge(s.book), newShip(nil))
+}
+
+func shipFailsInCases(next func(book *ledger) sagas.Flow) func(*shopServices) *sagas.Group {
+	return func(s *shopServices) *sagas.Group {
+		var err error
+		if s.nth > 1 {
+			err = errBoom
+		}
+
+		return sagas.Sequence(newShip(err), next(s.book))
+	}
+}
+
+func pivotFlow(attempts int, bump bool) func(*shopServices) *sagas.Group {
+	return func(s *shopServices) *sagas.Group {
+		return sagas.Sequence(newCharge(s.book), newLedgerPivot(s.book, attempts, bump), newLedgerShip(s.book))
+	}
+}
+
+func swallowing() []sagas.Option {
+	return []sagas.Option{sagas.WithMiddleware(sagas.MiddlewareFunc(
+		func(ctx context.Context, _ sagas.CallInfo, call sagas.Call) error {
+			if err := call(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+
+			return nil
+		},
+	))}
+}
+
+type caseResult struct {
+	name string
+	err  error
+}
+
+func runAll[W any](ctx context.Context, cases iter.Seq[Case[W]], newServices func() W) []caseResult {
+	var results []caseResult
+
+	for c := range cases {
+		results = append(results, caseResult{name: c.Name, err: c.Run(ctx, newServices())})
+	}
+
+	return results
+}
+
+func assertResults(t *testing.T, results []caseResult, wantCases []string, wantErrs [][]error) {
+	t.Helper()
+
+	names := make([]string, 0, len(results))
+	for _, r := range results {
+		names = append(names, r.name)
+	}
+
+	require.Equal(t, wantCases, names)
+	require.Len(t, wantErrs, len(results))
+
+	for i, r := range results {
+		if len(wantErrs[i]) == 0 {
+			require.NoError(t, r.err, r.name)
+		}
+
+		for _, want := range wantErrs[i] {
+			assert.ErrorIs(t, r.err, want, r.name)
+		}
+	}
+}
+
+func assertProbe(t *testing.T, err error, wantErr []error) {
+	t.Helper()
+
+	if len(wantErr) == 0 {
+		require.NoError(t, err)
+	}
+
+	for _, want := range wantErr {
+		require.ErrorIs(t, err, want)
+	}
+}
+
+func compensationNames(steps ...string) []string {
+	names := make([]string, 0, 3*len(steps))
+	for _, step := range steps {
+		names = append(names, step+" never applied", step+" compensation runs twice",
+			step+" step lands after its compensation")
+	}
+
+	return names
+}
+
+func pivotNames(forwardOnly ...string) []string {
+	names := make([]string, 0, 1+len(forwardOnly))
+	names = append(names, stepPivot+" unknown outcome")
+
+	for _, step := range forwardOnly {
+		names = append(names, step+" step repeated")
+	}
+
+	return names
+}
+
+func Test_CompensationCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		flow        sagas.Flow
-		wantSteps   []string
-		wantPivot   string
-		wantForward []string
-		wantErr     error
+		name      string
+		defect    defect
+		flow      func(*shopServices) *sagas.Group
+		late      lateAction
+		wantErr   []error
+		wantCases []string
+		wantErrs  [][]error
 	}{
 		{
-			name: "[Success] When: two forward-only steps run in parallel after the pivot ; " +
-				"Should: list both in the forward-only zone",
-			flow: sagas.Sequence(
-				newCharge(newLedger(sound)), newPivotStep(), sagas.Parallel(newForwardShip(nil), newNotify()),
-			),
-			wantSteps:   []string{stepCharge, stepPivot, stepShip, stepNotify},
-			wantPivot:   stepPivot,
-			wantForward: []string{stepShip, stepNotify},
+			name:      "[Success] When: the ledger keeps tombstones and refunds once ; Should: pass every case",
+			flow:      chargeThenShip,
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{nil, nil, nil},
 		},
 		{
-			name: "[Success] When: a step runs two hops after the pivot ; " +
-				"Should: list it in the forward-only zone too",
-			flow: sagas.Sequence(
-				newCharge(newLedger(sound)), newPivotStep(), newForwardShip(nil), newNotify(),
-			),
-			wantSteps:   []string{stepCharge, stepPivot, stepShip, stepNotify},
-			wantPivot:   stepPivot,
-			wantForward: []string{stepShip, stepNotify},
+			name: "[Fail] When: the refund fails on a charge that never landed ; " +
+				"Should: fail the cases where the charge never landed with ErrOutcome",
+			defect:    refundFailsUnapplied,
+			flow:      chargeThenShip,
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{{ErrOutcome, errNoCharge}, nil, {ErrOutcome, errNoCharge}},
 		},
 		{
-			name:      "[Success] When: the flow has no pivot ; Should: give no pivot name and an empty zone",
-			flow:      sagas.Sequence(newCharge(newLedger(sound)), newShip(nil)),
-			wantSteps: []string{stepCharge, stepShip},
+			name: "[Fail] When: the refund posts twice and the run still ends compensated ; " +
+				"Should: fail the twice case with ErrCheck",
+			defect:    refundTwice,
+			flow:      chargeThenShip,
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{nil, {ErrCheck, errRefundedMore}, nil},
 		},
 		{
-			name:      "[Success] When: a step has Enabled ; Should: still list it among the steps",
-			flow:      sagas.Sequence(newDisabledCharge(newLedger(sound)), newShip(nil)),
-			wantSteps: []string{stepCharge, stepShip},
+			name: "[Fail] When: the refund of a landed charge has no guard against a second refund ; " +
+				"Should: fail the twice case with ErrCheck",
+			defect:    refundLandedTwice,
+			flow:      chargeThenShip,
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{nil, {ErrCheck, errRefundedMore}, nil},
 		},
 		{
-			name:    "[Fail] When: a step after the pivot has Compensate ; Should: return the error of Inspect",
-			flow:    sagas.Sequence(newPivotStep(), newCharge(newLedger(sound))),
-			wantErr: sagas.ErrInvalidStep,
+			name: "[Fail] When: the charge ignores the refund tombstone ; " +
+				"Should: fail the late case with ErrCheck",
+			defect:    chargeIgnoresRefund,
+			flow:      chargeThenShip,
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{nil, nil, {ErrCheck, errUnbalanced}},
+		},
+		{
+			name:      "[Success] When: ExecuteLate returns an error and Check passes ; Should: drop the reply",
+			flow:      chargeThenShip,
+			late:      lateRefused,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{nil, nil, nil},
+		},
+		{
+			name: "[Fail] When: ExecuteLate returns an error and Check fails ; " +
+				"Should: join the reply with the Check error",
+			defect:    chargeIgnoresRefund,
+			flow:      chargeThenShip,
+			late:      lateChargeRefused,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{nil, nil, {ErrCheck, errUnbalanced, errRefused}},
+		},
+		{
+			name: "[Fail] When: Flow names fewer steps than the clean run called ; " +
+				"Should: return ErrCleanRun and no case",
+			flow: func(s *shopServices) *sagas.Group {
+				if s.flowCalls == 1 {
+					return sagas.Sequence(newCharge(s.book))
+				}
+
+				return chargeThenShip(s)
+			},
+			late:    lateCharge,
+			wantErr: []error{ErrCleanRun},
+		},
+		{
+			name: "[Fail] When: Flow is not a valid flow ; Should: return ErrCleanRun with the error of Inspect",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(newPivotStep(), newCharge(s.book))
+			},
+			late:    lateCharge,
+			wantErr: []error{ErrCleanRun, sagas.ErrInvalidStep},
+		},
+		{
+			name: "[Fail] When: a step before the compensable step fails only in the cases ; " +
+				"Should: fail each case with ErrNotStarted and the error of Run",
+			flow:      shipFailsInCases(func(book *ledger) sagas.Flow { return newCharge(book) }),
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{{ErrNotStarted, errBoom}, {ErrNotStarted, errBoom}, {ErrNotStarted, errBoom}},
+		},
+		{
+			name: "[Fail] When: the compensable step is disabled ; Should: fail each case with ErrNotStarted",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(newDisabledCharge(s.book), newShip(nil))
+			},
+			late:      lateCharge,
+			wantCases: compensationNames(stepCharge),
+			wantErrs:  [][]error{{ErrNotStarted}, {ErrNotStarted}, {ErrNotStarted}},
+		},
+		{
+			name: "[Fail] When: the clean run fails ; Should: return ErrCleanRun with the error of Run",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(newCharge(s.book), newShip(errBoom))
+			},
+			late:    lateCharge,
+			wantErr: []error{ErrCleanRun, errBoom},
+		},
+		{
+			name:    "[Fail] When: no step has Compensate ; Should: return ErrNoStepToTest",
+			flow:    func(*shopServices) *sagas.Group { return sagas.Sequence(newShip(nil)) },
+			late:    lateCharge,
+			wantErr: []error{ErrNoStepToTest},
+		},
+		{
+			name: "[Fail] When: every step is disabled in the given state ; " +
+				"Should: return ErrCleanRun because the clean run recorded no call",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(newDisabledCharge(s.book), newDisabledShip(s.book))
+			},
+			late:    lateCharge,
+			wantErr: []error{ErrCleanRun},
 		},
 	}
 
@@ -377,579 +607,145 @@ func Test_planOf(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := planOf[probeState](tt.flow)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
+			nth := 0
+			newServices := func() *shopServices {
+				nth++
+
+				return newShopServices(tt.defect, nth, tt.flow, tt.late)
+			}
+
+			cases, err := CompensationCases(t.Context(), "shop", probeState{ID: runID}, newServices())
+			assertProbe(t, err, tt.wantErr)
+
+			if err != nil {
+				assert.Nil(t, cases)
 
 				return
 			}
 
-			require.NoError(t, err)
-
-			names := make([]string, 0, len(p.steps))
-			for _, s := range p.steps {
-				names = append(names, s.Name)
-			}
-
-			assert.Equal(t, tt.wantSteps, names)
-			assert.Equal(t, tt.wantPivot, p.pivot)
-			assert.Equal(t, tt.wantForward, p.forwardOnly)
+			assertResults(t, runAll(t.Context(), cases, newServices), tt.wantCases, tt.wantErrs)
 		})
 	}
 }
 
-type lateFunc func(ctx context.Context, step, key string) error
-
-func lateCharge(book *ledger) lateFunc {
-	return func(_ context.Context, step, key string) error {
-		if step != stepCharge {
-			return fmt.Errorf("%w: step %q", errNoLateAction, step)
-		}
-
-		return book.charge(key)
-	}
-}
-
-func lateRefused(*ledger) lateFunc {
-	return func(context.Context, string, string) error { return errRefused }
-}
-
-func noLate(*ledger) lateFunc { return nil }
-
-func shopSetup(t *testing.T, d defect, flow func(*ledger) *sagas.Group, late func(*ledger) lateFunc) Setup[probeState] {
-	t.Helper()
-
-	return newShop(func(err error) { require.NoError(t, err) }, d, flow, late)
-}
-
-func newShop(
-	abort func(error), d defect, flow func(*ledger) *sagas.Group, late func(*ledger) lateFunc,
-) Setup[probeState] {
-	return func(mw ...sagas.Middleware) Case[probeState] {
-		book := newLedger(d)
-		f := flow(book)
-
-		saga, err := sagas.New[probeState]("shop", f, sagas.WithMiddleware(mw...))
-		if err != nil {
-			abort(err)
-			panic(err)
-		}
-
-		return Case[probeState]{
-			Saga:  saga,
-			State: &probeState{ID: runID},
-			Check: func(*probeState) error { return book.check() },
-			Flow:  f,
-			Late:  late(book),
-		}
-	}
-}
-
-func declaring(setup Setup[probeState], flow sagas.Flow) Setup[probeState] {
-	return func(mw ...sagas.Middleware) Case[probeState] {
-		c := setup(mw...)
-		c.Flow = flow
-
-		return c
-	}
-}
-
-func chargeThenShip(book *ledger) *sagas.Group { return sagas.Sequence(newCharge(book), newShip(nil)) }
-
-func droppingMiddleware(setup Setup[probeState]) Setup[probeState] {
-	return func(...sagas.Middleware) Case[probeState] { return setup() }
-}
-
-type fakeTB struct {
-	testing.TB
-
-	errors []string
-	logs   []string
-}
-
-func (*fakeTB) Helper() {}
-
-func (f *fakeTB) Context() context.Context {
-	if f.TB == nil {
-		return context.Background()
-	}
-
-	return f.TB.Context()
-}
-
-func (f *fakeTB) Errorf(format string, args ...any) {
-	f.errors = append(f.errors, fmt.Sprintf(format, args...))
-}
-
-func (f *fakeTB) Error(args ...any) {
-	f.errors = append(f.errors, fmt.Sprint(args...))
-}
-
-func (f *fakeTB) Logf(format string, args ...any) {
-	f.logs = append(f.logs, fmt.Sprintf(format, args...))
-}
-
-func Test_Compensations(t *testing.T) {
+func Test_PivotCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		setup      func(t *testing.T) Setup[probeState]
-		wantErrors []string
-		wantCauses []string
-		wantLogs   []string
-		wantSetups int
-	}{
-		{
-			name: "[Success] When: the ledger keeps tombstones and refunds once ; Should: report no error",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, chargeThenShip, lateCharge)
-			},
-			wantSetups: 4,
-		},
-		{
-			name: "[Fail] When: the refund fails on a charge that never landed ; " +
-				"Should: report the cases where the charge never landed",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, refundFailsUnapplied, chargeThenShip, lateCharge)
-			},
-			wantErrors: []string{
-				`step "charge", case "never applied": Run returned .+, want sagas\.ErrCompensated`,
-				`step "charge", case "step lands after its compensation": Run returned .+, want sagas\.ErrCompensated`,
-			},
-			wantCauses: []string{errNoCharge.Error(), errNoCharge.Error()},
-			wantSetups: 4,
-		},
-		{
-			name: "[Fail] When: the refund posts twice and the run still ends compensated ; " +
-				"Should: report the Check error of the twice case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, refundTwice, chargeThenShip, lateCharge)
-			},
-			wantErrors: []string{
-				`step "charge", case "compensation runs twice": ` +
-					`Check: refunded more than once: key "shop/run-1/charge" refunded 2 times`,
-			},
-			wantSetups: 4,
-		},
-		{
-			name: "[Fail] When: the refund of a landed charge has no guard against a second refund ; " +
-				"Should: report the Check error of the twice case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, refundLandedTwice, chargeThenShip, lateCharge)
-			},
-			wantErrors: []string{
-				`step "charge", case "compensation runs twice": ` +
-					`Check: refunded more than once: key "shop/run-1/charge" refunded 2 times`,
-			},
-			wantSetups: 4,
-		},
-		{
-			name: "[Fail] When: the charge ignores the refund tombstone ; Should: report the late case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, chargeIgnoresRefund, chargeThenShip, lateCharge)
-			},
-			wantErrors: []string{
-				`step "charge", case "step lands after its compensation": Check: balance off: balance 100, want 0`,
-			},
-			wantSetups: 4,
-		},
-		{
-			name: "[Fail] When: the case has no Late ; Should: report that Late is nil",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, chargeThenShip, noLate)
-			},
-			wantErrors: []string{`step "charge", case "step lands after its compensation": Case.Late is nil`},
-			wantSetups: 4,
-		},
-		{
-			name: "[Success] When: Late returns an error ; Should: log it and let Check decide",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, chargeThenShip, lateRefused)
-			},
-			wantLogs:   []string{`step "charge", case "step lands after its compensation": Late: late refused`},
-			wantSetups: 4,
-		},
-		{
-			name: "[Fail] When: Case.Flow lacks a step the clean run called ; Should: report that step and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return declaring(shopSetup(t, sound, chargeThenShip, lateCharge), newCharge(newLedger(sound)))
-			},
-			wantErrors: []string{`step "ship" ran in the clean run`},
-			wantSetups: 1,
-		},
-		{
-			name: "[Fail] When: Case.Flow is not a valid flow ; Should: report it and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				invalid := sagas.Sequence(newPivotStep(), newCharge(newLedger(sound)))
-
-				return declaring(shopSetup(t, sound, chargeThenShip, lateCharge), invalid)
-			},
-			wantErrors: []string{"Case.Flow is not a valid flow"},
-			wantSetups: 1,
-		},
-		{
-			name: "[Fail] When: a step before the compensable step fails only in the cases ; " +
-				"Should: report that the step did not start with the error of Run",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				builds := 0
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					builds++
-
-					var err error
-					if builds > 1 {
-						err = errBoom
-					}
-
-					return sagas.Sequence(newShip(err), newCharge(book))
-				}, lateCharge)
-			},
-			wantErrors: []string{
-				`step "charge", case "never applied": the step did not start, Run returned`,
-			},
-			wantCauses: []string{errBoom.Error()},
-			wantSetups: 2,
-		},
-		{
-			name: "[Fail] When: the compensable step is disabled ; Should: report that the step did not start",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newDisabledCharge(book), newShip(nil))
-				}, lateCharge)
-			},
-			wantErrors: []string{`step "charge", case "never applied": the step did not start`},
-			wantSetups: 2,
-		},
-		{
-			name: "[Fail] When: the clean run fails ; Should: report it and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newCharge(book), newShip(errBoom))
-				}, lateCharge)
-			},
-			wantErrors: []string{"the clean run failed"},
-			wantSetups: 1,
-		},
-		{
-			name: "[Fail] When: no step has Compensate ; Should: report it and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				shipOnly := func(*ledger) *sagas.Group { return sagas.Sequence(newShip(nil)) }
-
-				return shopSetup(t, sound, shipOnly, lateCharge)
-			},
-			wantErrors: []string{"no step with Compensate"},
-			wantSetups: 1,
-		},
-		{
-			name: "[Fail] When: Setup drops mw ; Should: report that the clean run recorded no call and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return droppingMiddleware(shopSetup(t, sound, chargeThenShip, lateCharge))
-			},
-			wantErrors: []string{regexp.QuoteMeta(noCallReport)},
-			wantSetups: 1,
-		},
-		{
-			name: "[Fail] When: Setup passes mw but every step is disabled in the setup state ; " +
-				"Should: report that the clean run recorded no call and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newDisabledCharge(book), newDisabledShip(book))
-				}, lateCharge)
-			},
-			wantErrors: []string{regexp.QuoteMeta(noCallReport)},
-			wantSetups: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			setup := tt.setup(t)
-			setups := 0
-			counted := func(mw ...sagas.Middleware) Case[probeState] {
-				setups++
-
-				return setup(mw...)
-			}
-
-			fake := &fakeTB{TB: t}
-			Compensations(fake, counted)
-
-			require.Len(t, fake.errors, len(tt.wantErrors), fake.errors)
-
-			for i, want := range tt.wantErrors {
-				assert.Regexp(t, want, fake.errors[i])
-			}
-
-			require.LessOrEqual(t, len(tt.wantCauses), len(fake.errors))
-
-			for i, cause := range tt.wantCauses {
-				require.NotEmpty(t, cause)
-				assert.Contains(t, fake.errors[i], cause)
-			}
-
-			require.Len(t, fake.logs, len(tt.wantLogs), fake.logs)
-
-			for i, want := range tt.wantLogs {
-				assert.Contains(t, fake.logs[i], want)
-			}
-
-			assert.Equal(t, tt.wantSetups, setups)
-		})
-	}
-}
-
-func swallowing(setup Setup[probeState]) Setup[probeState] {
-	swallow := sagas.MiddlewareFunc(func(ctx context.Context, _ sagas.CallInfo, call sagas.Call) error {
-		if err := call(ctx); !errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-
-		return nil
-	})
-
-	return func(mw ...sagas.Middleware) Case[probeState] {
-		return setup(append([]sagas.Middleware{swallow}, mw...)...)
-	}
-}
-
-func pivotFlow(attempts int, bump bool) func(*ledger) *sagas.Group {
-	return func(book *ledger) *sagas.Group {
-		return sagas.Sequence(newCharge(book), newLedgerPivot(book, attempts, bump), newLedgerShip(book))
-	}
-}
-
-func Test_Pivot(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		setup      func(t *testing.T) Setup[probeState]
-		wantErrors []string
-		wantCauses []string
-		wantSetups int
+		name      string
+		defect    defect
+		flow      func(*shopServices) *sagas.Group
+		opts      []sagas.Option
+		wantErr   []error
+		wantCases []string
+		wantErrs  [][]error
 	}{
 		{
 			name: "[Success] When: the pivot has three attempts and the forward-only step is idempotent ; " +
-				"Should: report no error",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, pivotFlow(3, false), noLate)
-			},
-			wantSetups: 3,
+				"Should: pass every case",
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{nil, nil},
 		},
 		{
 			name: "[Success] When: the pivot has one attempt ; " +
-				"Should: expect an incomplete run with only the pivot pending and report no error",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, pivotFlow(1, false), noLate)
-			},
-			wantSetups: 3,
+				"Should: expect an incomplete run with only the pivot pending",
+			flow:      pivotFlow(1, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{nil, nil},
 		},
 		{
 			name: "[Success] When: the pivot has zero attempts ; " +
 				"Should: read the default attempts and expect the completed path",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, pivotFlow(0, false), noLate)
-			},
-			wantSetups: 3,
+			flow:      pivotFlow(0, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{nil, nil},
 		},
 		{
 			name: "[Fail] When: the forward-only step ships twice when repeated ; " +
-				"Should: report the Check error of the repeated case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, shipsTwice, pivotFlow(3, false), noLate)
-			},
-			wantErrors: []string{
-				`step "ship", case "step repeated": Check: shipped more than once: ` +
-					`key "shop/run-1/ship" shipped 2 times`,
-			},
-			wantSetups: 3,
+				"Should: fail the repeat case with ErrCheck",
+			defect:    shipsTwice,
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{nil, {ErrCheck, errShippedMore}},
 		},
 		{
 			name: "[Fail] When: the pivot applies its effect again after the unknown outcome ; " +
-				"Should: report the Check error of the pivot case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, pivotsTwice, pivotFlow(3, false), noLate)
-			},
-			wantErrors: []string{
-				`step "pivot", case "unknown outcome": Check: pivot applied more than once: ` +
-					`key "shop/run-1/pivot" applied 2 times`,
-			},
-			wantSetups: 3,
+				"Should: fail the pivot case with ErrCheck",
+			defect:    pivotsTwice,
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{{ErrCheck, errPivotedMore}, nil},
 		},
 		{
 			name: "[Fail] When: the final state differs from the state of the clean run ; " +
-				"Should: report the step and both states",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, pivotFlow(3, true), noLate)
-			},
-			wantErrors: []string{
-				`step "pivot", case "unknown outcome": the final state {N:2 ID:run-1} ` +
-					`differs from the clean run {N:1 ID:run-1}`,
-			},
-			wantSetups: 3,
+				"Should: fail the pivot case with ErrOutcome",
+			flow:      pivotFlow(3, true),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{{ErrOutcome}, nil},
 		},
 		{
-			name: "[Fail] When: a forward-only step is disabled ; Should: report that the step did not start",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newForwardDisabledShip(book))
-				}, noLate)
+			name: "[Fail] When: a forward-only step is disabled ; Should: fail the repeat case with ErrNotStarted",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(
+					newCharge(s.book), newLedgerPivot(s.book, 3, false), newForwardDisabledShip(s.book),
+				)
 			},
-			wantErrors: []string{`step "ship", case "step repeated": the step did not start`},
-			wantSetups: 3,
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{nil, {ErrNotStarted}},
 		},
 		{
 			name: "[Fail] When: the pivot returns an error when it is called again with the same key ; " +
-				"Should: report the Run error of the pivot case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, pivotErrors, pivotFlow(3, false), noLate)
-			},
-			wantErrors: []string{`step "pivot", case "unknown outcome": Run returned`},
-			wantCauses: []string{"pivot already applied"},
-			wantSetups: 3,
+				"Should: fail the pivot case with ErrOutcome and the error of Run",
+			defect:    pivotErrors,
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{{ErrOutcome, errPivotAgain}, nil},
 		},
 		{
 			name: "[Fail] When: the forward-only step returns an error when it is called again ; " +
-				"Should: report the Run error of the repeated case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, shipErrors, pivotFlow(3, false), noLate)
-			},
-			wantErrors: []string{`step "ship", case "step repeated": Run returned`},
-			wantCauses: []string{"ship already sent"},
-			wantSetups: 3,
+				"Should: fail the repeat case with ErrOutcome and the error of Run",
+			defect:    shipErrors,
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{nil, {ErrOutcome, errShipAgain}},
 		},
 		{
-			name: "[Fail] When: a user middleware swallows the unknown outcome of a pivot with one attempt ; " +
-				"Should: report that Run did not return sagas.ErrIncomplete",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return swallowing(shopSetup(t, sound, pivotFlow(1, false), noLate))
-			},
-			wantErrors: []string{`step "pivot", case "unknown outcome": Run returned <nil>, want sagas.ErrIncomplete`},
-			wantSetups: 3,
+			name: "[Fail] When: a middleware of Options swallows the unknown outcome of a pivot with one attempt ; " +
+				"Should: fail the pivot case with ErrOutcome",
+			flow:      pivotFlow(1, false),
+			opts:      swallowing(),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{{ErrOutcome}, nil},
 		},
 		{
 			name: "[Fail] When: the pivot never starts in its case and a later step does not start either ; " +
-				"Should: report both steps, so a later case still runs",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				builds := 0
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					builds++
-
-					var err error
-					if builds > 1 {
-						err = errBoom
-					}
-
-					return sagas.Sequence(newShip(err), newLedgerPivot(book, 3, false), newNotify())
-				}, noLate)
-			},
-			wantErrors: []string{
-				`step "pivot", case "unknown outcome": the step did not start`,
-				`step "notify", case "step repeated": the step did not start`,
-			},
-			wantSetups: 3,
+				"Should: fail both cases with ErrNotStarted",
+			flow: shipFailsInCases(func(book *ledger) sagas.Flow {
+				return sagas.Sequence(newLedgerPivot(book, 3, false), newNotify())
+			}),
+			wantCases: pivotNames(stepNotify),
+			wantErrs:  [][]error{{ErrNotStarted, errBoom}, {ErrNotStarted, errBoom}},
 		},
 		{
 			name: "[Fail] When: both the pivot case and a forward-only case break their contract ; " +
-				"Should: report the pivot case and then the forward-only case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, bothTwice, pivotFlow(3, false), noLate)
-			},
-			wantErrors: []string{
-				`step "pivot", case "unknown outcome": Check: pivot applied more than once`,
-				`step "ship", case "step repeated": Check: shipped more than once`,
-			},
-			wantSetups: 3,
+				"Should: fail the pivot case and then the forward-only case with ErrCheck",
+			defect:    bothTwice,
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+			wantErrs:  [][]error{{ErrCheck, errPivotedMore}, {ErrCheck, errShippedMore}},
 		},
 		{
-			name: "[Fail] When: the flow has no pivot ; Should: report it and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, chargeThenShip, noLate)
-			},
-			wantErrors: []string{"found no pivot"},
-			wantSetups: 1,
+			name:    "[Fail] When: the flow has no pivot ; Should: return ErrNoStepToTest",
+			flow:    chargeThenShip,
+			wantErr: []error{ErrNoStepToTest},
 		},
 		{
-			name: "[Fail] When: Setup drops mw ; Should: report that the clean run recorded no call and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return droppingMiddleware(shopSetup(t, sound, pivotFlow(3, false), noLate))
+			name: "[Fail] When: the clean run fails ; Should: return ErrCleanRun with the error of Run",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(newCharge(s.book), newLedgerPivot(s.book, 3, false), newForwardShip(errBoom))
 			},
-			wantErrors: []string{noCallReport},
-			wantSetups: 1,
-		},
-		{
-			name: "[Fail] When: the clean run fails ; Should: report it and run no case",
-			setup: func(t *testing.T) Setup[probeState] {
-				t.Helper()
-
-				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newForwardShip(errBoom))
-				}, noLate)
-			},
-			wantErrors: []string{"the clean run failed"},
-			wantSetups: 1,
+			wantErr: []error{ErrCleanRun, errBoom},
 		},
 	}
 
@@ -957,54 +753,149 @@ func Test_Pivot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			setup := tt.setup(t)
-			setups := 0
-			counted := func(mw ...sagas.Middleware) Case[probeState] {
-				setups++
+			nth := 0
+			newServices := func() *shopServices {
+				nth++
+				s := newShopServices(tt.defect, nth, tt.flow, nil)
+				s.opts = tt.opts
 
-				return setup(mw...)
+				return s
 			}
 
-			fake := &fakeTB{TB: t}
-			Pivot(fake, counted)
+			cases, err := PivotCases(t.Context(), "shop", probeState{ID: runID}, newServices())
+			assertProbe(t, err, tt.wantErr)
 
-			require.Len(t, fake.errors, len(tt.wantErrors), fake.errors)
+			if err != nil {
+				assert.Nil(t, cases)
 
-			for i, want := range tt.wantErrors {
-				assert.Contains(t, fake.errors[i], want)
+				return
 			}
 
-			require.LessOrEqual(t, len(tt.wantCauses), len(fake.errors))
-
-			for i, cause := range tt.wantCauses {
-				require.NotEmpty(t, cause)
-				assert.Contains(t, fake.errors[i], cause)
-			}
-
-			assert.Equal(t, tt.wantSetups, setups)
+			assertResults(t, runAll(t.Context(), cases, newServices), tt.wantCases, tt.wantErrs)
 		})
 	}
 }
 
-func Test_runCase(t *testing.T) {
+type eventLog struct {
+	mu   sync.Mutex
+	seqs []int
+}
+
+func (l *eventLog) Observe(_ context.Context, e *sagas.Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.seqs = append(l.seqs, e.Seq)
+}
+
+type queueClose struct {
+	err  error
+	seqs []int
+}
+
+type factoryLog struct {
+	mu     sync.Mutex
+	names  []string
+	closes []queueClose
+}
+
+func (f *factoryLog) called(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.names = append(f.names, name)
+
+	return len(f.names)
+}
+
+func (f *factoryLog) closed(c queueClose) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.closes = append(f.closes, c)
+}
+
+func observed(t *testing.T, log *factoryLog, s *shopServices) {
+	t.Helper()
+
+	events := &eventLog{}
+	queue := sagas.NewMemoryEventQueue()
+	s.opts = []sagas.Option{sagas.WithObserver(events), sagas.WithEventQueue(queue)}
+
+	t.Cleanup(func() {
+		err := queue.Close(context.Background())
+
+		events.mu.Lock()
+		defer events.mu.Unlock()
+
+		log.closed(queueClose{err: err, seqs: slices.Clone(events.seqs)})
+	})
+}
+
+func plainServices(*testing.T, *factoryLog, *shopServices) {}
+
+func subtestNames(parent string, cases []string) []string {
+	names := make([]string, 0, 1+len(cases))
+	names = append(names, parent)
+
+	for _, c := range cases {
+		names = append(names, parent+"/"+strings.ReplaceAll(c, " ", "_"))
+	}
+
+	return names
+}
+
+func assertQueues(t *testing.T, closes []queueClose, want int) {
+	t.Helper()
+
+	require.Len(t, closes, want)
+
+	for _, c := range closes {
+		require.NoError(t, c.err)
+		require.NotEmpty(t, c.seqs)
+
+		for i, seq := range c.seqs {
+			assert.Equal(t, i+1, seq)
+		}
+	}
+}
+
+func Test_TestCompensations(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		steps []string
-		want  []string
+		name       string
+		flow       func(*shopServices) *sagas.Group
+		wire       func(*testing.T, *factoryLog, *shopServices)
+		wantCases  []string
+		wantQueues int
 	}{
 		{
-			name: "[Success] When: a kit runs a case of two parallel steps ; " +
-				"Should: run them one at a time in graph order",
-			steps: []string{"a", "b"},
-			want:  []string{startA, endA, startB, endB},
+			name: "[Success] When: the ledger is sound ; " +
+				"Should: call the factory with the parent t and then once per case with the subtest t",
+			flow:      chargeThenShip,
+			wire:      plainServices,
+			wantCases: compensationNames(stepCharge),
 		},
 		{
-			name: "[Success] When: a kit runs a case of three parallel steps ; " +
-				"Should: run them one at a time in graph order",
-			steps: []string{"a", "b", "c"},
-			want:  []string{startA, endA, startB, endB, startC, endC},
+			name: "[Success] When: two steps have a compensation ; " +
+				"Should: run three cases for each of them in order",
+			flow: func(s *shopServices) *sagas.Group {
+				refund := newCharge(s.book)
+				refund.Name = "refund"
+
+				return sagas.Sequence(newCharge(s.book), refund)
+			},
+			wire:      plainServices,
+			wantCases: compensationNames(stepCharge, "refund"),
+		},
+		{
+			name: "[Success] When: the factory makes an event queue per case and closes it in t.Cleanup ; " +
+				"Should: close each case queue with nil after its observer got each event once",
+			flow:       chargeThenShip,
+			wire:       observed,
+			wantCases:  compensationNames(stepCharge),
+			wantQueues: 3,
 		},
 	}
 
@@ -1012,27 +903,60 @@ func Test_runCase(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			synctest.Test(t, func(t *testing.T) {
-				tr := &trace{}
-				setup := func(mw ...sagas.Middleware) Case[probeState] {
-					flows := make([]sagas.Flow, 0, len(tt.steps))
-					for _, name := range tt.steps {
-						s := &traceStep{trace: tr}
-						s.Name = name
-						flows = append(flows, s)
-					}
+			log := &factoryLog{}
 
-					flow := sagas.Parallel(flows...)
-					saga, err := sagas.New[probeState]("serial", flow, sagas.WithMiddleware(mw...))
-					require.NoError(t, err)
+			TestCompensations(t, "shop", probeState{ID: runID}, func(t *testing.T) *shopServices {
+				t.Helper()
 
-					return Case[probeState]{Saga: saga, State: &probeState{ID: runID}, Flow: flow}
-				}
+				s := newShopServices(sound, log.called(t.Name()), tt.flow, lateCharge)
+				tt.wire(t, log, s)
 
-				_, err := runCase(t.Context(), setup)
-				require.NoError(t, err)
-				assert.Equal(t, tt.want, tr.snapshot())
+				return s
 			})
+
+			assert.Equal(t, subtestNames(t.Name(), tt.wantCases), log.names)
+			assertQueues(t, log.closes, tt.wantQueues)
+		})
+	}
+}
+
+func Test_TestPivot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		flow      func(*shopServices) *sagas.Group
+		wantCases []string
+	}{
+		{
+			name: "[Success] When: the pivot has three attempts ; " +
+				"Should: call the factory with the parent t and then once per case with the subtest t",
+			flow:      pivotFlow(3, false),
+			wantCases: pivotNames(stepShip),
+		},
+		{
+			name: "[Success] When: two forward-only steps follow the pivot ; " +
+				"Should: run one repeat case for each of them after the pivot case",
+			flow: func(s *shopServices) *sagas.Group {
+				return sagas.Sequence(newLedgerPivot(s.book, 1, false), newLedgerShip(s.book), newNotify())
+			},
+			wantCases: pivotNames(stepShip, stepNotify),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			log := &factoryLog{}
+
+			TestPivot(t, "shop", probeState{ID: runID}, func(t *testing.T) *shopServices {
+				t.Helper()
+
+				return newShopServices(sound, log.called(t.Name()), tt.flow, nil)
+			})
+
+			assert.Equal(t, subtestNames(t.Name(), tt.wantCases), log.names)
 		})
 	}
 }

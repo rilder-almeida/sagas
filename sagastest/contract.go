@@ -3,127 +3,14 @@ package sagastest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"iter"
 	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/rilder-almeida/sagas"
 )
-
-// Setup builds a Case. A Setup must pass mw to sagas.WithMiddleware and return a fresh Case over fresh fakes on
-// each call.
-type Setup[S any] func(mw ...sagas.Middleware) Case[S]
-
-// Case is one saga under test.
-type Case[S any] struct {
-	Saga  *sagas.Saga[S]
-	State *S
-	// Check is a check of the fakes.
-	Check func(*S) error
-	// Flow is the flow given to sagas.New.
-	Flow sagas.Flow
-	// Late sends the action of step again to the fakes with key.
-	Late func(ctx context.Context, step, key string) error
-}
-
-type plan struct {
-	steps       []sagas.StepReport
-	pivot       string
-	forwardOnly []string
-}
-
-func planOf[S any](flow sagas.Flow) (plan, error) {
-	steps, err := sagas.Inspect[S](flow)
-	if err != nil {
-		return plan{}, err
-	}
-
-	p := plan{steps: steps}
-
-	if i := slices.IndexFunc(steps, func(s sagas.StepReport) bool { return s.Pivot }); i >= 0 {
-		p.pivot = steps[i].Name
-	}
-
-	if p.pivot != "" {
-		p.forwardOnly = descendants(steps, p.pivot)
-	}
-
-	return p, nil
-}
-
-func descendants(steps []sagas.StepReport, root string) []string {
-	reached := map[string]bool{root: true}
-
-	for grew := true; grew; {
-		grew = false
-
-		for i := range steps {
-			s := &steps[i]
-			if !reached[s.Name] && slices.ContainsFunc(s.After, func(a string) bool { return reached[a] }) {
-				reached[s.Name], grew = true, true
-			}
-		}
-	}
-
-	var out []string
-
-	for i := range steps {
-		if name := steps[i].Name; name != root && reached[name] {
-			out = append(out, name)
-		}
-	}
-
-	return out
-}
-
-func runCase[S any](ctx context.Context, setup Setup[S], mw ...sagas.Middleware) (Case[S], error) {
-	c := setup(mw...)
-
-	return c, c.Saga.Run(WithoutConcurrency(ctx), c.State)
-}
-
-func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
-	tb.Helper()
-
-	rec := NewRecorder()
-
-	c, err := runCase(tb.Context(), setup, rec)
-	if err != nil {
-		tb.Errorf("sagastest: the clean run failed: %v", err)
-
-		return plan{}, nil, false
-	}
-
-	p, err := planOf[S](c.Flow)
-	if err != nil {
-		tb.Errorf("sagastest: Case.Flow is not a valid flow: %v", err)
-
-		return plan{}, nil, false
-	}
-
-	if len(p.steps) > 0 && len(rec.Attempts()) == 0 {
-		tb.Error("sagastest: the clean run recorded no call: Setup must pass mw to sagas.WithMiddleware, " +
-			"or every step is disabled in the setup state")
-
-		return plan{}, nil, false
-	}
-
-	named := func(step string) bool {
-		return slices.ContainsFunc(p.steps, func(s sagas.StepReport) bool { return s.Name == step })
-	}
-
-	ok := true
-
-	for _, attempt := range rec.Attempts() {
-		if !named(attempt.Step) {
-			tb.Errorf("sagastest: step %q ran in the clean run, but Case.Flow does not name it", attempt.Step)
-
-			ok = false
-		}
-	}
-
-	return p, c.State, ok
-}
 
 const (
 	caseNeverApplied = "never applied"
@@ -135,14 +22,48 @@ const (
 
 var errTrigger = errors.New("sagastest: injected failure of the step action")
 
-// Compensations proves, for every step with Compensate, that its compensation is a no-op when the step never applied,
-// is idempotent over a landed step, and tolerates a late step. Each case must end in sagas.ErrCompensated.
-func Compensations[S any](tb testing.TB, setup Setup[S]) {
-	tb.Helper()
+func cleanRun[S any, W Services[S]](ctx context.Context, name string, state S, probe W) (plan, *S, error) {
+	p, err := planOf[S](probe.Flow())
+	if err != nil {
+		return plan{}, nil, fmt.Errorf("%w: Flow is not a valid flow: %w", ErrCleanRun, err)
+	}
 
-	p, _, ok := probe(tb, setup)
-	if !ok {
-		return
+	rec := NewRecorder()
+
+	final, err := runCase(ctx, name, state, probe, rec)
+	if err != nil {
+		return plan{}, nil, fmt.Errorf("%w: the run failed: %w", ErrCleanRun, err)
+	}
+
+	attempts := rec.Attempts()
+	if len(attempts) == 0 {
+		return plan{}, nil, fmt.Errorf("%w: the run recorded no call, so every step is disabled in the given state",
+			ErrCleanRun)
+	}
+
+	var errs []error
+
+	for _, attempt := range attempts {
+		if !slices.ContainsFunc(p.steps, func(s sagas.StepReport) bool { return s.Name == attempt.Step }) {
+			errs = append(errs, fmt.Errorf("%w: step %q ran, but Flow does not name it", ErrCleanRun, attempt.Step))
+		}
+	}
+
+	if unnamed := errors.Join(errs...); unnamed != nil {
+		return plan{}, nil, unnamed
+	}
+
+	return p, final, nil
+}
+
+// CompensationCases runs the clean run of probe, then returns three cases for each step with a compensation: never
+// applied, compensation runs twice, and step lands after its compensation. Each case must end in sagas.ErrCompensated.
+func CompensationCases[S any, W CompensationServices[S]](
+	ctx context.Context, name string, state S, probe W,
+) (iter.Seq[Case[W]], error) {
+	p, _, err := cleanRun(ctx, name, state, probe)
+	if err != nil {
+		return nil, err
 	}
 
 	var steps []string
@@ -154,76 +75,52 @@ func Compensations[S any](tb testing.TB, setup Setup[S]) {
 	}
 
 	if len(steps) == 0 {
-		tb.Error("sagastest: Compensations found no step with Compensate in Case.Flow")
-
-		return
+		return nil, fmt.Errorf("%w: the flow has no step with a compensation", ErrNoStepToTest)
 	}
 
-	for _, step := range steps {
-		for _, kind := range []string{caseNeverApplied, caseTwice, caseLate} {
-			if !compensationCase(tb, setup, step, kind) {
-				break
+	return func(yield func(Case[W]) bool) {
+		for _, step := range steps {
+			for _, kind := range []string{caseNeverApplied, caseTwice, caseLate} {
+				if !yield(compensationCase[S, W](name, state, step, kind)) {
+					return
+				}
 			}
 		}
-	}
+	}, nil
 }
 
-func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) bool {
-	tb.Helper()
-
-	rec := NewRecorder()
-	mw := []sagas.Middleware{rec, Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute))}
-
+func compensationCase[S any, W CompensationServices[S]](name string, state S, step, kind string) Case[W] {
+	faults := []sagas.Middleware{Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute))}
 	if kind == caseTwice {
-		mw = []sagas.Middleware{
-			rec, Panic(step, OnPhase(sagas.PhaseExecute)), repeated(step, sagas.PhaseCompensate),
+		faults = []sagas.Middleware{Panic(step, OnPhase(sagas.PhaseExecute)), repeated(step, sagas.PhaseCompensate)}
+	}
+
+	return Case[W]{Name: step + " " + kind, run: func(ctx context.Context, services W) error {
+		rec := NewRecorder()
+		final, err := runCase(ctx, name, state, services, rec, faults...)
+
+		attempts := rec.Attempts()
+
+		i := slices.IndexFunc(attempts, func(a Attempt) bool { return a.Step == step && a.Phase == sagas.PhaseExecute })
+		if i < 0 {
+			return caseFailure(ErrNotStarted, step, kind, "the step did not start", err)
 		}
-	}
 
-	ctx := tb.Context()
-	c, err := runCase(ctx, setup, mw...)
+		if !errors.Is(err, sagas.ErrCompensated) {
+			return caseFailure(ErrOutcome, step, kind, "Run did not return sagas.ErrCompensated", err)
+		}
 
-	i := slices.IndexFunc(rec.Attempts(), func(a Attempt) bool {
-		return a.Step == step && a.Phase == sagas.PhaseExecute
-	})
-	if i < 0 {
-		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, "+
-			"so its compensation is untested", step, kind, err)
+		var lateErr error
+		if kind == caseLate {
+			lateErr = services.ExecuteLate(ctx, final, step, attempts[i].IdempotencyKey())
+		}
 
-		return false
-	}
+		if checkErr := services.Check(ctx, final); checkErr != nil {
+			return caseFailure(ErrCheck, step, kind, "Check", errors.Join(checkErr, lateErr))
+		}
 
-	if !errors.Is(err, sagas.ErrCompensated) {
-		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want sagas.ErrCompensated", step, kind, err)
-
-		return true
-	}
-
-	if kind == caseLate && !late(ctx, tb, &c, step, rec.Attempts()[i].IdempotencyKey()) {
-		return true
-	}
-
-	if checkErr := c.Check(c.State); checkErr != nil {
-		tb.Errorf("sagastest: step %q, case %q: Check: %v", step, kind, checkErr)
-	}
-
-	return true
-}
-
-func late[S any](ctx context.Context, tb testing.TB, c *Case[S], step, key string) bool {
-	tb.Helper()
-
-	if c.Late == nil {
-		tb.Errorf("sagastest: step %q, case %q: Case.Late is nil", step, caseLate)
-
-		return false
-	}
-
-	if err := c.Late(ctx, step, key); err != nil {
-		tb.Logf("sagastest: step %q, case %q: Late: %v", step, caseLate, err)
-	}
-
-	return true
+		return nil
+	}}
 }
 
 func repeated(step string, phase sagas.Phase) sagas.MiddlewareFunc {
@@ -240,27 +137,29 @@ func repeated(step string, phase sagas.Phase) sagas.MiddlewareFunc {
 	}
 }
 
-// Pivot proves that the pivot is atomic and that every forward-only step is idempotent. A pivot with one attempt must
-// end in sagas.ErrIncomplete.
-func Pivot[S any](tb testing.TB, setup Setup[S]) {
-	tb.Helper()
-
-	p, clean, ok := probe(tb, setup)
-	if !ok {
-		return
+// PivotCases runs the clean run of probe, then returns one case for the unknown outcome of the pivot and one repeat
+// case for each forward-only step. With one attempt, the pivot case must end in sagas.ErrIncomplete.
+func PivotCases[S any, W Services[S]](ctx context.Context, name string, state S, probe W) (iter.Seq[Case[W]], error) {
+	p, clean, err := cleanRun(ctx, name, state, probe)
+	if err != nil {
+		return nil, err
 	}
 
 	if p.pivot == "" {
-		tb.Error("sagastest: Pivot found no pivot in Case.Flow")
-
-		return
+		return nil, fmt.Errorf("%w: the flow has no pivot", ErrNoStepToTest)
 	}
 
-	pivotCase(tb, setup, p, clean)
+	return func(yield func(Case[W]) bool) {
+		if !yield(pivotCase[S, W](name, state, p, clean)) {
+			return
+		}
 
-	for _, step := range p.forwardOnly {
-		repeatCase(tb, setup, step)
-	}
+		for _, step := range p.forwardOnly {
+			if !yield(repeatCase[S, W](name, state, step)) {
+				return
+			}
+		}
+	}, nil
 }
 
 func pivotAttempts(p plan) int {
@@ -279,53 +178,54 @@ func started(rec *Recorder, step string, phase sagas.Phase) bool {
 	})
 }
 
-func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) {
-	tb.Helper()
+func pivotCase[S any, W Services[S]](name string, state S, p plan, clean *S) Case[W] {
+	return Case[W]{Name: p.pivot + " " + caseUnknown, run: func(ctx context.Context, services W) error {
+		rec := NewRecorder()
+		fault := Unknown(p.pivot, OnPhase(sagas.PhasePivot), OnAttempts(1))
+		final, err := runCase(ctx, name, state, services, rec, fault)
 
-	rec := NewRecorder()
-	c, err := runCase(tb.Context(), setup, rec, Unknown(p.pivot, OnPhase(sagas.PhasePivot), OnAttempts(1)))
+		if !started(rec, p.pivot, sagas.PhasePivot) {
+			return caseFailure(ErrNotStarted, p.pivot, caseUnknown, "the step did not start", err)
+		}
 
-	if !started(rec, p.pivot, sagas.PhasePivot) {
-		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so the pivot is untested",
-			p.pivot, caseUnknown, err)
+		var outcome error
+		if pivotAttempts(p) > 1 {
+			outcome = completedPivot(p.pivot, err, final, clean)
+		} else {
+			outcome = incompletePivot(p.pivot, err, rec)
+		}
 
-		return
-	}
-
-	if pivotAttempts(p) > 1 {
-		completedPivot(tb, p.pivot, err, c.State, clean)
-	} else {
-		incompletePivot(tb, p.pivot, err, rec)
-	}
-
-	if checkErr := c.Check(c.State); checkErr != nil {
-		tb.Errorf("sagastest: step %q, case %q: Check: %v", p.pivot, caseUnknown, checkErr)
-	}
+		return errors.Join(outcome, checked(ctx, services, final, p.pivot, caseUnknown))
+	}}
 }
 
-func completedPivot[S any](tb testing.TB, pivot string, err error, got, clean *S) {
-	tb.Helper()
+func checked[S any, W Services[S]](ctx context.Context, services W, final *S, step, kind string) error {
+	if err := services.Check(ctx, final); err != nil {
+		return caseFailure(ErrCheck, step, kind, "Check", err)
+	}
 
+	return nil
+}
+
+func completedPivot[S any](pivot string, err error, got, clean *S) error {
 	if err != nil {
-		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want nil", pivot, caseUnknown, err)
-
-		return
+		return caseFailure(ErrOutcome, pivot, caseUnknown, "Run did not return nil", err)
 	}
 
 	if !reflect.DeepEqual(got, clean) {
-		tb.Errorf("sagastest: step %q, case %q: the final state %+v differs from the clean run %+v",
-			pivot, caseUnknown, *got, *clean)
+		return caseFailure(ErrOutcome, pivot, caseUnknown,
+			fmt.Sprintf("the final state %+v differs from the clean run %+v", *got, *clean), nil)
 	}
+
+	return nil
 }
 
-func incompletePivot(tb testing.TB, pivot string, err error, rec *Recorder) {
-	tb.Helper()
-
+func incompletePivot(pivot string, err error, rec *Recorder) error {
 	if !errors.Is(err, sagas.ErrIncomplete) {
-		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want sagas.ErrIncomplete", pivot, caseUnknown, err)
-
-		return
+		return caseFailure(ErrOutcome, pivot, caseUnknown, "Run did not return sagas.ErrIncomplete", err)
 	}
+
+	var errs []error
 
 	runErr, ok := errors.AsType[*sagas.RunError](err)
 	if !ok || !slices.Equal(runErr.Pending, []string{pivot}) {
@@ -334,32 +234,72 @@ func incompletePivot(tb testing.TB, pivot string, err error, rec *Recorder) {
 			pending = runErr.Pending
 		}
 
-		tb.Errorf("sagastest: step %q, case %q: pending steps are %q, want only the pivot", pivot, caseUnknown, pending)
+		errs = append(errs, caseFailure(ErrOutcome, pivot, caseUnknown,
+			fmt.Sprintf("pending steps are %q, want only the pivot", pending), nil))
 	}
 
 	if slices.ContainsFunc(rec.Attempts(), func(a Attempt) bool { return a.Phase == sagas.PhaseCompensate }) {
-		tb.Errorf("sagastest: step %q, case %q: a compensation ran after the unknown outcome", pivot, caseUnknown)
+		errs = append(errs, caseFailure(ErrOutcome, pivot, caseUnknown, "a compensation ran", nil))
 	}
+
+	return errors.Join(errs...)
 }
 
-func repeatCase[S any](tb testing.TB, setup Setup[S], step string) {
-	tb.Helper()
+func repeatCase[S any, W Services[S]](name string, state S, step string) Case[W] {
+	return Case[W]{Name: step + " " + caseRepeated, run: func(ctx context.Context, services W) error {
+		rec := NewRecorder()
+		final, err := runCase(ctx, name, state, services, rec, repeated(step, sagas.PhaseExecute))
 
-	rec := NewRecorder()
-	c, err := runCase(tb.Context(), setup, rec, repeated(step, sagas.PhaseExecute))
+		if !started(rec, step, sagas.PhaseExecute) {
+			return caseFailure(ErrNotStarted, step, caseRepeated, "the step did not start", err)
+		}
 
-	if !started(rec, step, sagas.PhaseExecute) {
-		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so its repeat is untested",
-			step, caseRepeated, err)
+		var outcome error
+		if err != nil {
+			outcome = caseFailure(ErrOutcome, step, caseRepeated, "Run did not return nil", err)
+		}
 
-		return
-	}
+		return errors.Join(outcome, checked(ctx, services, final, step, caseRepeated))
+	}}
+}
 
+// TestCompensations runs each case of CompensationCases in a subtest named after it. It calls newServices with t for
+// the clean run and with the t of the subtest for each case. Each call must return a fresh value over fresh fakes.
+func TestCompensations[S any, W CompensationServices[S]](
+	t *testing.T, name string, state S, newServices func(*testing.T) W,
+) {
+	t.Helper()
+
+	cases, err := CompensationCases(t.Context(), name, state, newServices(t))
 	if err != nil {
-		tb.Errorf("sagastest: step %q, case %q: Run returned %v, want nil", step, caseRepeated, err)
+		t.Fatal(err)
 	}
 
-	if checkErr := c.Check(c.State); checkErr != nil {
-		tb.Errorf("sagastest: step %q, case %q: Check: %v", step, caseRepeated, checkErr)
+	runCases(t, cases, newServices)
+}
+
+// TestPivot runs each case of PivotCases in a subtest named after it, as TestCompensations does. For a saga with an
+// observer, newServices makes the queue with sagas.NewMemoryEventQueue, passes it in Options with
+// sagas.WithEventQueue, and closes it with Close in t.Cleanup.
+func TestPivot[S any, W Services[S]](t *testing.T, name string, state S, newServices func(*testing.T) W) {
+	t.Helper()
+
+	cases, err := PivotCases(t.Context(), name, state, newServices(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCases(t, cases, newServices)
+}
+
+func runCases[W any](t *testing.T, cases iter.Seq[Case[W]], newServices func(*testing.T) W) {
+	t.Helper()
+
+	for c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			if err := c.Run(t.Context(), newServices(t)); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }

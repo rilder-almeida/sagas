@@ -818,3 +818,32 @@ func withoutCompensable(e *sagas.Event) *sagas.Event {
 
 	return e
 }
+
+type fakeTB struct {
+	testing.TB
+
+	errors []string
+	logs   []string
+}
+
+func (*fakeTB) Helper() {}
+
+func (f *fakeTB) Context() context.Context {
+	if f.TB == nil {
+		return context.Background()
+	}
+
+	return f.TB.Context()
+}
+
+func (f *fakeTB) Errorf(format string, args ...any) {
+	f.errors = append(f.errors, fmt.Sprintf(format, args...))
+}
+
+func (f *fakeTB) Error(args ...any) {
+	f.errors = append(f.errors, fmt.Sprint(args...))
+}
+
+func (f *fakeTB) Logf(format string, args ...any) {
+	f.logs = append(f.logs, fmt.Sprintf(format, args...))
+}

@@ -142,41 +142,50 @@ func (c *capture) Error(args ...any) { c.errors = append(c.errors, fmt.Sprint(ar
 
 func (*capture) Logf(string, ...any) {}
 
-func ExampleCompensations() {
-	setup := func(mw ...sagas.Middleware) sagastest.Case[shop] {
-		book := &ledger{charged: map[string]bool{}, refunded: map[string]bool{}}
-		step := &ledgerCharge{book: book}
-		step.Name, step.RetryPolicy = "charge", sagas.NoRetry()
+type shopServices struct {
+	book *ledger
+}
 
-		saga, err := sagas.New[shop]("shop", step, sagas.WithMiddleware(mw...))
-		if err != nil {
-			panic(err)
-		}
+func newShopServices() *shopServices {
+	return &shopServices{book: &ledger{charged: map[string]bool{}, refunded: map[string]bool{}}}
+}
 
-		return sagastest.Case[shop]{
-			Saga:  saga,
-			State: &shop{},
-			Check: func(*shop) error { return book.check() },
-			Flow:  step,
-			Late: func(_ context.Context, _, key string) error {
-				book.charge(key)
+func (s *shopServices) Flow() *sagas.Group {
+	step := &ledgerCharge{book: s.book}
+	step.Name, step.RetryPolicy = "charge", sagas.NoRetry()
 
-				return nil
-			},
-		}
+	return sagas.Sequence(step)
+}
+
+func (s *shopServices) Check(context.Context, *shop) error { return s.book.check() }
+
+func (s *shopServices) ExecuteLate(_ context.Context, _ *shop, _, key string) error {
+	s.book.charge(key)
+
+	return nil
+}
+
+func ExampleCompensationCases() {
+	ctx := context.Background()
+
+	cases, err := sagastest.CompensationCases(ctx, "shop", shop{}, newShopServices())
+	if err != nil {
+		panic(err)
 	}
 
-	tb := &capture{}
-	sagastest.Compensations(tb, setup)
-
-	for _, msg := range tb.errors {
-		if _, err := fmt.Println(msg); err != nil {
-			panic(err)
+	for c := range cases {
+		if _, writeErr := fmt.Printf("%s\n%v\n", c.Name, c.Run(ctx, newShopServices())); writeErr != nil {
+			panic(writeErr)
 		}
 	}
 
 	// Output:
-	// sagastest: step "charge", case "step lands after its compensation": Check: balance off: balance 100, want 0
+	// charge never applied
+	// <nil>
+	// charge compensation runs twice
+	// <nil>
+	// charge step lands after its compensation
+	// sagastest: check failed: charge step lands after its compensation: Check: balance off: balance 100, want 0
 }
 
 type journalAcceptsGaps struct{ *sagas.MemoryJournal }

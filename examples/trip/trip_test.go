@@ -197,25 +197,24 @@ func cancelEarly(ctx context.Context, svc *services, step, key string) error {
 	}
 }
 
-func tripSetup(t *testing.T) sagastest.Setup[trip] {
+type tripServices struct {
+	svc *services
+}
+
+func newTripServices(t *testing.T) *tripServices {
 	t.Helper()
 
-	return func(mw ...sagas.Middleware) sagastest.Case[trip] {
-		svc := newServices()
+	return &tripServices{svc: newServices()}
+}
 
-		saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(mw...))
-		require.NoError(t, err)
+func (s *tripServices) Flow() *sagas.Group { return sagas.Sequence(s.svc.flow) }
 
-		state := &newTrips()[0]
+func (s *tripServices) Check(_ context.Context, final *trip) error {
+	return checkBookings(s.svc, final)
+}
 
-		return sagastest.Case[trip]{
-			Saga:  saga,
-			State: state,
-			Flow:  svc.flow,
-			Check: func(got *trip) error { return checkBookings(svc, got) },
-			Late:  func(ctx context.Context, step, key string) error { return bookLate(ctx, svc, state, step, key) },
-		}
-	}
+func (s *tripServices) ExecuteLate(ctx context.Context, state *trip, step, key string) error {
+	return bookLate(ctx, s.svc, state, step, key)
 }
 
 func Test_newServices(t *testing.T) {
@@ -223,15 +222,15 @@ func Test_newServices(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		prove func(testing.TB, sagastest.Setup[trip])
+		prove func(*testing.T, string, trip, func(*testing.T) *tripServices)
 	}{
 		{
-			name:  "[Success] When: Compensations runs on the trip ; Should: pass three cases per compensation",
-			prove: sagastest.Compensations[trip],
+			name:  "[Success] When: TestCompensations runs on the trip ; Should: pass three cases per compensation",
+			prove: sagastest.TestCompensations[trip, *tripServices],
 		},
 		{
-			name:  "[Success] When: Pivot runs on the trip ; Should: charge once and repeat the email safely",
-			prove: sagastest.Pivot[trip],
+			name:  "[Success] When: TestPivot runs on the trip ; Should: charge once and repeat the email safely",
+			prove: sagastest.TestPivot[trip, *tripServices],
 		},
 	}
 
@@ -239,7 +238,7 @@ func Test_newServices(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tt.prove(t, tripSetup(t))
+			tt.prove(t, "trip", newTrips()[0], newTripServices)
 		})
 	}
 }
