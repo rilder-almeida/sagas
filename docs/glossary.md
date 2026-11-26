@@ -27,7 +27,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Forward recovery | What the library does after a caller cancel once the pivot started: it goes forward instead of undoing anything. It runs the started pivot to its end. If the pivot fails, it did not apply, so backward recovery runs. If the pivot succeeds, it finishes the forward-only zone. A failure, an unknown outcome or a journal fault in that zone, or the end of the grace period, stops the run. The rest stays pending. | no code name |
 | Retry policy | How many attempts a call gets and how long to wait between them. One policy type serves every action and compensation. | `sagas.RetryPolicy`, in `Step.Retry` |
 | Idempotency key | A key that is unique for each execution and step. It is the same on every attempt and on the compensation. The step sends it to the outside service. | `sagas.IdempotencyKey(ctx)`, `CallInfo.IdempotencyKey()` |
-| Attempt | One call of an action or of a compensation. | `CallInfo.Attempt` |
+| Attempt | One call of an action or of a compensation. | `CallInfo.Attempt`, `sagastest.Attempt` |
 | Permanent error | An error that stops the retries at once. | `sagas.Permanent(err)` |
 | Journal | The append-only record of what an execution intends and did. The library writes each intent before the call. | `sagas.Journal` |
 | Event | One record in the journal. The library never consumes, removes or acknowledges it. | `sagas.Event` |
@@ -36,6 +36,7 @@ This glossary is the vocabulary of the library. Each term has one meaning in the
 | Conflict | Two concurrent steps changed the same top-level field of the state. The later commit fails. | `ErrConflict` |
 | Handler | The function that runs one action or one compensation. | `sagas.Call` |
 | Middleware | A value that wraps a handler to add behavior, such as logging, a limit or fault injection. | `sagas.Middleware` |
+| Services under test | The test type that holds the fakes of one case and gives its flow and its check. | `sagastest.Services`, `sagastest.CompensationServices` |
 | Result | What `Run` reports. It is `nil` for a completed run whose end the journal recorded, else a `*RunError`. The `*RunError` names the kind of end and the pending steps. It holds one `*sagas.Error` for each action or compensation that did not succeed, in the order they happened. If another writer appended to the execution first, the kind is `ErrConcurrentWriter`, whatever the end. If every step succeeded but the journal did not record the end, the kind is `ErrJournal` or `ErrGraceEnded`. A run that did not begin returns its own error, such as `ErrInvalidRun` or `ErrExecutionExists`. | the error of `Run`: `nil` or `*sagas.RunError` |
 | Completed | Every step succeeded, or the library skipped it, and the journal recorded the end. | `nil`, `StatusCompleted` |
 | Compensated | Backward recovery ran, and every compensation succeeded. | `ErrCompensated` |
