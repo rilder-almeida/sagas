@@ -225,8 +225,15 @@ func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j jo
 		}
 	}
 
-	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) {
-		done.late, done.onGrace = graceCut(grace, &done.out), r.saga.steps[j.step].zone != ZoneCompensable
+	onGrace := r.saga.steps[j.step].zone != ZoneCompensable
+
+	var bound *graceBound
+	if onGrace {
+		bound = r.bound
+	}
+
+	r.act(ctx, bound, j, r.saga.steps[j.step].action, func(done settled[S]) {
+		done.late, done.onGrace = r.bound.cut(grace, &done.out), onGrace
 		reports <- done
 	})
 }
@@ -241,8 +248,10 @@ func vet[S any](ctx context.Context, pred func(context.Context, S) bool, reports
 	return v.run && v.err == nil
 }
 
-func (r *runner[S]) act(ctx context.Context, j job[S], call callFunc[S], send func(settled[S])) {
-	meta := &callMeta{execution: r.execution}
+func (r *runner[S]) act(
+	ctx context.Context, bound *graceBound, j job[S], call callFunc[S], send func(settled[S]),
+) {
+	meta := &callMeta{execution: r.execution, bound: bound}
 	done := settled[S]{step: j.step, out: outcome{kind: outcomeUnknown, err: errGoexit}}
 	returned := false
 

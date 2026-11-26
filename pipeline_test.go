@@ -421,7 +421,7 @@ func pipelineGraceBoundRow() pipelineRow {
 			"Should: end the attempt at the bound with the cause ErrGraceEnded",
 		spec: spec,
 		bound: func() *graceBound {
-			b := &graceBound{grace: time.Second / 2}
+			b := newGraceBound(time.Second / 2)
 			b.end(time.Now())
 
 			return b
@@ -1468,11 +1468,16 @@ func pipelineContext(t *testing.T, tt *pipelineRow) (context.Context, context.Ca
 		time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
 	}
 
+	return ctx, cancel
+}
+
+func rowMeta(tt *pipelineRow) *callMeta {
+	meta := &callMeta{execution: infoExecution}
 	if tt.bound != nil {
-		ctx = context.WithValue(ctx, graceBoundKey{}, tt.bound())
+		meta.bound = tt.bound()
 	}
 
-	return ctx, cancel
+	return meta
 }
 
 func Test_pipeline(t *testing.T) {
@@ -1538,7 +1543,7 @@ func Test_pipeline(t *testing.T) {
 				defer cancel(nil)
 
 				call := pipeline(&spec, stateOutput(tt.call(rec)))
-				got := call(ctx, &callMeta{execution: infoExecution}, baseFor(t, &tt))
+				got := call(ctx, rowMeta(&tt), baseFor(t, &tt))
 
 				time.Sleep(time.Minute)
 

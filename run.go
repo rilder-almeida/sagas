@@ -92,6 +92,7 @@ type runner[S any] struct {
 	compErrs    []*Error
 	failed      bool
 	serial      bool
+	bound       *graceBound
 }
 
 func (r *runner[S]) append(ctx context.Context, e *Event, secrets ...FieldValue) error {
@@ -264,8 +265,10 @@ func (s *Saga[S]) Run(ctx context.Context, st *S) error {
 		compErrs: make([]*Error, len(s.steps)), serial: serial.On(ctx),
 	}
 
-	grace, release := graceContext(ctx, s.recovery)
+	grace, bound, release := graceContext(ctx, s.recovery)
 	defer release()
+
+	r.bound = bound
 
 	zoned := make([]StepZone, len(s.steps))
 	for i := range s.steps {

@@ -147,7 +147,7 @@ func runAttempts(ctx context.Context, p RetryPolicy, meta *callMeta, call Call, 
 		meta.attempt = attempt
 
 		err := call(ctx)
-		if err == nil || !retryable(err) || attempt >= p.attempts() || errors.Is(meta.cause, ErrGraceEnded) ||
+		if err == nil || !retryable(err) || attempt >= p.attempts() || meta.graceCut() ||
 			!sleep(ctx, backoff(p, attempt, draw)) {
 			return err
 		}

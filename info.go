@@ -13,6 +13,7 @@ type callMeta struct {
 	replaced  []error
 	cause     error
 	label     *KindError
+	bound     *graceBound
 }
 
 func (m *callMeta) mark(label *KindError) {

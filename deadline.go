@@ -7,12 +7,23 @@ import (
 	"time"
 )
 
-type graceBoundKey struct{}
+type graceEndError struct {
+	grace time.Duration
+}
+
+func (*graceEndError) Error() string { return ErrGraceEnded.Error() }
+
+func (*graceEndError) Is(target error) bool { return target == ErrGraceEnded }
 
 type graceBound struct {
 	grace time.Duration
+	cause error
 	mu    sync.Mutex
 	ended time.Time
+}
+
+func newGraceBound(d time.Duration) *graceBound {
+	return &graceBound{grace: d, cause: &graceEndError{grace: d}}
 }
 
 func (b *graceBound) end(at time.Time) {
@@ -23,6 +34,10 @@ func (b *graceBound) end(at time.Time) {
 }
 
 func (b *graceBound) deadline() (time.Time, bool) {
+	if b == nil {
+		return time.Time{}, false
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -33,16 +48,31 @@ func (b *graceBound) deadline() (time.Time, bool) {
 	return b.ended.Add(b.grace), true
 }
 
+func (b *graceBound) cut(grace context.Context, out *outcome) bool {
+	if errors.Is(out.cause, b.cause) {
+		<-grace.Done()
+	}
+
+	return graceEnded(grace)
+}
+
+func (m *callMeta) graceCut() bool {
+	return m.bound != nil && errors.Is(m.cause, m.bound.cause)
+}
+
 func withDeadline(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error {
 		parent, at, why := ctx, time.Now().Add(d), cause
-		if b, ok := ctx.Value(graceBoundKey{}).(*graceBound); ok {
-			if end, ended := b.deadline(); ended && !at.Before(end) {
-				parent, at, why = context.WithoutCancel(ctx), end, ErrGraceEnded
-			}
+		if end, ended := meta.bound.deadline(); ended && !at.Before(end) {
+			parent, at, why = context.WithoutCancel(ctx), end, meta.bound.cause
 		}
 
-		ctx, cancel := context.WithDeadlineCause(parent, at, why)
+		var cancel context.CancelFunc
+		if inherited, ok := parent.Deadline(); ok && !inherited.After(at) {
+			ctx, cancel = context.WithCancel(parent)
+		} else {
+			ctx, cancel = context.WithDeadlineCause(parent, at, why)
+		}
 		defer cancel()
 
 		err := call(ctx)
@@ -56,14 +86,14 @@ func withDeadline(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
 
 type waitRelease func()
 
-func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRelease) {
-	bound := &graceBound{grace: d}
-	grace, cancel := context.WithCancelCause(context.WithValue(context.WithoutCancel(ctx), graceBoundKey{}, bound))
+func graceContext(ctx context.Context, d time.Duration) (context.Context, *graceBound, waitRelease) {
+	bound := newGraceBound(d)
+	grace, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	expire := context.CancelFunc(func() {})
 
 	callerDeadline, hasDeadline := ctx.Deadline()
 	if hasDeadline {
-		grace, expire = context.WithDeadlineCause(grace, callerDeadline.Add(d), ErrGraceEnded)
+		grace, expire = context.WithDeadlineCause(grace, callerDeadline.Add(d), bound.cause)
 	}
 
 	done := make(chan struct{})
@@ -78,9 +108,6 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 		}
 
 		if hasDeadline && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			bound.end(callerDeadline)
-			<-grace.Done()
-
 			return
 		}
 
@@ -91,12 +118,12 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 
 		select {
 		case <-timer.C:
-			cancel(ErrGraceEnded)
+			cancel(bound.cause)
 		case <-grace.Done():
 		}
 	}()
 
-	return grace, func() {
+	return grace, bound, func() {
 		cancel(nil)
 		expire()
 		<-done

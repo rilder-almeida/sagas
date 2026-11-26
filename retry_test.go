@@ -441,7 +441,7 @@ func Test_runAttempts(t *testing.T) {
 	tests := []struct {
 		name        string
 		draw        func(int64) int64
-		cause       error
+		cause       func(*graceBound) error
 		wantSeen    []int
 		wantErr     error
 		wantElapsed time.Duration
@@ -465,12 +465,19 @@ func Test_runAttempts(t *testing.T) {
 			wantElapsed: 600*time.Millisecond - 2,
 		},
 		{
-			name: "[Fail] When: an attempt ends with the cause ErrGraceEnded and the context lives ; " +
+			name: "[Fail] When: an attempt ends with the grace end of this run as its cause and the context lives ; " +
 				"Should: stop without a retry",
 			draw:     func(int64) int64 { return 0 },
-			cause:    ErrGraceEnded,
+			cause:    func(b *graceBound) error { return b.cause },
 			wantSeen: []int{1},
 			wantErr:  errA,
+		},
+		{
+			name: "[Success] When: an attempt ends with ErrGraceEnded that did not come from this run ; " +
+				"Should: retry as usual",
+			draw:     func(int64) int64 { return 0 },
+			cause:    func(*graceBound) error { return ErrGraceEnded },
+			wantSeen: []int{1, 2, 3},
 		},
 	}
 
@@ -479,13 +486,16 @@ func Test_runAttempts(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				meta := &callMeta{execution: infoExecution}
+				bound := newGraceBound(time.Minute)
+				meta := &callMeta{execution: infoExecution, bound: bound}
 
 				var seen []int
 
 				script := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
 				call := func(ctx context.Context) error {
-					meta.end(tt.cause)
+					if tt.cause != nil {
+						meta.end(tt.cause(bound))
+					}
 
 					return script(ctx)
 				}

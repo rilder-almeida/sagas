@@ -2805,6 +2805,9 @@ func deadlineRows() []runRow {
 		graceCutRow(),
 		forwardGraceCutRow(),
 		deadlineGraceCutRow(),
+		deadlineTieRow(),
+		nestedGraceRow(),
+		callerGraceCauseRow(),
 	}
 }
 
@@ -2982,5 +2985,101 @@ func deadlineGraceCutRow() runRow {
 		wantTrail: seq(
 			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"),
 		),
+	}
+}
+
+func deadlineTieRow() runRow {
+	row := deadlineGraceCutRow()
+	row.name = "[Fail] When: a compensation timeout lands exactly on the caller deadline plus the grace period ; " +
+		"Should: let only the grace deadline cut it"
+	row.opts = []Option{WithRecoveryTimeout(25 * pause)}
+
+	return row
+}
+
+func nestedGraceRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation runs a nested saga after the caller ended ; " +
+			"Should: keep the outer attempt deadline on the nested steps and end both runs on time",
+		steps: func(rec *recorder) Flow {
+			start := time.Now()
+			x := undoing("x", func(ctx context.Context, _ tripState) error {
+				rec.add(deadlineText(ctx, "x", start))
+				<-ctx.Done()
+				rec.add("x end " + time.Since(start).String())
+
+				return ctx.Err()
+			}, okAction)
+			w := act("w", func(context.Context, tripState) error {
+				time.Sleep(2 * pause)
+
+				return nil
+			})
+
+			inner, err := New[tripState]("inner", Sequence(w, x))
+			if err != nil {
+				panic(err)
+			}
+
+			b := undoing("b", okAction, func(ctx context.Context, _ tripState) error {
+				runErr := inner.Run(ctx, &tripState{})
+				rec.add(
+					fmt.Sprintf(
+						"inner returned %v compensated %v",
+						time.Since(start),
+						errors.Is(runErr, ErrCompensated),
+					),
+				)
+
+				return ctx.Err()
+			})
+			b.RecoveryPolicy = RecoveryPolicy{Attempts: 1, AttemptTimeout: 5 * pause}
+
+			return Sequence(b, once("c", alwaysFails))
+		},
+		opts:          []Option{WithRecoveryTimeout(10 * pause)},
+		cancelAfter:   pause,
+		cancelCause:   errStop,
+		wantStatus:    StatusCompensationFailed,
+		wantKind:      ErrCompensationFailed,
+		wantKinds:     map[string]*KindError{"c": ErrFailed, comp("b"): ErrUnknown},
+		wantFailed:    []string{"c", comp("b")},
+		wantErrText:   map[string]string{"c": errAlwaysFails.Error(), comp("b"): context.DeadlineExceeded.Error()},
+		wantAttempts:  map[string]int{"c": 1, comp("b"): 1},
+		wantCauseText: map[string]string{comp("b"): timedOutText("b", 5*pause)},
+		wantErrs:      []error{errAlwaysFails, context.DeadlineExceeded},
+		wantNotErrs:   []error{ErrCompensated},
+		wantSteps:     map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:   []string{"b"},
+		wantOrder: [][2]string{
+			{"x deadline 5s", "x end 5s"}, {"x end 5s", "inner returned 5s compensated true"},
+		},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"), undoFailedOf("b"),
+			suspended,
+		),
+	}
+}
+
+func callerGraceCauseRow() runRow {
+	return runRow{
+		name: "[Fail] When: the caller cancels with ErrGraceEnded as its own cause while a step runs ; " +
+			"Should: end the step at once and not wait for the grace period",
+		steps: func(*recorder) Flow {
+			return once("a", blockedOnCtx)
+		},
+		opts:         []Option{WithRecoveryTimeout(10 * pause)},
+		cancelAfter:  pause,
+		cancelCause:  ErrGraceEnded,
+		wantStatus:   StatusCompensated,
+		wantKind:     ErrCompensated,
+		wantKinds:    map[string]*KindError{"a": ErrUnknown},
+		wantFailed:   []string{"a"},
+		wantErrText:  map[string]string{"a": canceledTxt},
+		wantAttempts: map[string]int{"a": 1},
+		wantCauseIs:  map[string]error{"a": ErrGraceEnded},
+		wantErrs:     []error{context.Canceled, ErrGraceEnded},
+		wantSteps:    map[string]stepStatus{"a": stepUnknown},
+		wantTrail:    seq(opened, startOf("a"), lostOf("a"), closed),
 	}
 }
