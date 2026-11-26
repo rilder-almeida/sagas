@@ -10,7 +10,7 @@ This file lists the notable changes of each release. The format follows [Keep a 
 - `sagastest.Recorder.Wrap` makes `*sagastest.Recorder` a middleware value. `sagastest.Recorder.Attempts` returns a copy of the recorded attempts, in the order the calls returned.
 - `sagastest.Services` is the test type that holds the fakes of one case. Its method `Flow() *sagas.Group` gives the flow, and its method `Check` checks the fakes and the final state.
 - `sagastest.CompensationServices` is a `sagastest.Services` with the method `ExecuteLate`, which runs an action again after its compensation.
-- `sagastest.Case` is one named case. Its method `Run` runs the case and returns an error.
+- `sagastest.Case` is one named case. If the case passes, its method `Run` returns nil. If the case fails, `Run` returns an error that wraps a sentinel. `Run` panics on a `Case` that no case list built.
 - `sagastest.CompensationCases`, `sagastest.PivotCases`, `sagastest.JournalCases` and `sagastest.SecretStoreCases` return the cases of a contract.
 - `sagastest.TestCompensations`, `sagastest.TestPivot`, `sagastest.TestJournal` and `sagastest.TestSecretStore` run each case of a contract in its own subtest.
 - The error of a case wraps one of seven sentinel errors: `sagastest.ErrCleanRun`, `sagastest.ErrNoStepToTest`, `sagastest.ErrNotStarted`, `sagastest.ErrOutcome`, `sagastest.ErrCheck`, `sagastest.ErrJournalContract` and `sagastest.ErrSecretStoreContract`.
@@ -18,12 +18,11 @@ This file lists the notable changes of each release. The format follows [Keep a 
 ### Changed
 
 - `sagastest.Fail`, `sagastest.Unknown` and `sagastest.Panic` panic on a nil `sagastest.FaultOption`, and on a repeated `sagastest.OnPhase` or `sagastest.OnAttempts`.
-- `sagastest.Case.Run` panics on a `sagastest.Case` that no case list built.
 
 ### Removed
 
 - `sagastest.Call`, `sagastest.Recorder.Middleware` and `sagastest.Recorder.Calls`. Use `sagastest.Attempt`, `sagastest.Recorder.Wrap` and `sagastest.Recorder.Attempts`.
-- `sagastest.Setup` and the old `sagastest.Case` struct, which held one saga under test.
+- `sagastest.Setup` and the old `sagastest.Case` struct, which held one saga under test. Use a type that implements `sagastest.Services`. To give the saga options, add a method `Options() []sagas.Option` to that type.
 - `sagastest.Compensations`, `sagastest.Pivot` and `sagastest.Journal`. Use `sagastest.TestCompensations`, `sagastest.TestPivot` and `sagastest.TestJournal`.
 
 ## [0.1.0] - 2026-11-23
