@@ -144,71 +144,44 @@ func Test_graceContext(t *testing.T) {
 	}
 }
 
-func Test_graceContext_releaseWaits(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-	}{
-		{name: "[Success] When: the helper goroutine is still running ; Should: return only after it exits"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			synctest.Test(t, func(t *testing.T) {
-				gate := make(chan struct{})
-				_, _, release := graceContext(&gatedContext{gate: gate, free: 1}, time.Minute)
-
-				returned := make(chan struct{})
-
-				go func() {
-					release()
-					close(returned)
-				}()
-
-				synctest.Wait()
-				assert.False(t, isClosed(returned), "release returned while the helper goroutine was alive")
-
-				close(gate)
-				synctest.Wait()
-				assert.True(t, isClosed(returned), "release did not return after the helper goroutine exited")
-			})
-		})
-	}
-}
-
-func Test_graceContext_firstReader(t *testing.T) {
+func Test_graceContext_gatedCaller(t *testing.T) {
 	t.Parallel()
 
 	const grace = time.Minute
 
 	tests := []struct {
-		name     string
-		deadline time.Duration
-		closeAt  time.Duration
-		wantEnd  time.Duration
+		name      string
+		deadline  time.Duration
+		closeAt   time.Duration
+		callerErr error
+		wantEnd   time.Duration
 	}{
+		{
+			name: "[Success] When: the caller never ends and the helper goroutine is held ; " +
+				"Should: report no bound and return from release only after the goroutine exits",
+		},
 		{
 			name: "[Success] When: the caller has no deadline and ends before the first read ; " +
 				"Should: record the read instant",
-			closeAt: time.Hour,
-			wantEnd: 2*time.Hour + grace,
+			closeAt:   time.Hour,
+			callerErr: context.Canceled,
+			wantEnd:   2*time.Hour + grace,
 		},
 		{
 			name: "[Success] When: the caller ends at its deadline D and the first read comes after D ; " +
 				"Should: record D",
-			deadline: time.Hour,
-			closeAt:  time.Hour,
-			wantEnd:  time.Hour + grace,
+			deadline:  time.Hour,
+			closeAt:   time.Hour,
+			callerErr: context.DeadlineExceeded,
+			wantEnd:   time.Hour + grace,
 		},
 		{
 			name: "[Success] When: the caller cancels before its deadline D and the first read comes after D ; " +
 				"Should: record D",
-			deadline: time.Hour,
-			closeAt:  time.Second,
-			wantEnd:  time.Hour + grace,
+			deadline:  time.Hour,
+			closeAt:   time.Second,
+			callerErr: context.Canceled,
+			wantEnd:   time.Hour + grace,
 		},
 	}
 
@@ -224,16 +197,33 @@ func Test_graceContext_firstReader(t *testing.T) {
 					caller.deadline = start.Add(tt.deadline)
 				}
 
-				time.AfterFunc(tt.closeAt, func() { close(caller.caller) })
+				if tt.closeAt > 0 {
+					time.AfterFunc(tt.closeAt, func() {
+						caller.err = tt.callerErr
+						close(caller.caller)
+					})
+				}
 
 				_, bound, release := graceContext(caller, grace)
 
 				time.Sleep(2 * time.Hour)
 
 				assert.Equal(t, tt.wantEnd, boundAfter(bound, start))
+				assert.Equal(t, tt.callerErr, caller.Err())
+
+				returned := make(chan struct{})
+
+				go func() {
+					release()
+					close(returned)
+				}()
+
+				synctest.Wait()
+				assert.False(t, isClosed(returned), "release returned while the helper goroutine was alive")
 
 				close(caller.gate)
-				release()
+				synctest.Wait()
+				assert.True(t, isClosed(returned), "release did not return after the helper goroutine exited")
 			})
 		})
 	}
@@ -244,6 +234,7 @@ type gatedContext struct {
 	free     int32
 	calls    atomic.Int32
 	caller   chan struct{}
+	err      error
 	deadline time.Time
 }
 
@@ -257,7 +248,14 @@ func (c *gatedContext) Done() <-chan struct{} {
 	return c.caller
 }
 
-func (*gatedContext) Err() error { return nil }
+func (c *gatedContext) Err() error {
+	select {
+	case <-c.caller:
+		return c.err
+	default:
+		return nil
+	}
+}
 
 func (*gatedContext) Value(any) any { return nil }
 
