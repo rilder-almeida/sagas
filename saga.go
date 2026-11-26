@@ -270,7 +270,8 @@ func WithObserver(o ...Observer) Option {
 }
 
 // WithEventQueue sets the queue that carries the events of each run to the observers. Left out, a saga with an
-// observer uses a fresh MemoryEventQueue of DefaultEventQueueSize.
+// observer uses a fresh MemoryEventQueue. Each New with an observer subscribes one more deliverer to the queue, so
+// several New calls with one saga name on a shared queue deliver each event once per call.
 func WithEventQueue(q EventQueue) Option {
 	return func(d *definition) {
 		d.queue = q

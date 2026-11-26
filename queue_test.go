@@ -258,6 +258,7 @@ func Test_MemoryEventQueue_Enqueue(t *testing.T) {
 		hold         bool
 		closeFirst   bool
 		changeAfter  bool
+		scribble     bool
 		sent         int
 		wantAccepted int
 		wantErr      error
@@ -273,6 +274,10 @@ func Test_MemoryEventQueue_Enqueue(t *testing.T) {
 		{
 			name: "[Success] When: the caller changes its events before delivery ; Should: deliver the events as sent",
 			hold: true, changeAfter: true, sent: 2, wantAccepted: 2,
+		},
+		{
+			name:     "[Success] When: the first subscriber changes its event ; Should: give the second the sent event",
+			scribble: true, sent: 2, wantAccepted: 2,
 		},
 		{
 			name:       "[Fail] When: the queue is closed ; Should: return an error and deliver nothing",
@@ -291,6 +296,8 @@ func Test_MemoryEventQueue_Enqueue(t *testing.T) {
 				if tt.hold {
 					first = heldLog()
 				}
+
+				first.scribble = tt.scribble
 
 				q.Subscribe(first)
 				q.Subscribe(second)

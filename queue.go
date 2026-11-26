@@ -22,8 +22,9 @@ type EventQueue interface {
 	Subscribe(o Observer)
 }
 
-// MemoryEventQueue is an EventQueue in memory. One goroutine gives each event, in order, to every subscriber. It
-// recovers a panic in Observe, logs it to slog.Default() as a PanicError, and goes on.
+// MemoryEventQueue is an EventQueue in memory. One goroutine gives each subscriber its own copy of each event, in
+// order. It recovers a panic in Observe, logs it to slog.Default() as a PanicError, and goes on. Make it with
+// NewMemoryEventQueue, because the zero value does not work.
 type MemoryEventQueue struct {
 	deliveries chan func(Observer)
 	done       chan struct{}
@@ -86,7 +87,11 @@ func (q *MemoryEventQueue) Enqueue(ctx context.Context, e *Event) error {
 	}
 
 	select {
-	case q.deliveries <- func(o Observer) { observeSafely(detached, o, &stored) }:
+	case q.deliveries <- func(o Observer) {
+		own := stored
+		cloneSlices(&own)
+		observeSafely(detached, o, &own)
+	}:
 		return nil
 	default:
 		return errQueueFull
