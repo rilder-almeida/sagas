@@ -310,11 +310,8 @@ func invoke[S any](
 func pipeline[S any](given *callSpec, call func(context.Context, *S) (encodedOutput, error)) callFunc[S] {
 	spec := new(*given)
 
-	var timeoutCause error
-	if spec.timesOut() {
-		timeoutCause = fmt.Errorf("sagas: step %q timed out after %v: %w", spec.step, spec.timeout,
-			context.DeadlineExceeded)
-	}
+	timeoutCause := fmt.Errorf("sagas: step %q timed out after %v: %w", spec.step, spec.timeout,
+		context.DeadlineExceeded)
 
 	return func(ctx context.Context, meta *callMeta, base snapshot[S]) outcome {
 		var output encodedOutput
@@ -354,20 +351,13 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) (encodedOut
 
 const coreLayers = 4
 
-func (s *callSpec) timesOut() bool {
-	return s.timeout > 0
-}
-
 func attemptLayers[S any](
 	spec *callSpec, meta *callMeta, at *attemptState[S], output *encodedOutput, timeoutCause error,
 ) []Middleware {
 	layers := make([]Middleware, 0, len(spec.middleware)+coreLayers)
 
-	if spec.timesOut() {
-		layers = append(layers, withDeadline(meta, spec.timeout, timeoutCause))
-	}
-
-	layers = append(layers, recoverer(meta), requireRan(at, meta, output))
+	layers = append(layers,
+		withDeadline(meta, spec.timeout, timeoutCause), recoverer(meta), requireRan(at, meta, output))
 	layers = append(layers, spec.middleware...)
 
 	if spec.wrap != nil {

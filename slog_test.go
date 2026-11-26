@@ -169,7 +169,7 @@ func Test_Slog_Wrap(t *testing.T) {
 				} else {
 					spec := &callSpec{
 						saga: tt.info.Saga, step: tt.info.Step, phase: tt.info.Phase, retry: tt.policy,
-						middleware: []Middleware{mw},
+						timeout: DefaultAttemptTimeout, middleware: []Middleware{mw},
 					}
 					meta := &callMeta{execution: tt.info.Execution}
 					err = pipeline(spec, stateOutput(call))(t.Context(), meta, baseOf(t, pipeState{})).err

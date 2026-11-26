@@ -1572,7 +1572,8 @@ func Benchmark_pipeline(b *testing.B) {
 	for _, bb := range benches {
 		b.Run(bb.name, func(b *testing.B) {
 			spec := callSpec{
-				saga: "s", step: "pay", phase: PhaseExecute, timeout: bb.timeout, retry: RetryPolicy{Attempts: 1},
+				saga: "s", step: "pay", phase: PhaseExecute, timeout: attemptTimeout(bb.timeout),
+				retry: RetryPolicy{Attempts: 1},
 			}
 			call := pipeline(&spec, func(context.Context, *pipeState) (encodedOutput, error) {
 				return encodedOutput{}, nil
@@ -1864,45 +1865,6 @@ func Test_compose(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantTrace, rec.snapshot())
-		})
-	}
-}
-
-func Test_callSpec_timesOut(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		spec callSpec
-		want bool
-	}{
-		{
-			name: "[Success] When: an execute call has a timeout ; Should: time out",
-			spec: callSpec{phase: PhaseExecute, timeout: time.Second},
-			want: true,
-		},
-		{
-			name: "[Success] When: a pivot call has a timeout ; Should: time out",
-			spec: callSpec{phase: PhasePivot, timeout: time.Second},
-			want: true,
-		},
-		{
-			name: "[Success] When: an execute call has no timeout ; Should: not time out",
-			spec: callSpec{phase: PhaseExecute},
-			want: false,
-		},
-		{
-			name: "[Success] When: a compensate call has a timeout ; Should: time out",
-			spec: callSpec{phase: PhaseCompensate, timeout: time.Second},
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, tt.spec.timesOut())
 		})
 	}
 }

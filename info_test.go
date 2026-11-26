@@ -106,7 +106,10 @@ func Test_IdempotencyKey(t *testing.T) {
 			got := IdempotencyKey(t.Context())
 
 			if tt.inCall {
-				spec := &callSpec{saga: infoSaga, step: secondStep, phase: tt.phase, retry: RetryPolicy{Attempts: 1}}
+				spec := &callSpec{
+					saga: infoSaga, step: secondStep, phase: tt.phase, retry: RetryPolicy{Attempts: 1},
+					timeout: DefaultAttemptTimeout,
+				}
 				call := func(ctx context.Context, _ *pipeState) (encodedOutput, error) {
 					got = IdempotencyKey(ctx)
 
@@ -192,7 +195,7 @@ func pipelineLabel(tb testing.TB, m *callMeta) *KindError {
 
 	spec := &callSpec{
 		saga: infoSaga, step: secondStep, phase: PhaseExecute, retry: RetryPolicy{Attempts: 1},
-		middleware: []Middleware{MiddlewareFunc(replacing)},
+		timeout: DefaultAttemptTimeout, middleware: []Middleware{MiddlewareFunc(replacing)},
 	}
 	call := func(context.Context, *pipeState) (encodedOutput, error) { return encodedOutput{}, errBoom }
 
