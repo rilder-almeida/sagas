@@ -305,8 +305,8 @@ func lateForwardOnlyAfterRejectionRow() runRow {
 		name: "[Fail] When: a forward-only step times out and fails after the grace end once the journal rejected " +
 			"an event ; Should: join ErrGraceEnded to its error and match the caller cause",
 		steps: func(rec *recorder) Flow {
-			z := once("z", lateFailure)
-			z.AttemptTimeout = pause / 2
+			z := onceForward("z", lateFailure)
+			z.RecoveryPolicy.AttemptTimeout = pause / 2
 
 			return Sequence(rec.undoable("a"), rec.pivot(), Parallel(z, rec.step("y")))
 		},
@@ -422,7 +422,7 @@ func lateSiblingAfterOwnFailureRow() runRow {
 			y := producing("y", func(ctx context.Context, s tripState) (Hotel, error) {
 				return hotelRitz, lateSuccess(ctx, s)
 			})
-			z := once("z", func(context.Context, tripState) error {
+			z := onceForward("z", func(context.Context, tripState) error {
 				time.Sleep(pause * 3 / 2)
 
 				return errAlwaysFails
@@ -643,7 +643,7 @@ func forwardOnlyOwnFailureRow() runRow {
 		name: "[Fail] When: a forward-only step fails with its own error after a caller cancel and before the " +
 			"grace end ; Should: end ErrIncomplete without matching the caller cause",
 		steps: func(rec *recorder) Flow {
-			z := once("z", func(context.Context, tripState) error {
+			z := onceForward("z", func(context.Context, tripState) error {
 				time.Sleep(pause)
 
 				return errAlwaysFails
@@ -839,7 +839,12 @@ func forwardOnlyFailureRow() runRow {
 				return hotelRitz, ctx.Err()
 			})
 
-			return Sequence(rec.undoable("a"), rec.pivot(), Parallel(sibling, once("z", alwaysFails)), rec.step("w"))
+			return Sequence(
+				rec.undoable("a"),
+				rec.pivot(),
+				Parallel(sibling, onceForward("z", alwaysFails)),
+				rec.step("w"),
+			)
 		},
 		wantStatus:   StatusIncomplete,
 		wantKind:     ErrIncomplete,
@@ -868,8 +873,7 @@ func forwardOnlyGraceEndRow() runRow {
 		name: "[Fail] When: a forward-only step still runs when the grace period ends ; " +
 			"Should: end it unknown with ErrGraceEnded and end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
-			z := act("z", blockedOnCtx)
-			z.RetryPolicy = NoRetry()
+			z := onceForward("z", blockedOnCtx)
 
 			return Sequence(rec.undoable("a"), rec.pivot(), z)
 		},
@@ -899,8 +903,8 @@ func forwardOnlyLateFailureRow() runRow {
 		name: "[Fail] When: a forward-only step times out, ignores it and fails after the grace period ; " +
 			"Should: keep ErrFailed and the timeout cause, and join ErrGraceEnded to its error",
 		steps: func(rec *recorder) Flow {
-			z := once("z", lateFailure)
-			z.AttemptTimeout = pause / 2
+			z := onceForward("z", lateFailure)
+			z.RecoveryPolicy.AttemptTimeout = pause / 2
 
 			return Sequence(rec.undoable("a"), rec.pivot(), z)
 		},
@@ -1058,6 +1062,7 @@ func noCallerCancelRow() runRow {
 
 				return Permanent(ctx.Err())
 			})
+			p.AttemptTimeout = 3 * DefaultRecoveryTimeout
 
 			return Sequence(rec.step("a"), p)
 		},

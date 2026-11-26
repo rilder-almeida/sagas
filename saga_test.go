@@ -41,8 +41,11 @@ const (
 	quotedB  = `"b"`
 	stopText = "sagas: stopped because the run failed"
 
-	nilOptionText   = "nil Option"
-	outputNamedText = "want a type declared with a name"
+	nilOptionText     = "nil Option"
+	retryAfterPivot   = "RetryPolicy on a step after the pivot"
+	timeoutAfterPivot = "AttemptTimeout on a step after the pivot"
+	recoveryNoEffect  = "RecoveryPolicy on a step without Compensate that is not after the pivot"
+	outputNamedText   = "want a type declared with a name"
 )
 
 type Car string
@@ -118,6 +121,17 @@ func Test_New(t *testing.T) {
 		Sequence(act("b1", okAction), producing("b2", makeHotel)),
 	)
 
+	retriedAfter := act("z", okAction)
+	retriedAfter.RetryPolicy = RetryPolicy{NoJitter: true}
+	timedAfter := act("z", okAction)
+	timedAfter.AttemptTimeout = time.Second
+	recoveringAfter := act("z", okAction)
+	recoveringAfter.RecoveryPolicy = RecoveryPolicy{Attempts: 2}
+	recoveringBefore := act("b", okAction)
+	recoveringBefore.RecoveryPolicy = RecoveryPolicy{NoJitter: true}
+	recoveringUndo := undoing("b", okAction, okAction)
+	recoveringUndo.RecoveryPolicy = RecoveryPolicy{Attempts: 2}
+
 	tests := []struct {
 		name         string
 		saga         string
@@ -129,6 +143,39 @@ func Test_New(t *testing.T) {
 		{
 			name: "[Success] When: the saga is valid ; Should: return a saga",
 			saga: tripName, flow: a,
+		},
+		{
+			name: "[Fail] When: a step after the pivot sets RetryPolicy ; Should: refuse it naming the step",
+			saga: tripName, flow: Sequence(paying("p", okAction), retriedAfter),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "z"`, retryAfterPivot},
+		},
+		{
+			name: "[Fail] When: a step after the pivot sets AttemptTimeout ; Should: refuse it naming the step",
+			saga: tripName, flow: Sequence(paying("p", okAction), timedAfter),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{`step "z"`, timeoutAfterPivot},
+		},
+		{
+			name: "[Fail] When: a step before the pivot without Compensate sets RecoveryPolicy ; Should: refuse it",
+			saga: tripName, flow: Sequence(recoveringBefore, paying("p", okAction)),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{stepB, recoveryNoEffect},
+		},
+		{
+			name: "[Fail] When: a saga without a pivot has a step without Compensate that sets RecoveryPolicy ; " +
+				"Should: refuse it",
+			saga: tripName, flow: recoveringBefore,
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{stepB, recoveryNoEffect},
+		},
+		{
+			name: "[Success] When: a step after the pivot sets RecoveryPolicy ; Should: build",
+			saga: tripName, flow: Sequence(paying("p", okAction), recoveringAfter),
+		},
+		{
+			name: "[Success] When: a step with Compensate before the pivot sets RecoveryPolicy ; Should: build",
+			saga: tripName, flow: Sequence(recoveringUndo, paying("p", okAction)),
 		},
 		{
 			name:         "[Fail] When: the saga name is empty ; Should: reject it naming the saga",
@@ -428,9 +475,12 @@ func Test_New_stepSettings(t *testing.T) {
 			wantAttempts: 1, wantElapsed: 2 * time.Second,
 		},
 		{
-			name:     "[Success] When: AttemptTimeout is zero ; Should: set no limit",
-			settings: Step[tripState, None]{}, execute: twoSecondCall,
-			wantAttempts: 1, wantElapsed: 2 * time.Second,
+			name: "[Success] When: AttemptTimeout is zero and Execute takes 2s ; " +
+				"Should: let it finish under DefaultAttemptTimeout",
+			settings:     Step[tripState, None]{},
+			execute:      twoSecondCall,
+			wantAttempts: 1,
+			wantElapsed:  2 * time.Second,
 		},
 		{
 			name:     "[Fail] When: the step value changes after New ; Should: run with the settings New copied",
@@ -877,7 +927,7 @@ func Test_stepNode_buildCalls(t *testing.T) {
 
 			var n stepNode[tripState]
 
-			n.buildCalls(tripName, report, methods, []Middleware{phased(rec, "mw")})
+			n.buildCalls(tripName, report, ZoneCompensable, methods, []Middleware{phased(rec, "mw")})
 
 			require.Equal(t, outcomeSuccess, callOnce(t, n.action).kind)
 			require.Equal(t, tt.wantCompensation, n.compensation != nil)

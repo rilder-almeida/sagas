@@ -1037,7 +1037,7 @@ func Test_Saga_Run(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range slices.Concat(
-		forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows(), runRows(), resendRows(),
+		forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows(), runRows(), resendRows(), recoveryRows(),
 	) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -1428,7 +1428,7 @@ func lateForwardOnlyVerdictRow() runRow {
 		name: "[Fail] When: a forward-only Enabled method says yes after a sibling failed ; " +
 			"Should: not start the step and end ErrIncomplete",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.pivot(), Parallel(once("y", alwaysFails), rec.stepIf("z", rec.lateYes("z"))))
+			return Sequence(rec.pivot(), Parallel(onceForward("y", alwaysFails), rec.stepIf("z", rec.lateYes("z"))))
 		},
 		wantStatus:   StatusIncomplete,
 		wantKind:     ErrIncomplete,
@@ -1705,7 +1705,7 @@ func finishedAfterIncompleteRow() runRow {
 		name: "[Fail] When: the saga-finished append of an incomplete run fails ; " +
 			"Should: keep ErrIncomplete and match ErrJournal",
 		steps: func(rec *recorder) Flow {
-			return Sequence(rec.undoable("a"), rec.pivot(), once("z", alwaysFails))
+			return Sequence(rec.undoable("a"), rec.pivot(), onceForward("z", alwaysFails))
 		},
 		script:       map[int]error{8: errJournalDown},
 		wantStatus:   noEndStatus,
@@ -2721,4 +2721,190 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 			assertSecrets(t, secrets, writerOf(events), tt.wantSecrets, tt.wantMissing)
 		})
 	}
+}
+
+func failsTimes(n int32) func(context.Context, tripState) error {
+	var calls atomic.Int32
+
+	return func(context.Context, tripState) error {
+		if calls.Add(1) <= n {
+			return errAlwaysFails
+		}
+
+		return nil
+	}
+}
+
+func timedOutText(step string, after time.Duration) string {
+	return fmt.Sprintf("sagas: step %q timed out after %v: %v", step, after, context.DeadlineExceeded)
+}
+
+func recoveryRows() []runRow {
+	return []runRow{
+		compensationRetriedRow(),
+		forwardOnlyRetriedRow(),
+		forwardOnlyGraceRetryRow(),
+		compensationPermanentRow(),
+		defaultTimeoutRow(),
+		compensationTimeoutRow(),
+		recoveryTimeoutRow(),
+	}
+}
+
+func compensationRetriedRow() runRow {
+	return runRow{
+		name: "[Success] When: a compensation fails 5 times and then succeeds ; " +
+			"Should: retry it under the zero RecoveryPolicy and end compensated",
+		wantCompensated: []string{"a"},
+		steps: func(*recorder) Flow {
+			return Sequence(undoing("a", okAction, failsTimes(5)), once("b", alwaysFails))
+		},
+		wantStatus:        StatusCompensated,
+		wantKind:          ErrCompensated,
+		wantKinds:         map[string]*KindError{"b": ErrFailed},
+		wantFailed:        []string{"b"},
+		wantErrText:       map[string]string{"b": errAlwaysFails.Error()},
+		wantAttempts:      map[string]int{"b": 1},
+		wantErrs:          []error{errAlwaysFails},
+		wantEventAttempts: map[string]int{undoneOf("a"): 6},
+		wantSteps:         map[string]stepStatus{"a": stepCompensated, "b": stepFailed},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoneOf("a"), closed,
+		),
+	}
+}
+
+func forwardOnlyRetriedRow() runRow {
+	return runRow{
+		name: "[Success] When: a forward-only action fails 5 times and then succeeds ; " +
+			"Should: retry it under the zero RecoveryPolicy and complete",
+		steps: func(rec *recorder) Flow {
+			return Sequence(rec.undoable("a"), rec.pivot(), act("z", failsTimes(5)))
+		},
+		wantStatus:        StatusCompleted,
+		wantEventAttempts: map[string]int{doneOf("z"): 6},
+		wantSteps:         map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepSucceeded},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), doneOf("z"), closed,
+		),
+		wantZones: pivotZones("z"),
+	}
+}
+
+func forwardOnlyGraceRetryRow() runRow {
+	return runRow{
+		name: "[Fail] When: a forward-only action never succeeds and the caller stops ; " +
+			"Should: retry it until the grace period ends and end ErrIncomplete with ErrGraceEnded",
+		steps: func(rec *recorder) Flow {
+			z := act("z", alwaysFails)
+			z.RecoveryPolicy = RecoveryPolicy{NoJitter: true}
+
+			return Sequence(rec.undoable("a"), rec.pivot(), z)
+		},
+		opts:           []Option{WithRecoveryTimeout(time.Minute)},
+		cancelAfter:    time.Minute,
+		cancelCause:    errStop,
+		wantStatus:     noEndStatus,
+		wantKind:       ErrIncomplete,
+		wantKinds:      map[string]*KindError{"z": ErrFailed},
+		wantFailed:     []string{"z"},
+		wantErrText:    map[string]string{"z": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{"z": 11},
+		wantPreviousIs: map[string][]error{"z": slices.Repeat([]error{errAlwaysFails}, 10)},
+		wantCauseIs:    map[string]error{"z": ErrGraceEnded},
+		wantUnrecorded: []string{"z"},
+		wantErrs:       []error{errAlwaysFails, ErrGraceEnded, errStop},
+		wantNotErrs:    []error{ErrCompensated, ErrJournal},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
+		wantPending:    []string{"z"},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
+		wantZones:      pivotZones("z"),
+	}
+}
+
+func compensationPermanentRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation returns a Permanent error ; " +
+			"Should: stop it after one attempt under the zero RecoveryPolicy",
+		steps: func(*recorder) Flow {
+			undo := func(context.Context, tripState) error { return Permanent(errBoom) }
+
+			return Sequence(undoing("a", okAction, undo), once("b", alwaysFails))
+		},
+		wantStatus:   StatusCompensationFailed,
+		wantKind:     ErrCompensationFailed,
+		wantKinds:    map[string]*KindError{"b": ErrFailed, comp("a"): ErrFailed},
+		wantFailed:   []string{"b", comp("a")},
+		wantErrText:  map[string]string{"b": errAlwaysFails.Error(), comp("a"): errBoom.Error()},
+		wantAttempts: map[string]int{"b": 1, comp("a"): 1},
+		wantErrs:     []error{errAlwaysFails, errBoom},
+		wantSteps:    map[string]stepStatus{"a": stepCompensationFailed, "b": stepFailed},
+		wantPending:  []string{"a"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoFailedOf("a"),
+			suspended,
+		),
+	}
+}
+
+func defaultTimeoutRow() runRow {
+	return runRow{
+		name: "[Fail] When: an action before the pivot with a zero AttemptTimeout blocks ; " +
+			"Should: end it unknown after DefaultAttemptTimeout",
+		steps: func(*recorder) Flow {
+			return once("a", blockedOnCtx)
+		},
+		wantStatus:    StatusCompensated,
+		wantKind:      ErrCompensated,
+		wantKinds:     map[string]*KindError{"a": ErrUnknown},
+		wantFailed:    []string{"a"},
+		wantErrText:   map[string]string{"a": context.DeadlineExceeded.Error()},
+		wantAttempts:  map[string]int{"a": 1},
+		wantCauseText: map[string]string{"a": timedOutText("a", DefaultAttemptTimeout)},
+		wantErrs:      []error{context.DeadlineExceeded},
+		wantSteps:     map[string]stepStatus{"a": stepUnknown},
+		wantTrail:     seq(opened, startOf("a"), lostOf("a"), closed),
+	}
+}
+
+func compensationTimeoutRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation with a zero RecoveryPolicy.AttemptTimeout blocks ; " +
+			"Should: end it unknown after DefaultAttemptTimeout",
+		steps: func(*recorder) Flow {
+			a := undoing("a", okAction, blockedOnCtx)
+			a.RecoveryPolicy = RecoveryPolicy{Attempts: 1}
+
+			return Sequence(a, once("b", alwaysFails))
+		},
+		wantStatus:    StatusCompensationFailed,
+		wantKind:      ErrCompensationFailed,
+		wantKinds:     map[string]*KindError{"b": ErrFailed, comp("a"): ErrUnknown},
+		wantFailed:    []string{"b", comp("a")},
+		wantErrText:   map[string]string{"b": errAlwaysFails.Error(), comp("a"): context.DeadlineExceeded.Error()},
+		wantAttempts:  map[string]int{"b": 1, comp("a"): 1},
+		wantCauseText: map[string]string{comp("a"): timedOutText("a", DefaultAttemptTimeout)},
+		wantErrs:      []error{errAlwaysFails, context.DeadlineExceeded},
+		wantSteps:     map[string]stepStatus{"a": stepCompensationFailed, "b": stepFailed},
+		wantPending:   []string{"a"},
+		wantTrail: seq(
+			opened, startOf("a"), doneOf("a"), startOf("b"), failedOf("b"), compStartOf("a"), undoFailedOf("a"),
+			suspended,
+		),
+	}
+}
+
+func recoveryTimeoutRow() runRow {
+	row := compensationTimeoutRow()
+	row.name = "[Fail] When: a compensation with a RecoveryPolicy.AttemptTimeout of 1s blocks ; " +
+		"Should: end it unknown after 1s"
+	row.steps = func(*recorder) Flow {
+		a := undoing("a", okAction, blockedOnCtx)
+		a.RecoveryPolicy = RecoveryPolicy{Attempts: 1, AttemptTimeout: time.Second}
+
+		return Sequence(a, once("b", alwaysFails))
+	}
+	row.wantCauseText = map[string]string{comp("a"): timedOutText("a", time.Second)}
+
+	return row
 }

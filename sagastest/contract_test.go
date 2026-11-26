@@ -183,6 +183,7 @@ type chargeStep struct {
 func newCharge(book *ledger) *chargeStep {
 	s := &chargeStep{book: book}
 	s.Name, s.RetryPolicy = stepCharge, sagas.NoRetry()
+	s.RecoveryPolicy = sagas.RecoveryPolicy{Attempts: 1}
 
 	return s
 }
@@ -202,6 +203,7 @@ type disabledCharge struct {
 func newDisabledCharge(book *ledger) *disabledCharge {
 	s := &disabledCharge{book: book}
 	s.Name, s.RetryPolicy = stepCharge, sagas.NoRetry()
+	s.RecoveryPolicy = sagas.RecoveryPolicy{Attempts: 1}
 
 	return s
 }
@@ -219,6 +221,17 @@ func newShip(err error) *shipStep {
 	s.Name, s.RetryPolicy = stepShip, sagas.NoRetry()
 
 	return s
+}
+
+func newForwardShip(err error) *shipStep {
+	s := newShip(err)
+	forwardOnly(&s.Step)
+
+	return s
+}
+
+func forwardOnly(s *sagas.Step[probeState, sagas.None]) {
+	s.RetryPolicy, s.RecoveryPolicy = sagas.RetryPolicy{}, sagas.RecoveryPolicy{Attempts: 1}
 }
 
 func (s *shipStep) Execute(context.Context, probeState) error { return s.err }
@@ -269,7 +282,7 @@ type ledgerShip struct {
 
 func newLedgerShip(book *ledger) *ledgerShip {
 	s := &ledgerShip{book: book}
-	s.Name, s.RetryPolicy = stepShip, sagas.NoRetry()
+	s.Name, s.RecoveryPolicy = stepShip, sagas.RecoveryPolicy{Attempts: 1}
 
 	return s
 }
@@ -290,6 +303,13 @@ func newDisabledShip(book *ledger) *disabledShip {
 	return s
 }
 
+func newForwardDisabledShip(book *ledger) *disabledShip {
+	s := newDisabledShip(book)
+	forwardOnly(&s.Step)
+
+	return s
+}
+
 func (*disabledShip) Enabled(context.Context, probeState) bool { return false }
 
 type notifyStep struct {
@@ -298,7 +318,7 @@ type notifyStep struct {
 
 func newNotify() *notifyStep {
 	s := &notifyStep{}
-	s.Name, s.RetryPolicy = stepNotify, sagas.NoRetry()
+	s.Name, s.RecoveryPolicy = stepNotify, sagas.RecoveryPolicy{Attempts: 1}
 
 	return s
 }
@@ -320,7 +340,7 @@ func Test_planOf(t *testing.T) {
 			name: "[Success] When: two forward-only steps run in parallel after the pivot ; " +
 				"Should: list both in the forward-only zone",
 			flow: sagas.Sequence(
-				newCharge(newLedger(sound)), newPivotStep(), sagas.Parallel(newShip(nil), newNotify()),
+				newCharge(newLedger(sound)), newPivotStep(), sagas.Parallel(newForwardShip(nil), newNotify()),
 			),
 			wantSteps:   []string{stepCharge, stepPivot, stepShip, stepNotify},
 			wantPivot:   stepPivot,
@@ -330,7 +350,7 @@ func Test_planOf(t *testing.T) {
 			name: "[Success] When: a step runs two hops after the pivot ; " +
 				"Should: list it in the forward-only zone too",
 			flow: sagas.Sequence(
-				newCharge(newLedger(sound)), newPivotStep(), newShip(nil), newNotify(),
+				newCharge(newLedger(sound)), newPivotStep(), newForwardShip(nil), newNotify(),
 			),
 			wantSteps:   []string{stepCharge, stepPivot, stepShip, stepNotify},
 			wantPivot:   stepPivot,
@@ -819,7 +839,7 @@ func Test_Pivot(t *testing.T) {
 				t.Helper()
 
 				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newDisabledShip(book))
+					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newForwardDisabledShip(book))
 				}, noLate)
 			},
 			wantErrors: []string{`step "ship", case "step repeated": the step did not start`},
@@ -925,7 +945,7 @@ func Test_Pivot(t *testing.T) {
 				t.Helper()
 
 				return shopSetup(t, sound, func(book *ledger) *sagas.Group {
-					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newShip(errBoom))
+					return sagas.Sequence(newCharge(book), newLedgerPivot(book, 3, false), newForwardShip(errBoom))
 				}, noLate)
 			},
 			wantErrors: []string{"the clean run failed"},

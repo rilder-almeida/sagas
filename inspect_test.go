@@ -198,6 +198,7 @@ const (
 	cycleText           = "form a cycle"
 	reserveName         = "reserve"
 	stepA               = `step "a"`
+	stepB               = `step "b"`
 	quotedA             = `"a"`
 	negAttempts         = "RetryPolicy.Attempts is negative and not UnlimitedAttempts"
 	retryPrefix         = "RetryPolicy"
@@ -690,7 +691,7 @@ func inspectGraphRows() []inspectRow {
 			name:    "[Fail] When: a step is parallel to the pivot ; Should: reject it naming the step",
 			inspect: trip, flow: Parallel(p, b),
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, "neither before nor after the pivot"},
+			wantContains: []string{stepB, "neither before nor after the pivot"},
 		},
 		{
 			name:    "[Fail] When: the pivot has Compensate ; Should: reject it",
@@ -708,7 +709,7 @@ func inspectGraphRows() []inspectRow {
 			name:    "[Fail] When: a step after the pivot has Compensate ; Should: reject it naming the step",
 			inspect: trip, flow: Sequence(p, undoAfter),
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{`step "b"`, "after the pivot has Compensate"},
+			wantContains: []string{stepB, "after the pivot has Compensate"},
 		},
 		{
 			name:    "[Fail] When: a cycle and one pivot exist ; Should: report only the cycle",

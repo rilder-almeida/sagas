@@ -105,24 +105,24 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 		s.recovery = DefaultRecoveryTimeout
 	}
 
+	zoned := zones(in.graph.children, s.pivot)
+
 	for i := range in.reports {
 		rep := &in.reports[i]
 		n := stepNode[S]{
 			name: rep.Name, policy: rep.FailurePolicy, parents: in.graph.parents[i],
-			pred: in.methods[i].enabled, replaces: in.methods[i].replaces,
+			pred: in.methods[i].enabled, replaces: in.methods[i].replaces, zone: zoned[i],
 		}
 
 		if n.policy == "" {
 			n.policy = Block
 		}
 
-		n.buildCalls(name, rep, &in.methods[i], d.middleware)
+		n.buildCalls(name, rep, n.zone, &in.methods[i], d.middleware)
 
 		s.blockAll = s.blockAll || n.policy == BlockAll
 		s.steps = append(s.steps, n)
 	}
-
-	zoned := zones(in.graph.children, s.pivot)
 
 	compensable := make([]bool, len(s.steps))
 	for i := range s.steps {
@@ -133,7 +133,6 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 
 	for i := range s.steps {
 		s.steps[i].children = in.graph.children[i]
-		s.steps[i].zone = zoned[i]
 		s.steps[i].level = levels[i]
 	}
 
@@ -144,13 +143,20 @@ func (n *stepNode[S]) stepZone() StepZone {
 	return StepZone{Name: n.name, Zone: n.zone, Compensable: n.compensation != nil}
 }
 
-func (n *stepNode[S]) buildCalls(saga string, rep *StepReport, m *stepMethods[S], middleware []Middleware) {
+func (n *stepNode[S]) buildCalls(
+	saga string, rep *StepReport, zone Zone, m *stepMethods[S], middleware []Middleware,
+) {
 	spec := callSpec{
-		saga: saga, step: rep.Name, phase: PhaseExecute, retry: rep.RetryPolicy, timeout: rep.AttemptTimeout,
-		middleware: middleware, wrap: m.wrap,
+		saga: saga, step: rep.Name, phase: PhaseExecute, retry: rep.RetryPolicy,
+		timeout: attemptTimeout(rep.AttemptTimeout), middleware: middleware, wrap: m.wrap,
 	}
-	if rep.Pivot {
+
+	switch {
+	case rep.Pivot:
 		spec.phase = PhasePivot
+	case zone == ZoneForwardOnly:
+		spec.retry, spec.timeout = rep.RecoveryPolicy.retry(), attemptTimeout(rep.RecoveryPolicy.AttemptTimeout)
+	default:
 	}
 
 	n.action = pipeline(&spec, m.call)
@@ -160,7 +166,16 @@ func (n *stepNode[S]) buildCalls(saga string, rep *StepReport, m *stepMethods[S]
 	}
 
 	spec.phase = PhaseCompensate
+	spec.retry, spec.timeout = rep.RecoveryPolicy.retry(), attemptTimeout(rep.RecoveryPolicy.AttemptTimeout)
 	n.compensation = pipeline(&spec, m.compensate)
+}
+
+func attemptTimeout(d time.Duration) time.Duration {
+	if d == 0 {
+		return DefaultAttemptTimeout
+	}
+
+	return d
 }
 
 func checkSaga(name string, d *definition, nilOptions int) []error {

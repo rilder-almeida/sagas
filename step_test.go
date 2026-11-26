@@ -186,14 +186,14 @@ func payingRate(name string, pay func(context.Context, tripState) (Rate, error))
 
 func replaceOnce(name string, do, undo func(context.Context, tripState) (Hotel, error)) *replaceStep {
 	s := &replaceStep{Name: name, make: do, replace: undo}
-	s.RetryPolicy = NoRetry()
+	s.RetryPolicy, s.RecoveryPolicy = NoRetry(), RecoveryPolicy{Attempts: 1}
 
 	return s
 }
 
 func replaceRateOnce(name string, do, undo func(context.Context, tripState) (Rate, error)) *replaceRateStep {
 	s := &replaceRateStep{Name: name, rate: do, replace: undo}
-	s.RetryPolicy = NoRetry()
+	s.RetryPolicy, s.RecoveryPolicy = NoRetry(), RecoveryPolicy{Attempts: 1}
 
 	return s
 }
@@ -201,6 +201,13 @@ func replaceRateOnce(name string, do, undo func(context.Context, tripState) (Rat
 func once(name string, do func(context.Context, tripState) error) *actStep {
 	s := act(name, do)
 	s.RetryPolicy = NoRetry()
+
+	return s
+}
+
+func onceForward(name string, do func(context.Context, tripState) error) *actStep {
+	s := act(name, do)
+	s.RecoveryPolicy = RecoveryPolicy{Attempts: 1}
 
 	return s
 }

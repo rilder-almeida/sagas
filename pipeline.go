@@ -369,7 +369,7 @@ func pipeline[S any](given *callSpec, call func(context.Context, *S) (encodedOut
 const coreLayers = 4
 
 func (s *callSpec) timesOut() bool {
-	return s.phase != PhaseCompensate && s.timeout > 0
+	return s.timeout > 0
 }
 
 func attemptLayers[S any](

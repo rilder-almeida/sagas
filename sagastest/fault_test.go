@@ -59,6 +59,7 @@ type undoProbe struct {
 func newUndo(name string, err error) *undoProbe {
 	p := &undoProbe{err: err}
 	p.Name, p.RetryPolicy = name, sagas.NoRetry()
+	p.RecoveryPolicy = sagas.RecoveryPolicy{Attempts: 1}
 
 	return p
 }

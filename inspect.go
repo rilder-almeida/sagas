@@ -99,6 +99,7 @@ func examine[S any](flow Flow) (inspection[S], error) {
 
 	in.graph, graphErrs = checkGraph(in.reports, r.parents)
 	errs = append(errs, graphErrs...)
+	errs = append(errs, checkZones(in.reports, &in.graph)...)
 	errs = append(errs, concurrentOutputs(in.reports, outputs, &in.graph)...)
 
 	idField, stateErr := examineState(reflect.TypeFor[S]())
@@ -108,6 +109,35 @@ func examine[S any](flow Flow) (inspection[S], error) {
 	errs = append(errs, stateErr, refuseExecutionIDMethod[S]())
 
 	return in, errors.Join(errs...)
+}
+
+func checkZones(reports []StepReport, g *graph) []error {
+	var errs []error
+
+	refuse := func(i int, rule string) {
+		errs = append(errs, fmt.Errorf("%w: step %q: %s", ErrInvalidStep, reports[i].Name, rule))
+	}
+
+	for i, zone := range zones(g.children, g.pivot) {
+		rep := &reports[i]
+
+		switch {
+		case zone != ZoneForwardOnly:
+			if !rep.Compensate && rep.RecoveryPolicy != (RecoveryPolicy{}) {
+				refuse(i, "RecoveryPolicy on a step without Compensate that is not after the pivot")
+			}
+		default:
+			if rep.RetryPolicy != (RetryPolicy{}) {
+				refuse(i, "RetryPolicy on a step after the pivot")
+			}
+
+			if rep.AttemptTimeout != 0 {
+				refuse(i, "AttemptTimeout on a step after the pivot")
+			}
+		}
+	}
+
+	return errs
 }
 
 func nameStep(b binder, set *stepSettings) namedStep {

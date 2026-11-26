@@ -72,7 +72,7 @@ func blockedOnCtx(ctx context.Context, _ tripState) error {
 
 func undoOnce(name string, do, undo func(context.Context, tripState) error) *undoStep {
 	s := undoing(name, do, undo)
-	s.RetryPolicy = NoRetry()
+	s.RetryPolicy, s.RecoveryPolicy = NoRetry(), RecoveryPolicy{Attempts: 1}
 
 	return s
 }
@@ -256,6 +256,7 @@ func continuePastFailedUndoRow() runRow {
 		steps: func(rec *recorder) Flow {
 			kept := undoingMade("a2", rec.book("a2", "a2"), alwaysFails)
 			kept.RetryPolicy, kept.FailurePolicy = NoRetry(), Continue
+			kept.RecoveryPolicy = RecoveryPolicy{Attempts: 1}
 
 			return Sequence(rec.restorable("a1", "a1"), kept, once("x", alwaysFails))
 		},
@@ -1602,6 +1603,7 @@ func unsentSuccessOutputRow() runRow {
 				return errAlwaysFails
 			})
 			a.RetryPolicy, a.FailurePolicy = NoRetry(), Continue
+			a.RecoveryPolicy = RecoveryPolicy{Attempts: 1}
 
 			return a
 		},

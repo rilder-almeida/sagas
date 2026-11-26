@@ -414,12 +414,12 @@ func pipelineTimeoutRow() pipelineRow {
 
 func pipelineCompensationRow() pipelineRow {
 	return pipelineRow{
-		name: "[Success] When: a compensation has a timeout set ; Should: run without a deadline",
+		name: "[Success] When: a compensation has a timeout set ; Should: run with a deadline",
 		spec: compensationSpec(),
 		call: func(r *recorder) func(context.Context, *pipeState) error {
 			return func(ctx context.Context, _ *pipeState) error {
-				if _, ok := ctx.Deadline(); !ok {
-					r.add("no-deadline")
+				if _, ok := ctx.Deadline(); ok {
+					r.add("deadline")
 				}
 
 				return nil
@@ -428,7 +428,7 @@ func pipelineCompensationRow() pipelineRow {
 		wantKind:     outcomeSuccess,
 		wantAttempts: 1,
 		wantState:    &pipeState{},
-		wantTrace:    []string{"no-deadline"},
+		wantTrace:    []string{"deadline"},
 	}
 }
 
@@ -1394,7 +1394,7 @@ func pipelinePhaseRow(phase Phase, wantTrace ...string) pipelineRow {
 
 	return pipelineRow{
 		name: "[Success] When: the call runs in phase " + string(phase) + " ; " +
-			"Should: give the middleware that phase and a deadline only outside a compensation",
+			"Should: give the middleware that phase and a deadline",
 		spec: spec,
 		middleware: func(r *recorder) []Middleware {
 			return []Middleware{MiddlewareFunc(func(ctx context.Context, info CallInfo, call Call) error {
@@ -1419,7 +1419,7 @@ func pipelinePhaseRows() []pipelineRow {
 	return []pipelineRow{
 		pipelinePhaseRow(PhaseExecute, "execute", "deadline", callMark),
 		pipelinePhaseRow(PhasePivot, "pivot", "deadline", callMark),
-		pipelinePhaseRow(PhaseCompensate, "compensate", callMark),
+		pipelinePhaseRow(PhaseCompensate, "compensate", "deadline", callMark),
 	}
 }
 
@@ -1837,9 +1837,9 @@ func Test_callSpec_timesOut(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "[Success] When: a compensate call has a timeout ; Should: not time out",
+			name: "[Success] When: a compensate call has a timeout ; Should: time out",
 			spec: callSpec{phase: PhaseCompensate, timeout: time.Second},
-			want: false,
+			want: true,
 		},
 	}
 
