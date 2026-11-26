@@ -850,30 +850,39 @@ func observerGroups(calls, perCall int) ([]Option, []*eventLog) {
 func Test_WithObserver(t *testing.T) {
 	t.Parallel()
 
+	plainKinds := []EventKind{EventSagaStarted, EventStepSucceeded}
+
 	tests := []struct {
 		name              string
+		steps             []Flow
 		calls             int
 		perCall           int
 		appendErrs        map[int]error
 		wantRunErr        error
 		wantFailedAppends int
+		wantSecretKinds   []EventKind
 	}{
 		{
 			name:  "[Success] When: one observer ; Should: see every recorded event in order, secrets left out",
-			calls: 1, perCall: 1,
+			steps: plainLedger(), calls: 1, perCall: 1, wantSecretKinds: plainKinds,
 		},
 		{
 			name:  "[Success] When: two WithObserver calls ; Should: give both observers every recorded event",
-			calls: 2, perCall: 1,
+			steps: plainLedger(), calls: 2, perCall: 1, wantSecretKinds: plainKinds,
 		},
 		{
 			name:  "[Success] When: one call holds two observers ; Should: give both every recorded event",
-			calls: 1, perCall: 2,
+			steps: plainLedger(), calls: 1, perCall: 2, wantSecretKinds: plainKinds,
 		},
 		{
 			name:  "[Fail] When: an append fails ; Should: not deliver the event that the journal refused",
-			calls: 1, perCall: 1, appendErrs: map[int]error{3: errJournalDown},
-			wantRunErr: ErrJournal, wantFailedAppends: 1,
+			steps: plainLedger(), calls: 1, perCall: 1, appendErrs: map[int]error{3: errJournalDown},
+			wantRunErr: ErrJournal, wantFailedAppends: 1, wantSecretKinds: []EventKind{EventSagaStarted},
+		},
+		{
+			name:  "[Fail] When: a compensation replaces a secret field ; Should: leave its value out of the event",
+			steps: refundedLedger(), calls: 1, perCall: 1, wantRunErr: ErrCompensated,
+			wantSecretKinds: []EventKind{EventSagaStarted, EventStepSucceeded, EventCompensationSucceeded},
 		},
 	}
 
@@ -887,7 +896,7 @@ func Test_WithObserver(t *testing.T) {
 				opts, logs := observerGroups(tt.calls, tt.perCall)
 				execution := newID()
 
-				s := namedLedger(t, ledgerName, append(opts, WithJournal(journal), WithEventQueue(q))...)
+				s := ledgerOf(t, ledgerName, tt.steps, append(opts, WithJournal(journal), WithEventQueue(q))...)
 
 				_, runErr := runTimed(t, s, execution)
 				require.ErrorIs(t, runErr, tt.wantRunErr)
@@ -899,38 +908,45 @@ func Test_WithObserver(t *testing.T) {
 
 				for _, log := range logs {
 					assert.Equal(t, want, log.seen())
-					assertSecretsLeftOut(t, log.seen())
+					assert.Equal(t, tt.wantSecretKinds, secretKinds(t, log.seen()))
 				}
 			})
 		})
 	}
 }
 
-func assertSecretsLeftOut(tb testing.TB, events []Event) {
+func secretKinds(tb testing.TB, events []Event) []EventKind {
 	tb.Helper()
 
-	cards := 0
+	var kinds []EventKind
 
 	for i := range events {
 		for _, v := range events[i].Values {
 			if v.Field == "Card" {
-				cards++
+				kinds = append(kinds, events[i].Kind)
 
 				assert.Empty(tb, v.Value)
 			}
 		}
 	}
 
-	assert.Positive(tb, cards)
+	return kinds
 }
+
+type rawSubscriber string
+
+const (
+	rawNone rawSubscriber = "none"
+	rawFree rawSubscriber = "free"
+	rawHeld rawSubscriber = "held"
+)
 
 type queueRow struct {
 	name      string
 	size      int
 	names     []string
 	observed  bool
-	raw       bool
-	hold      bool
+	raw       rawSubscriber
 	wantDrops int
 }
 
@@ -943,7 +959,7 @@ func (r *queueRow) observerWant(events []Event) []Event {
 }
 
 func (r *queueRow) rawWant(events []Event) []Event {
-	if !r.raw {
+	if r.raw == rawNone {
 		return nil
 	}
 
@@ -960,15 +976,16 @@ func newSharedQueue(tb testing.TB, row *queueRow) *sharedQueue {
 	tb.Helper()
 
 	shared := &sharedQueue{queue: NewMemoryEventQueue(WithQueueSize(row.size)), raw: &eventLog{}}
-	if row.hold {
+
+	if row.raw == rawHeld {
 		shared.raw = heldLog()
 	}
 
-	if row.raw {
+	if row.raw != rawNone {
 		shared.queue.Subscribe(shared.raw)
 	}
 
-	if row.hold {
+	if row.raw == rawHeld {
 		primer := Event{Saga: "primer", Seq: 1}
 		require.NoError(tb, shared.queue.Enqueue(tb.Context(), &primer))
 		synctest.Wait()
@@ -987,7 +1004,7 @@ type sharedRun struct {
 func (q *sharedQueue) run(tb testing.TB, row *queueRow, name, execution string) sharedRun {
 	tb.Helper()
 
-	r := sharedRun{journal: NewMemoryJournal(), log: &eventLog{}}
+	r := sharedRun{journal: NewMemoryJournal(), log: &eventLog{delay: time.Second}}
 	opts := []Option{WithJournal(r.journal), WithEventQueue(q.queue)}
 
 	if row.observed {
@@ -1007,15 +1024,15 @@ func Test_WithEventQueue(t *testing.T) {
 	tests := []queueRow{
 		{
 			name:  "[Success] When: two sagas of different names share a queue ; Should: give each observer its saga",
-			names: []string{ledgerName, "audit"}, observed: true,
+			names: []string{ledgerName, "audit"}, observed: true, raw: rawNone,
 		},
 		{
 			name: "[Fail] When: a queue of size 1 is blocked ; Should: drop events, log each drop and return at once",
-			size: 1, names: []string{ledgerName}, observed: true, raw: true, hold: true, wantDrops: 5,
+			size: 1, names: []string{ledgerName}, observed: true, raw: rawHeld, wantDrops: 5,
 		},
 		{
 			name:  "[Success] When: a saga has a queue and no observer ; Should: publish every event to the queue",
-			names: []string{ledgerName}, raw: true,
+			names: []string{ledgerName}, raw: rawFree,
 		},
 	}
 
@@ -1060,6 +1077,7 @@ func assertDropLogs(tb testing.TB, logged []map[string]any, dropped []Event) {
 
 	for i, rec := range logged {
 		assert.Equal(tb, "sagas: event not observed", rec["msg"])
+		assert.Equal(tb, dropped[i].Saga, rec["saga"])
 		assert.InDelta(tb, float64(dropped[i].Seq), rec["seq"], 0)
 		assert.Equal(tb, errQueueFull.Error(), rec["error"])
 	}

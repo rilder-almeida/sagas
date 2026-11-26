@@ -2,6 +2,8 @@ package sagas
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -73,16 +75,39 @@ const (
 	cardName   = "card"
 )
 
-func namedLedger(tb testing.TB, name string, opts ...Option) *Saga[ledgerState] {
+var errTipRefused = errors.New("sagas: test: the tip is refused")
+
+type refusedTipStep struct{ Step[ledgerState, Tip] }
+
+func (*refusedTipStep) Execute(context.Context, ledgerState) (Tip, error) {
+	return 0, Permanent(errTipRefused)
+}
+
+func plainLedger() []Flow {
+	return []Flow{&roomsStep{Name: roomsName, rooms: Rooms{"101"}}, &cardStep{Name: cardName, card: "4111"}}
+}
+
+func refundedLedger() []Flow {
+	return []Flow{
+		&roomsStep{Name: roomsName, rooms: Rooms{"101"}},
+		&refundCardStep{cardStep{Name: cardName, card: "4111"}},
+		&refusedTipStep{Step[ledgerState, Tip]{Name: "refused-tip"}},
+	}
+}
+
+func ledgerOf(tb testing.TB, name string, steps []Flow, opts ...Option) *Saga[ledgerState] {
 	tb.Helper()
 
-	s, err := New[ledgerState](name, Sequence(
-		&roomsStep{Name: roomsName, rooms: Rooms{"101"}},
-		&cardStep{Name: cardName, card: "4111"},
-	), opts...)
+	s, err := New[ledgerState](name, Sequence(steps...), opts...)
 	require.NoError(tb, err)
 
 	return s
+}
+
+func namedLedger(tb testing.TB, name string, opts ...Option) *Saga[ledgerState] {
+	tb.Helper()
+
+	return ledgerOf(tb, name, plainLedger(), opts...)
 }
 
 func journalEvents(tb testing.TB, j EventReader, execution string) []Event {
@@ -107,20 +132,23 @@ func Test_sagaDeliverer_Observe(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		panics   bool
-		scribble bool
+		name          string
+		panics        bool
+		scribble      bool
+		wantFirstSees bool
+		wantPanicLogs bool
 	}{
 		{
 			name:   "[Fail] When: the first observer panics on each event ; Should: log each panic, feed the second",
-			panics: true,
+			panics: true, wantPanicLogs: true,
 		},
 		{
 			name:     "[Success] When: the first observer changes its copy ; Should: give the second an unchanged copy",
-			scribble: true,
+			scribble: true, wantFirstSees: true,
 		},
 		{
-			name: "[Success] When: both observers only read ; Should: give both every event and log nothing",
+			name:          "[Success] When: both observers only read ; Should: give both every event and log nothing",
+			wantFirstSees: true,
 		},
 	}
 
@@ -131,7 +159,8 @@ func Test_sagaDeliverer_Observe(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				q := NewMemoryEventQueue()
 				journal := NewMemoryJournal()
-				first, second := &eventLog{panics: tt.panics, scribble: tt.scribble}, &eventLog{}
+				first := &eventLog{panics: tt.panics, scribble: tt.scribble, delay: time.Second}
+				second := &eventLog{}
 
 				s := namedLedger(t, ledgerName, WithJournal(journal), WithEventQueue(q), WithObserver(first, second))
 
@@ -143,27 +172,23 @@ func Test_sagaDeliverer_Observe(t *testing.T) {
 
 				want := journalEvents(t, journal, execution)
 
+				var (
+					wantFirst  []Event
+					wantPanics int
+				)
+
+				if tt.wantFirstSees {
+					wantFirst = want
+				}
+
+				if tt.wantPanicLogs {
+					wantPanics = len(want)
+				}
+
 				assert.Zero(t, elapsed)
 				assert.Equal(t, want, second.seen())
-
-				if !tt.panics {
-					assert.Equal(t, want, first.seen())
-				}
-
-				panicked := defaultLog(t).records(t, execution, slog.LevelError.String())
-
-				wantPanicked := 0
-				if tt.panics {
-					wantPanicked = len(want)
-				}
-
-				require.Len(t, panicked, wantPanicked)
-
-				for i, rec := range panicked {
-					assert.Equal(t, "sagas: observer panicked", rec["msg"])
-					assert.InDelta(t, float64(want[i].Seq), rec["seq"], 0)
-					assert.Equal(t, (&PanicError{Value: errObserverPanic}).Error(), rec["error"])
-				}
+				assert.Equal(t, wantFirst, first.seen())
+				assertPanicLogs(t, defaultLog(t).records(t, execution, slog.LevelError.String()), wantPanics)
 			})
 		})
 	}

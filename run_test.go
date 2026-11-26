@@ -1909,6 +1909,30 @@ func Benchmark_Saga_Run_producing(b *testing.B) {
 	}
 }
 
+type idleObserver struct{}
+
+func (idleObserver) Observe(context.Context, *Event) {}
+
+func Benchmark_Saga_Run_observed(b *testing.B) {
+	q := NewMemoryEventQueue()
+
+	s, err := New[tripState]("trip", Sequence(act("a", okAction), act("b", okAction)),
+		WithEventQueue(q), WithObserver(idleObserver{}))
+	require.NoError(b, err)
+
+	ctx := context.Background()
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if runErr := s.Run(ctx, &tripState{}); runErr != nil {
+			b.Fatal(runErr)
+		}
+	}
+
+	require.NoError(b, q.Close(ctx))
+}
+
 func Test_callerCause(t *testing.T) {
 	t.Parallel()
 

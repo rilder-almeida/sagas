@@ -3,6 +3,7 @@ package sagas
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 )
 
@@ -21,7 +22,8 @@ type EventQueue interface {
 	Subscribe(o Observer)
 }
 
-// MemoryEventQueue is an EventQueue in memory. One goroutine gives each event, in order, to every subscriber.
+// MemoryEventQueue is an EventQueue in memory. One goroutine gives each event, in order, to every subscriber. It
+// recovers a panic in Observe, logs it to slog.Default() as a PanicError, and goes on.
 type MemoryEventQueue struct {
 	deliveries chan func(Observer)
 	done       chan struct{}
@@ -84,15 +86,20 @@ func (q *MemoryEventQueue) Enqueue(ctx context.Context, e *Event) error {
 	}
 
 	select {
-	case q.deliveries <- func(o Observer) { o.Observe(detached, &stored) }:
+	case q.deliveries <- func(o Observer) { observeSafely(detached, o, &stored) }:
 		return nil
 	default:
 		return errQueueFull
 	}
 }
 
-// Subscribe adds o to the observers that get each later event.
+// Subscribe adds o to the subscribers. o gets each event that the queue delivers after Subscribe returns, an event
+// already in the queue included. Subscribe ignores a nil o.
 func (q *MemoryEventQueue) Subscribe(o Observer) {
+	if isNilValue(o) {
+		return
+	}
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -132,4 +139,16 @@ func (q *MemoryEventQueue) subscribers() []Observer {
 	defer q.mu.Unlock()
 
 	return q.observers
+}
+
+func observeSafely(ctx context.Context, o Observer, e *Event) {
+	panicked, err := recoverPanic(func() error {
+		o.Observe(ctx, e)
+
+		return nil
+	})
+	if panicked {
+		slog.Default().ErrorContext(ctx, "sagas: observer panicked", slog.String("saga", e.Saga),
+			slog.String("execution", e.Execution), slog.Int("seq", e.Seq), slog.Any("error", err))
+	}
 }

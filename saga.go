@@ -108,7 +108,7 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 		s.recovery = DefaultRecoveryTimeout
 	}
 
-	s.observe(d)
+	s.subscribe(d)
 
 	zoned := zones(in.graph.children, s.pivot)
 
