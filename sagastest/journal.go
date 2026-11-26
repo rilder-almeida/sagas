@@ -122,12 +122,12 @@ func emptySlicesEvent(seq int) *sagas.Event {
 }
 
 func ruleFailedf(rule, format string, args ...any) error {
-	return kitFailure(ErrJournalContract, "rule "+strconv.Quote(rule), fmt.Sprintf(format, args...), nil)
+	return ruleFailure(ErrJournalContract, rule, fmt.Sprintf(format, args...), nil)
 }
 
 func wantNil(rule, what string, err error) error {
 	if err != nil {
-		return kitFailure(ErrJournalContract, "rule "+strconv.Quote(rule), what+" returned an error, want nil", err)
+		return ruleFailure(ErrJournalContract, rule, what+" returned an error, want nil", err)
 	}
 
 	return nil
@@ -143,7 +143,7 @@ func wantError(rule, what string, err error) error {
 
 func wantSentinel(rule, what string, err, sentinel error) error {
 	if err != nil && !errors.Is(err, sentinel) {
-		return kitFailure(ErrJournalContract, "rule "+strconv.Quote(rule),
+		return ruleFailure(ErrJournalContract, rule,
 			fmt.Sprintf("%s returned an error, want an error wrapping %v", what, sentinel), err)
 	}
 
@@ -183,7 +183,7 @@ func wantStored(ctx context.Context, rule string, j sagas.Journal, execution str
 
 	got, err := reader.Events(ctx, execution)
 	if err != nil {
-		return kitFailure(ErrJournalContract, "rule "+strconv.Quote(rule),
+		return ruleFailure(ErrJournalContract, rule,
 			fmt.Sprintf("Events of execution %q returned an error, want nil", execution), err)
 	}
 
@@ -229,7 +229,7 @@ func freshRules(ctx context.Context, probe sagas.Journal) error {
 
 		switch {
 		case readErr != nil && !errors.Is(readErr, sagas.ErrNoEvents):
-			errs = append(errs, kitFailure(ErrJournalContract, "rule "+strconv.Quote(ruleFresh), fmt.Sprintf(
+			errs = append(errs, ruleFailure(ErrJournalContract, ruleFresh, fmt.Sprintf(
 				"Events of execution %q returned an error, want an error wrapping %v", execution, sagas.ErrNoEvents),
 				readErr))
 		case len(events) > 0:

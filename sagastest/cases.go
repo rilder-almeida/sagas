@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/rilder-almeida/sagas"
 )
@@ -90,6 +91,10 @@ func kitFailure(sentinel error, subject, what string, cause error) error {
 	}
 
 	return fmt.Errorf("%w: %w", err, cause)
+}
+
+func ruleFailure(sentinel error, rule, what string, cause error) error {
+	return kitFailure(sentinel, "rule "+strconv.Quote(rule), what, cause)
 }
 
 type plan struct {
