@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"testing"
 
 	"github.com/rilder-almeida/sagas"
 	"github.com/rilder-almeida/sagas/sagastest"
@@ -124,24 +123,6 @@ func (c *ledgerCharge) Compensate(ctx context.Context, _ shop) error {
 	return nil
 }
 
-type capture struct {
-	testing.TB
-
-	errors []string
-}
-
-func (*capture) Helper() {}
-
-func (*capture) Context() context.Context { return context.Background() }
-
-func (c *capture) Errorf(format string, args ...any) {
-	c.errors = append(c.errors, fmt.Sprintf(format, args...))
-}
-
-func (c *capture) Error(args ...any) { c.errors = append(c.errors, fmt.Sprint(args...)) }
-
-func (*capture) Logf(string, ...any) {}
-
 type shopServices struct {
 	book *ledger
 }
@@ -207,17 +188,25 @@ func (j journalAcceptsGaps) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
-func ExampleJournal() {
-	tb := &capture{}
-	sagastest.Journal(tb, func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} })
+func ExampleJournalCases() {
+	ctx := context.Background()
+	newJournal := func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} }
 
-	for _, msg := range tb.errors {
-		if _, err := fmt.Println(msg); err != nil {
-			panic(err)
+	cases, err := sagastest.JournalCases(ctx, newJournal())
+	if err != nil {
+		panic(err)
+	}
+
+	for c := range cases {
+		if runErr := c.Run(ctx, newJournal()); runErr != nil {
+			if _, writeErr := fmt.Printf("%s\n%v\n", c.Name, runErr); writeErr != nil {
+				panic(writeErr)
+			}
 		}
 	}
 
 	// Output:
-	// sagastest: journal rule "gap": Append of seq 3 after seq 1 returned nil, want an error
-	// sagastest: journal rule "gap": Append of seq 2 on an empty journal returned nil, want an error
+	// gap
+	// sagastest: journal contract broken: rule "gap": Append of seq 3 after seq 1 returned nil, want an error
+	// sagastest: journal contract broken: rule "gap": Append of seq 2 on an empty execution returned nil, want an error
 }

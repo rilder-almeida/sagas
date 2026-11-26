@@ -13,6 +13,7 @@ import (
 
 	"github.com/rilder-almeida/sagas"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type keepsPointer struct {
@@ -451,32 +452,35 @@ func (j *rejectsSamePointer) Append(ctx context.Context, e *sagas.Event) error {
 }
 
 type journalRow struct {
-	name       string
-	newJournal func() sagas.Journal
-	wantRules  []string
-	wantCauses []string
+	name         string
+	newJournal   func(*testing.T) sagas.Journal
+	wantProbeErr bool
+	wantFailing  []string
+	wantCauses   []string
 }
 
 func journalRows() []journalRow {
-	shared := sagas.NewMemoryJournal()
-
 	return []journalRow{
 		{
 			name:       "[Success] When: the journal is the memory journal ; Should: report nothing",
-			newJournal: func() sagas.Journal { return sagas.NewMemoryJournal() },
+			newJournal: func(*testing.T) sagas.Journal { return sagas.NewMemoryJournal() },
 		},
 		{
-			name:       "[Fail] When: newJournal returns one journal ; Should: report a journal that is not fresh",
-			newJournal: func() sagas.Journal { return shared },
-			wantRules:  []string{ruleFresh},
-			wantCauses: []string{"returned a journal that is not empty"},
+			name: "[Fail] When: the probe holds an event ; Should: refuse the probe before any case",
+			newJournal: func(t *testing.T) sagas.Journal {
+				t.Helper()
+
+				return holdingEvent(t)
+			},
+			wantProbeErr: true,
+			wantCauses:   []string{`Events of execution "execution" returned 1 events, want 0`},
 		},
 		{
 			name: "[Fail] When: the journal keeps the caller pointer ; Should: report an accepted changed resend",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &keepsPointer{MemoryJournal: sagas.NewMemoryJournal(), kept: map[string]*sagas.Event{}}
 			},
-			wantRules: []string{ruleStoredCopy},
+			wantFailing: []string{ruleStoredCopy},
 			wantCauses: []string{
 				"resend of seq 1 after the caller changed its scalar field returned nil",
 				"resend of seq 1 after the caller changed its Values element returned nil",
@@ -484,10 +488,10 @@ func journalRows() []journalRow {
 		},
 		{
 			name: "[Fail] When: the journal keeps the caller slices ; Should: report an accepted changed resend",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &keepsSlices{MemoryJournal: sagas.NewMemoryJournal(), kept: map[string]sagas.Event{}}
 			},
-			wantRules: []string{ruleStoredCopy},
+			wantFailing: []string{ruleStoredCopy},
 			wantCauses: []string{
 				"resend of seq 1 after the caller changed its Steps slice returned nil",
 				"resend of seq 1 after the caller changed its Err.Previous slice returned nil",
@@ -496,16 +500,16 @@ func journalRows() []journalRow {
 		{
 			name: "[Fail] When: the journal copies Values but keeps the bytes of each Value ; " +
 				"Should: report the accepted changed byte",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &keepsValueBytes{MemoryJournal: sagas.NewMemoryJournal(), kept: map[string]sagas.Event{}}
 			},
-			wantRules:  []string{ruleStoredCopy},
-			wantCauses: []string{"resend of seq 1 after the caller changed its Values byte returned nil"},
+			wantFailing: []string{ruleStoredCopy},
+			wantCauses:  []string{"resend of seq 1 after the caller changed its Values byte returned nil"},
 		},
 		{
-			name:       "[Fail] When: the journal drops Compensable of each step ; Should: report the accepted change",
-			newJournal: func() sagas.Journal { return dropsCompensable{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleStoredCopy, ruleStoredEvents},
+			name:        "[Fail] When: the journal drops Compensable of each step ; Should: report the accepted change",
+			newJournal:  func(*testing.T) sagas.Journal { return dropsCompensable{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleStoredCopy, ruleStoredEvents},
 			wantCauses: []string{
 				`Events of execution "execution" returned event 1 as`,
 				"resend of seq 1 after the caller changed its Steps Compensable from true returned nil",
@@ -513,9 +517,9 @@ func journalRows() []journalRow {
 			},
 		},
 		{
-			name:       "[Fail] When: the journal ignores Version ; Should: report the unknown versions it accepted",
-			newJournal: func() sagas.Journal { return ignoresVersion{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleUnknownVersion, ruleStoredCopy},
+			name:        "[Fail] When: the journal ignores Version ; Should: report the unknown versions it accepted",
+			newJournal:  func(*testing.T) sagas.Journal { return ignoresVersion{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleUnknownVersion, ruleStoredCopy},
 			wantCauses: []string{
 				`Append of an event with version "v0.1.0" returned nil`,
 				`Append of an event with version "v9.0.0" returned nil`,
@@ -523,70 +527,70 @@ func journalRows() []journalRow {
 			},
 		},
 		{
-			name:       "[Fail] When: the journal stores Version empty ; Should: report the stored events that differ",
-			newJournal: func() sagas.Journal { return zeroesVersion{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
-			wantCauses: []string{"Version: Kind:", `Events of execution "execution" returned event 1 as`},
+			name:        "[Fail] When: the journal stores Version empty ; Should: report the stored events that differ",
+			newJournal:  func(*testing.T) sagas.Journal { return zeroesVersion{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses:  []string{"Version: Kind:", `Events of execution "execution" returned event 1 as`},
 		},
 		{
-			name:       "[Fail] When: the journal drops Err.Cause ; Should: report the stored events that differ",
-			newJournal: func() sagas.Journal { return dropsCause{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
-			wantCauses: []string{"Cause: Previous", `Events of execution "execution" returned event 2 as`},
+			name:        "[Fail] When: the journal drops Err.Cause ; Should: report the stored events that differ",
+			newJournal:  func(*testing.T) sagas.Journal { return dropsCause{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses:  []string{"Cause: Previous", `Events of execution "execution" returned event 2 as`},
 		},
 		{
-			name:       "[Fail] When: the journal drops Status ; Should: report the stored events that differ",
-			newJournal: func() sagas.Journal { return dropsStatus{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleStoredEvents, ruleStoredCopy},
-			wantCauses: []string{`Events of execution "execution" returned event 1 as`, "Status: Time"},
+			name:        "[Fail] When: the journal drops Status ; Should: report the stored events that differ",
+			newJournal:  func(*testing.T) sagas.Journal { return dropsStatus{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleStoredEvents, ruleStoredCopy},
+			wantCauses:  []string{`Events of execution "execution" returned event 1 as`, "Status: Time"},
 		},
 		{
 			name:       "[Success] When: the journal reads an empty slice back as nil ; Should: report nothing",
-			newJournal: func() sagas.Journal { return readsEmptyAsNil{sagas.NewMemoryJournal()} },
+			newJournal: func(*testing.T) sagas.Journal { return readsEmptyAsNil{sagas.NewMemoryJournal()} },
 		},
 		{
-			name:       "[Fail] When: Events ignores a done context ; Should: report the events it returned",
-			newJournal: func() sagas.Journal { return readIgnoresContext{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleDoneContext},
-			wantCauses: []string{`Events of execution "execution" with a done context returned nil`},
+			name:        "[Fail] When: Events ignores a done context ; Should: report the events it returned",
+			newJournal:  func(*testing.T) sagas.Journal { return readIgnoresContext{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleDoneContext},
+			wantCauses:  []string{`Events of execution "execution" with a done context returned nil`},
 		},
 		{
-			name:       "[Fail] When: the journal returns an empty slice for a missing execution ; Should: report it",
-			newJournal: func() sagas.Journal { return emptyForMissing{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleNoEvents},
-			wantCauses: []string{`Events of execution "missing" returned 0 events and a nil error`},
+			name:        "[Fail] When: the journal returns an empty slice for a missing execution ; Should: report it",
+			newJournal:  func(*testing.T) sagas.Journal { return emptyForMissing{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleNoEvents},
+			wantCauses:  []string{`Events of execution "missing" returned 0 events and a nil error`},
 		},
 		{
-			name:       "[Fail] When: the journal has no Events method ; Should: report that it is not an EventReader",
-			newJournal: func() sagas.Journal { return appendOnly{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleEventReader},
-			wantCauses: []string{"does not implement sagas.EventReader"},
+			name:         "[Fail] When: the journal has no Events method ; Should: refuse the probe as no EventReader",
+			newJournal:   func(*testing.T) sagas.Journal { return appendOnly{sagas.NewMemoryJournal()} },
+			wantProbeErr: true,
+			wantCauses:   []string{"does not implement sagas.EventReader"},
 		},
 		{
-			name:       "[Fail] When: the journal accepts a gap ; Should: report that seq 3 after seq 1 was accepted",
-			newJournal: func() sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleGap},
-			wantCauses: []string{"Append of seq 3 after seq 1 returned nil"},
+			name:        "[Fail] When: the journal accepts a gap ; Should: report that seq 3 after seq 1 was accepted",
+			newJournal:  func(*testing.T) sagas.Journal { return journalAcceptsGaps{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleGap},
+			wantCauses:  []string{"Append of seq 3 after seq 1 returned nil"},
 		},
 		{
-			name:       "[Fail] When: the journal accepts seq 2 on an empty journal ; Should: report seq 2",
-			newJournal: func() sagas.Journal { return acceptsGapOnEmpty{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleGap},
-			wantCauses: []string{"Append of seq 2 on an empty journal returned nil"},
+			name:        "[Fail] When: the journal accepts seq 2 on an empty journal ; Should: report seq 2",
+			newJournal:  func(*testing.T) sagas.Journal { return acceptsGapOnEmpty{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleGap},
+			wantCauses:  []string{"Append of seq 2 on an empty execution returned nil"},
 		},
 		{
-			name:       "[Fail] When: the journal accepts a Seq below 1 ; Should: report the accepted seq 0 and seq -1",
-			newJournal: func() sagas.Journal { return acceptsLowSeq{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleSeqBelowOne, ruleInvalidEvent},
+			name:        "[Fail] When: the journal accepts a Seq below 1 ; Should: report the accepted seq 0 and -1",
+			newJournal:  func(*testing.T) sagas.Journal { return acceptsLowSeq{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleSeqBelowOne, ruleInvalidEvent},
 			wantCauses: []string{
 				"Append of seq 0 returned nil", "Append of seq -1 returned nil",
 				"Append of an event with seq 0 returned nil",
 			},
 		},
 		{
-			name:       "[Fail] When: the journal rejects an equal resend ; Should: report the rejected equal copy",
-			newJournal: func() sagas.Journal { return rejectsEqualResend{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleEqualResend, ruleStoredCopy, ruleTimeZone, ruleExactResend},
+			name:        "[Fail] When: the journal rejects an equal resend ; Should: report the rejected equal copy",
+			newJournal:  func(*testing.T) sagas.Journal { return rejectsEqualResend{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleEqualResend, ruleStoredCopy, ruleTimeZone, ruleExactResend},
 			wantCauses: []string{
 				"Append of an equal copy of seq 1 returned",
 				"resend of an unchanged copy of seq 1 after the caller changed its scalar field returned",
@@ -595,21 +599,23 @@ func journalRows() []journalRow {
 			},
 		},
 		{
-			name:       "[Fail] When: the journal accepts another event at a taken Seq ; Should: report it",
-			newJournal: func() sagas.Journal { return &acceptsOtherEvent{MemoryJournal: sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleDifferentEvent, ruleStoredCopy, ruleConcurrent},
+			name: "[Fail] When: the journal accepts another event at a taken Seq ; Should: report it",
+			newJournal: func(*testing.T) sagas.Journal {
+				return &acceptsOtherEvent{MemoryJournal: sagas.NewMemoryJournal()}
+			},
+			wantFailing: []string{ruleDifferentEvent, ruleStoredCopy, ruleConcurrent},
 			wantCauses: []string{
 				"Append of another event at taken seq 1 returned nil",
 				"after the caller changed its scalar field returned nil",
-				"returned nil, want exactly 1",
+				"returned nil, want 1",
 			},
 		},
 		{
 			name: "[Fail] When: the journal returns ErrConcurrentWriter at Seq 1 ; Should: report the wrong sentinel",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return swapsSentinel{sagas.NewMemoryJournal(), sagas.ErrExecutionExists, sagas.ErrConcurrentWriter}
 			},
-			wantRules: []string{ruleRejectionFirst, ruleConcurrent},
+			wantFailing: []string{ruleRejectionFirst, ruleConcurrent},
 			wantCauses: []string{
 				"Append of another event at taken seq 1 returned",
 				"want an error wrapping " + sagas.ErrExecutionExists.Error(),
@@ -618,10 +624,10 @@ func journalRows() []journalRow {
 		},
 		{
 			name: "[Fail] When: the journal returns ErrExecutionExists later ; Should: report the wrong sentinel",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return swapsSentinel{sagas.NewMemoryJournal(), sagas.ErrConcurrentWriter, sagas.ErrExecutionExists}
 			},
-			wantRules: []string{ruleRejectionLater, ruleConcurrent},
+			wantFailing: []string{ruleRejectionLater, ruleConcurrent},
 			wantCauses: []string{
 				"Append of another event at taken seq 2 returned", "a losing append of seq 3 returned",
 				"want an error wrapping " + sagas.ErrConcurrentWriter.Error(),
@@ -629,58 +635,58 @@ func journalRows() []journalRow {
 		},
 		{
 			name: "[Fail] When: the journal accepts a second writer at a taken Seq ; Should: report two winners",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &acceptsSecondWriter{MemoryJournal: sagas.NewMemoryJournal(), fromSeq: 1}
 			},
-			wantRules:  []string{ruleConcurrent},
-			wantCauses: []string{"returned nil, want exactly 1"},
+			wantFailing: []string{ruleConcurrent},
+			wantCauses:  []string{"returned nil, want 1"},
 		},
 		{
-			name:       "[Fail] When: the journal ignores a done context ; Should: report the nil error",
-			newJournal: func() sagas.Journal { return ignoresContext{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleDoneContext},
-			wantCauses: []string{"with a done context returned nil", "after a done context returned"},
+			name:        "[Fail] When: the journal ignores a done context ; Should: report the nil error",
+			newJournal:  func(*testing.T) sagas.Journal { return ignoresContext{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleDoneContext},
+			wantCauses:  []string{"with a done context returned nil", "after a done context returned"},
 		},
 		{
-			name:       "[Fail] When: the journal stores then fails with ctx ; Should: report the rejected event",
-			newJournal: func() sagas.Journal { return storesThenFails{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleDoneContext},
-			wantCauses: []string{"after a done context returned"},
+			name:        "[Fail] When: the journal stores then fails with ctx ; Should: report the rejected event",
+			newJournal:  func(*testing.T) sagas.Journal { return storesThenFails{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleDoneContext},
+			wantCauses:  []string{"after a done context returned"},
 		},
 		{
-			name:       "[Fail] When: the journal accepts a nil event ; Should: report the nil event",
-			newJournal: func() sagas.Journal { return acceptsNil{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleInvalidEvent},
-			wantCauses: []string{"Append of a nil event returned nil"},
+			name:        "[Fail] When: the journal accepts a nil event ; Should: report the nil event",
+			newJournal:  func(*testing.T) sagas.Journal { return acceptsNil{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleInvalidEvent},
+			wantCauses:  []string{"Append of a nil event returned nil"},
 		},
 		{
-			name:       "[Fail] When: the journal compares Time with == ; Should: report the rejected equal instant",
-			newJournal: func() sagas.Journal { return comparesTimeWithEquals{sagas.NewMemoryJournal()} },
-			wantRules:  []string{ruleTimeZone},
-			wantCauses: []string{"in another zone returned"},
+			name:        "[Fail] When: the journal compares Time with == ; Should: report the rejected equal instant",
+			newJournal:  func(*testing.T) sagas.Journal { return comparesTimeWithEquals{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleTimeZone},
+			wantCauses:  []string{"in another zone returned"},
 		},
 		{
 			name: "[Fail] When: the journal rejects the exact resend ; Should: report the rejected resend",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &rejectsSamePointer{MemoryJournal: sagas.NewMemoryJournal(), seen: map[*sagas.Event]bool{}}
 			},
-			wantRules:  []string{ruleExactResend},
-			wantCauses: []string{"Append of the same event again returned"},
+			wantFailing: []string{ruleExactResend},
+			wantCauses:  []string{"Append of the same event again returned"},
 		},
 		{
 			name: "[Fail] When: the journal accepts a second writer at seq 2 ; Should: report two winners at seq 2",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &acceptsSecondWriter{MemoryJournal: sagas.NewMemoryJournal(), fromSeq: seqSecond}
 			},
-			wantRules:  []string{ruleConcurrent},
-			wantCauses: []string{"appends of seq 2 by different writers returned nil, want exactly 1"},
+			wantFailing: []string{ruleConcurrent},
+			wantCauses:  []string{"appends of seq 2 by different writers returned nil, want 1"},
 		},
 		{
 			name: "[Fail] When: the journal swaps the sentinel above seq 1 ; Should: report the loser at seq 2",
-			newJournal: func() sagas.Journal {
+			newJournal: func(*testing.T) sagas.Journal {
 				return &swapsSentinelForSecondWriter{MemoryJournal: sagas.NewMemoryJournal()}
 			},
-			wantRules: []string{ruleConcurrent},
+			wantFailing: []string{ruleConcurrent},
 			wantCauses: []string{
 				"a losing append of seq 2 returned",
 				"want an error wrapping " + sagas.ErrConcurrentWriter.Error(),
@@ -689,50 +695,109 @@ func journalRows() []journalRow {
 	}
 }
 
-func Test_Journal(t *testing.T) {
+func holdingEvent(t *testing.T) *sagas.MemoryJournal {
+	t.Helper()
+
+	j := sagas.NewMemoryJournal()
+	require.NoError(t, j.Append(t.Context(), journalEvent(1)))
+
+	return j
+}
+
+func journalRules() []string {
+	return []string{
+		ruleNextEvent, ruleGap, ruleSeqBelowOne, ruleEqualResend, ruleDifferentEvent, ruleRejectionFirst,
+		ruleRejectionLater, ruleStoredEvents, ruleNoEvents, ruleStoredCopy, ruleConcurrent, ruleDoneContext,
+		ruleInvalidEvent, ruleUnknownVersion, ruleTimeZone, ruleExactResend,
+	}
+}
+
+func Test_JournalCases(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range journalRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fake := &fakeTB{TB: t}
-			Journal(fake, tt.newJournal)
+			cases, err := JournalCases(t.Context(), tt.newJournal(t))
+			if tt.wantProbeErr {
+				require.ErrorIs(t, err, ErrJournalContract)
+				assert.Nil(t, cases)
+				assertCauses(t, tt.wantCauses, []string{err.Error()})
 
-			for _, got := range fake.errors {
-				assert.True(
-					t,
-					slices.ContainsFunc(
-						tt.wantRules,
-						func(rule string) bool { return strings.Contains(got, fmt.Sprintf("rule %q", rule)) },
-					),
-					"unexpected report: %s",
-					got,
-				)
+				return
 			}
 
-			for _, rule := range tt.wantRules {
-				assert.True(
-					t,
-					slices.ContainsFunc(
-						fake.errors,
-						func(got string) bool { return strings.Contains(got, fmt.Sprintf("rule %q", rule)) },
-					),
-					"missing report of %s in %v",
-					rule,
-					fake.errors,
-				)
+			require.NoError(t, err)
+
+			var names, failing, reports []string
+
+			for c := range cases {
+				names = append(names, c.Name)
+
+				if runErr := c.Run(t.Context(), tt.newJournal(t)); runErr != nil {
+					assert.ErrorIs(t, runErr, ErrJournalContract)
+					assert.Contains(t, runErr.Error(), fmt.Sprintf("rule %q", c.Name))
+
+					failing = append(failing, c.Name)
+					reports = append(reports, runErr.Error())
+				}
 			}
 
-			for _, cause := range tt.wantCauses {
-				assert.True(
-					t,
-					slices.ContainsFunc(fake.errors, func(got string) bool { return strings.Contains(got, cause) }),
-					"missing cause %q in %v",
-					cause,
-					fake.errors,
-				)
-			}
+			assert.Equal(t, journalRules(), names)
+			assert.ElementsMatch(t, tt.wantFailing, failing, "reports: %v", reports)
+			assertCauses(t, tt.wantCauses, reports)
+		})
+	}
+}
+
+func assertCauses(t *testing.T, causes, reports []string) {
+	t.Helper()
+
+	for _, cause := range causes {
+		assert.True(
+			t,
+			slices.ContainsFunc(reports, func(got string) bool { return strings.Contains(got, cause) }),
+			"missing cause %q in %v",
+			cause,
+			reports,
+		)
+	}
+}
+
+func Test_TestJournal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		newJournal func() sagas.Journal
+	}{
+		{
+			name: "[Success] When: the journal is the memory journal ; " +
+				"Should: call the factory with the parent t and then once per case with the subtest t",
+			newJournal: func() sagas.Journal { return sagas.NewMemoryJournal() },
+		},
+		{
+			name: "[Success] When: the journal reads an empty slice back as nil ; " +
+				"Should: call the factory with the parent t and then once per case with the subtest t",
+			newJournal: func() sagas.Journal { return readsEmptyAsNil{sagas.NewMemoryJournal()} },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			log := &factoryLog{}
+
+			TestJournal(t, func(t *testing.T) sagas.Journal {
+				t.Helper()
+				log.called(t.Name())
+
+				return tt.newJournal()
+			})
+
+			assert.Equal(t, subtestNames(t.Name(), journalRules()), log.names)
 		})
 	}
 }
@@ -763,7 +828,7 @@ func zeroFields(v reflect.Value, path string) []string {
 	}
 }
 
-func Test_Journal_referenceEvents(t *testing.T) {
+func Test_JournalCases_referenceEvents(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -817,33 +882,4 @@ func withoutCompensable(e *sagas.Event) *sagas.Event {
 	}
 
 	return e
-}
-
-type fakeTB struct {
-	testing.TB
-
-	errors []string
-	logs   []string
-}
-
-func (*fakeTB) Helper() {}
-
-func (f *fakeTB) Context() context.Context {
-	if f.TB == nil {
-		return context.Background()
-	}
-
-	return f.TB.Context()
-}
-
-func (f *fakeTB) Errorf(format string, args ...any) {
-	f.errors = append(f.errors, fmt.Sprintf(format, args...))
-}
-
-func (f *fakeTB) Error(args ...any) {
-	f.errors = append(f.errors, fmt.Sprint(args...))
-}
-
-func (f *fakeTB) Logf(format string, args ...any) {
-	f.logs = append(f.logs, fmt.Sprintf(format, args...))
 }

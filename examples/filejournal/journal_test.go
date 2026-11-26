@@ -185,7 +185,11 @@ func Test_fileJournal_Append_contract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			sagastest.Journal(t, func() sagas.Journal { return newTestJournal(t, t.TempDir()) })
+			sagastest.TestJournal(t, func(t *testing.T) sagas.Journal {
+				t.Helper()
+
+				return newTestJournal(t, t.TempDir())
+			})
 		})
 	}
 }

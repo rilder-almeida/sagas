@@ -5,7 +5,9 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"iter"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -20,6 +22,9 @@ const (
 	seqThird          = 3
 	racedSeqs         = 3
 	mutated           = "mutated"
+	executionMain     = "execution"
+	executionEmpty    = "empty"
+	executionMissing  = "missing"
 
 	ruleFresh          = "fresh journal"
 	ruleNextEvent      = "next event"
@@ -41,33 +46,53 @@ const (
 	ruleNoEvents       = "no events"
 )
 
-// Journal proves the journal contract on a sagas.Journal that is also a sagas.EventReader. Each call of newJournal must
-// return a fresh empty journal.
-func Journal(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
-
-	if _, ok := newJournal().(sagas.EventReader); !ok {
-		ruleFailedf(tb, ruleEventReader, "the journal does not implement sagas.EventReader")
-
-		return
+// JournalCases checks that probe is a sagas.EventReader with no event, then returns one case for each rule of the
+// journal contract, named after the rule. Each case needs a fresh empty journal. Each error wraps ErrJournalContract.
+func JournalCases(ctx context.Context, probe sagas.Journal) (iter.Seq[Case[sagas.Journal]], error) {
+	if err := freshRules(ctx, probe); err != nil {
+		return nil, err
 	}
 
-	if !freshRules(tb, newJournal) {
-		return
+	return slices.Values([]Case[sagas.Journal]{
+		{Name: ruleNextEvent, run: nextEventCase},
+		{Name: ruleGap, run: gapCase},
+		{Name: ruleSeqBelowOne, run: seqBelowOneCase},
+		{Name: ruleEqualResend, run: equalResendCase},
+		{Name: ruleDifferentEvent, run: differentEventCase},
+		{Name: ruleRejectionFirst, run: rejectionFirstCase},
+		{Name: ruleRejectionLater, run: rejectionLaterCase},
+		{Name: ruleStoredEvents, run: storedEventsCase},
+		{Name: ruleNoEvents, run: noEventsCase},
+		{Name: ruleStoredCopy, run: storedCopyCase},
+		{Name: ruleConcurrent, run: concurrentCase},
+		{Name: ruleDoneContext, run: doneContextCase},
+		{Name: ruleInvalidEvent, run: invalidEventCase},
+		{Name: ruleUnknownVersion, run: unknownVersionCase},
+		{Name: ruleTimeZone, run: timeZoneCase},
+		{Name: ruleExactResend, run: exactResendCase},
+	}), nil
+}
+
+// TestJournal runs each case of JournalCases in a subtest named after it. It calls newJournal with t for the probe and
+// with the t of the subtest for each case. Each call must return a fresh empty journal.
+func TestJournal(t *testing.T, newJournal func(*testing.T) sagas.Journal) {
+	t.Helper()
+
+	cases, err := JournalCases(t.Context(), newJournal(t))
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	sequenceRules(tb, newJournal)
-	readRules(tb, newJournal)
-	copyRules(tb, newJournal)
-	concurrencyRules(tb, newJournal)
-	contextRules(tb, newJournal)
-	invalidEventRules(tb, newJournal)
-	resendRules(tb, newJournal)
+	runCases(t, cases, newJournal)
 }
 
 func journalEvent(seq int) *sagas.Event {
+	return eventOf(executionMain, seq)
+}
+
+func eventOf(execution string, seq int) *sagas.Event {
 	return &sagas.Event{
-		Saga: "saga", Execution: "execution", Writer: "writer", Seq: seq, Version: sagas.EventVersion,
+		Saga: "saga", Execution: execution, Writer: "writer", Seq: seq, Version: sagas.EventVersion,
 		Kind: sagas.EventStepStarted,
 		Step: "step", Attempts: 1,
 		Err:    sagas.EventError{Kind: "kind", Message: "message", Cause: "cause", Previous: []string{"previous"}},
@@ -96,33 +121,32 @@ func emptySlicesEvent(seq int) *sagas.Event {
 	return e
 }
 
-func ruleFailedf(tb testing.TB, rule, format string, args ...any) {
-	tb.Helper()
-	tb.Errorf("sagastest: journal rule %q: "+format, append([]any{rule}, args...)...)
+func ruleFailedf(rule, format string, args ...any) error {
+	return fmt.Errorf("%w: rule %q: %s", ErrJournalContract, rule, fmt.Sprintf(format, args...))
 }
 
-func wantNil(tb testing.TB, rule, what string, err error) {
-	tb.Helper()
-
+func wantNil(rule, what string, err error) error {
 	if err != nil {
-		ruleFailedf(tb, rule, "%s returned %v, want nil", what, err)
+		return ruleFailedf(rule, "%s returned %v, want nil", what, err)
 	}
+
+	return nil
 }
 
-func wantError(tb testing.TB, rule, what string, err error) {
-	tb.Helper()
-
+func wantError(rule, what string, err error) error {
 	if err == nil {
-		ruleFailedf(tb, rule, "%s returned nil, want an error", what)
+		return ruleFailedf(rule, "%s returned nil, want an error", what)
 	}
+
+	return nil
 }
 
-func wantSentinel(tb testing.TB, rule, what string, err, sentinel error) {
-	tb.Helper()
-
+func wantSentinel(rule, what string, err, sentinel error) error {
 	if err != nil && !errors.Is(err, sentinel) {
-		ruleFailedf(tb, rule, "%s returned %v, want an error wrapping %v", what, err, sentinel)
+		return ruleFailedf(rule, "%s returned %v, want an error wrapping %v", what, err, sentinel)
 	}
+
+	return nil
 }
 
 func sameEvent(got, want *sagas.Event) bool {
@@ -146,131 +170,162 @@ func nilEmptySlices(v reflect.Value) {
 	}
 }
 
-func wantStored(tb testing.TB, rule string, j sagas.Journal, execution string, want ...*sagas.Event) {
-	tb.Helper()
+func notReader(rule string) error {
+	return ruleFailedf(rule, "the journal does not implement sagas.EventReader")
+}
 
+func wantStored(ctx context.Context, rule string, j sagas.Journal, execution string, want ...*sagas.Event) error {
 	reader, ok := j.(sagas.EventReader)
 	if !ok {
-		ruleFailedf(tb, rule, "the journal does not implement sagas.EventReader")
-
-		return
+		return notReader(rule)
 	}
 
-	got, err := reader.Events(tb.Context(), execution)
+	got, err := reader.Events(ctx, execution)
 	if err != nil {
-		ruleFailedf(tb, rule, "Events of execution %q returned %v, want nil", execution, err)
-
-		return
+		return ruleFailedf(rule, "Events of execution %q returned %v, want nil", execution, err)
 	}
 
 	if len(got) != len(want) {
-		ruleFailedf(tb, rule, "Events of execution %q returned %d events, want %d", execution, len(got), len(want))
-
-		return
+		return ruleFailedf(rule, "Events of execution %q returned %d events, want %d", execution, len(got), len(want))
 	}
+
+	var errs []error
 
 	for i := range want {
 		if !sameEvent(&got[i], want[i]) {
-			ruleFailedf(tb, rule, "Events of execution %q returned event %d as %+v, want %+v",
-				execution, i+1, got[i], *want[i])
+			errs = append(errs, ruleFailedf(rule, "Events of execution %q returned event %d as %+v, want %+v",
+				execution, i+1, got[i], *want[i]))
 		}
 	}
+
+	return errors.Join(errs...)
 }
 
-func readRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
+func journalExecutions() []string {
+	mutations := copyMutations()
 
-	ctx := tb.Context()
+	executions := make([]string, 0, len(mutations)+seqThird)
+	executions = append(executions, executionMain, executionEmpty, executionMissing)
 
-	j := newJournal()
-	wantNil(tb, ruleStoredEvents, "Append of seq 1", j.Append(ctx, journalEvent(1)))
-	wantNil(tb, ruleStoredEvents, "Append of seq 2", j.Append(ctx, otherEvent(seqSecond)))
-	wantNil(tb, ruleStoredEvents, "Append of seq 3", j.Append(ctx, emptySlicesEvent(seqThird)))
-	wantStored(tb, ruleStoredEvents, j, "execution", journalEvent(1), otherEvent(seqSecond), emptySlicesEvent(seqThird))
+	for _, m := range mutations {
+		executions = append(executions, m.name)
+	}
+
+	return executions
+}
+
+func freshRules(ctx context.Context, probe sagas.Journal) error {
+	reader, ok := probe.(sagas.EventReader)
+	if !ok {
+		return notReader(ruleEventReader)
+	}
+
+	var errs []error
+
+	for _, execution := range journalExecutions() {
+		events, readErr := reader.Events(ctx, execution)
+
+		switch {
+		case readErr != nil && !errors.Is(readErr, sagas.ErrNoEvents):
+			errs = append(errs, ruleFailedf(ruleFresh, "Events of execution %q returned %v, want an error wrapping %v",
+				execution, readErr, sagas.ErrNoEvents))
+		case len(events) > 0:
+			errs = append(errs, ruleFailedf(ruleFresh, "Events of execution %q returned %d events, want 0",
+				execution, len(events)))
+		default:
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func nextEventCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		wantNil(ruleNextEvent, "Append of seq 1", j.Append(ctx, journalEvent(1))),
+		wantNil(ruleNextEvent, "Append of seq 2", j.Append(ctx, journalEvent(seqSecond))),
+	)
+}
+
+func gapCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		wantNil(ruleGap, "Append of seq 1", j.Append(ctx, journalEvent(1))),
+		wantError(ruleGap, "Append of seq 3 after seq 1", j.Append(ctx, journalEvent(seqThird))),
+		wantError(ruleGap, "Append of seq 2 on an empty execution", j.Append(ctx, eventOf(executionEmpty, seqSecond))),
+	)
+}
+
+func seqBelowOneCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		wantError(ruleSeqBelowOne, "Append of seq 0", j.Append(ctx, journalEvent(0))),
+		wantError(ruleSeqBelowOne, "Append of seq -1", j.Append(ctx, journalEvent(-1))),
+	)
+}
+
+func equalResendCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		wantNil(ruleEqualResend, "Append of seq 1", j.Append(ctx, journalEvent(1))),
+		wantNil(ruleEqualResend, "Append of an equal copy of seq 1", j.Append(ctx, journalEvent(1))),
+	)
+}
+
+func takeTwoSeqs(ctx context.Context, j sagas.Journal, rule string) error {
+	return errors.Join(
+		wantNil(rule, "Append of seq 1", j.Append(ctx, journalEvent(1))),
+		wantNil(rule, "Append of seq 2", j.Append(ctx, journalEvent(seqSecond))),
+	)
+}
+
+func differentEventCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		takeTwoSeqs(ctx, j, ruleDifferentEvent),
+		wantError(ruleDifferentEvent, "Append of another event at taken seq 1", j.Append(ctx, otherEvent(1))),
+		wantError(ruleDifferentEvent, "Append of another event at taken seq 2", j.Append(ctx, otherEvent(seqSecond))),
+	)
+}
+
+func rejectionFirstCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		takeTwoSeqs(ctx, j, ruleRejectionFirst),
+		wantSentinel(ruleRejectionFirst, "Append of another event at taken seq 1", j.Append(ctx, otherEvent(1)),
+			sagas.ErrExecutionExists),
+	)
+}
+
+func rejectionLaterCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		takeTwoSeqs(ctx, j, ruleRejectionLater),
+		wantSentinel(ruleRejectionLater, "Append of another event at taken seq 2", j.Append(ctx, otherEvent(seqSecond)),
+			sagas.ErrConcurrentWriter),
+	)
+}
+
+func storedEventsCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		wantNil(ruleStoredEvents, "Append of seq 1", j.Append(ctx, journalEvent(1))),
+		wantNil(ruleStoredEvents, "Append of seq 2", j.Append(ctx, otherEvent(seqSecond))),
+		wantNil(ruleStoredEvents, "Append of seq 3", j.Append(ctx, emptySlicesEvent(seqThird))),
+		wantStored(ctx, ruleStoredEvents, j, executionMain,
+			journalEvent(1), otherEvent(seqSecond), emptySlicesEvent(seqThird)),
+	)
+}
+
+func noEventsCase(ctx context.Context, j sagas.Journal) error {
+	setup := wantNil(ruleNoEvents, "Append of seq 1", j.Append(ctx, journalEvent(1)))
 
 	reader, ok := j.(sagas.EventReader)
 	if !ok {
-		return
+		return errors.Join(setup, notReader(ruleNoEvents))
 	}
 
-	events, err := reader.Events(ctx, "missing")
+	events, err := reader.Events(ctx, executionMissing)
 	if err == nil {
-		ruleFailedf(tb, ruleNoEvents, "Events of execution %q returned %d events and a nil error, want %v",
-			"missing", len(events), sagas.ErrNoEvents)
-
-		return
+		return errors.Join(setup, ruleFailedf(ruleNoEvents,
+			"Events of execution %q returned %d events and a nil error, want %v",
+			executionMissing, len(events), sagas.ErrNoEvents))
 	}
 
-	wantSentinel(tb, ruleNoEvents, `Events of execution "missing"`, err, sagas.ErrNoEvents)
-}
-
-func freshRules(tb testing.TB, newJournal func() sagas.Journal) bool {
-	tb.Helper()
-
-	first, second := newJournal(), newJournal()
-	ctx := tb.Context()
-
-	if err := first.Append(ctx, journalEvent(1)); err != nil {
-		ruleFailedf(tb, ruleFresh, "Append of seq 1 on the first journal returned %v, want nil", err)
-
-		return false
-	}
-
-	if err := second.Append(ctx, otherEvent(1)); err != nil {
-		ruleFailedf(
-			tb,
-			ruleFresh,
-			"newJournal returned a journal that is not empty: Append of seq 1 on the second journal returned %v",
-			err,
-		)
-
-		return false
-	}
-
-	return true
-}
-
-func sequenceRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
-
-	ctx := tb.Context()
-
-	next := newJournal()
-	wantNil(tb, ruleNextEvent, "Append of seq 1", next.Append(ctx, journalEvent(1)))
-	wantNil(tb, ruleNextEvent, "Append of seq 2", next.Append(ctx, journalEvent(seqSecond)))
-
-	gap := newJournal()
-	wantNil(tb, ruleGap, "Append of seq 1", gap.Append(ctx, journalEvent(1)))
-	wantError(tb, ruleGap, "Append of seq 3 after seq 1", gap.Append(ctx, journalEvent(seqThird)))
-
-	empty := newJournal()
-	wantError(tb, ruleGap, "Append of seq 2 on an empty journal", empty.Append(ctx, journalEvent(seqSecond)))
-
-	low := newJournal()
-	wantError(tb, ruleSeqBelowOne, "Append of seq 0", low.Append(ctx, journalEvent(0)))
-	wantError(tb, ruleSeqBelowOne, "Append of seq -1", low.Append(ctx, journalEvent(-1)))
-
-	resend := newJournal()
-	wantNil(tb, ruleEqualResend, "Append of seq 1", resend.Append(ctx, journalEvent(1)))
-	wantNil(tb, ruleEqualResend, "Append of an equal copy of seq 1", resend.Append(ctx, journalEvent(1)))
-
-	different := newJournal()
-	wantNil(tb, ruleDifferentEvent, "Append of seq 1", different.Append(ctx, journalEvent(1)))
-	wantNil(tb, ruleDifferentEvent, "Append of seq 2", different.Append(ctx, journalEvent(seqSecond)))
-
-	first := different.Append(ctx, otherEvent(1))
-	wantError(tb, ruleDifferentEvent, "Append of another event at taken seq 1", first)
-	wantSentinel(tb, ruleRejectionFirst, "Append of another event at taken seq 1", first, sagas.ErrExecutionExists)
-
-	later := different.Append(ctx, otherEvent(seqSecond))
-	wantError(tb, ruleDifferentEvent, "Append of another event at taken seq 2", later)
-	wantSentinel(
-		tb,
-		ruleRejectionLater,
-		"Append of another event at taken seq 2",
-		later,
-		sagas.ErrConcurrentWriter,
-	)
+	return errors.Join(setup, wantSentinel(ruleNoEvents, fmt.Sprintf("Events of execution %q", executionMissing), err,
+		sagas.ErrNoEvents))
 }
 
 type mutation struct {
@@ -291,38 +346,38 @@ func copyMutations() []mutation {
 	}
 }
 
-func copyRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
+func storedCopyCase(ctx context.Context, j sagas.Journal) error {
+	mutations := copyMutations()
+	errs := make([]error, 0, len(mutations))
 
-	ctx := tb.Context()
-
-	for _, m := range copyMutations() {
-		j := newJournal()
-		e := journalEvent(1)
-		wantNil(tb, ruleStoredCopy, "Append of seq 1", j.Append(ctx, e))
+	for _, m := range mutations {
+		e := eventOf(m.name, 1)
+		stored := wantNil(ruleStoredCopy, "Append of seq 1", j.Append(ctx, e))
 
 		m.mutate(e)
-		wantError(tb, ruleStoredCopy, "resend of seq 1 after the caller changed its "+m.name, j.Append(ctx, e))
-		wantNil(tb, ruleStoredCopy, "resend of an unchanged copy of seq 1 after the caller changed its "+m.name,
-			j.Append(ctx, journalEvent(1)))
-		wantStored(tb, ruleStoredCopy, j, "execution", journalEvent(1))
+		errs = append(errs, errors.Join(
+			stored,
+			wantError(ruleStoredCopy, "resend of seq 1 after the caller changed its "+m.name, j.Append(ctx, e)),
+			wantNil(ruleStoredCopy, "resend of an unchanged copy of seq 1 after the caller changed its "+m.name,
+				j.Append(ctx, eventOf(m.name, 1))),
+			wantStored(ctx, ruleStoredCopy, j, m.name, eventOf(m.name, 1)),
+		))
 	}
+
+	return errors.Join(errs...)
 }
 
-func concurrencyRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
-
-	j := newJournal()
+func concurrentCase(ctx context.Context, j sagas.Journal) error {
+	errs := make([]error, 0, racedSeqs)
 
 	for seq := 1; seq <= racedSeqs; seq++ {
-		raceForSeq(tb, j, seq)
+		errs = append(errs, raceForSeq(ctx, j, seq))
 	}
+
+	return errors.Join(errs...)
 }
 
-func raceForSeq(tb testing.TB, j sagas.Journal, seq int) {
-	tb.Helper()
-
-	ctx := tb.Context()
+func raceForSeq(ctx context.Context, j sagas.Journal, seq int) error {
 	errs := make([]error, concurrentWriters)
 
 	var wg sync.WaitGroup
@@ -344,7 +399,7 @@ func raceForSeq(tb testing.TB, j sagas.Journal, seq int) {
 
 	wins := 0
 
-	var wrong error
+	var wrong, winners error
 
 	for _, err := range errs {
 		switch {
@@ -357,72 +412,77 @@ func raceForSeq(tb testing.TB, j sagas.Journal, seq int) {
 	}
 
 	if wins != 1 {
-		ruleFailedf(tb, ruleConcurrent, "%d of %d appends of seq %d by different writers returned nil, want exactly 1",
+		winners = ruleFailedf(ruleConcurrent, "%d of %d appends of seq %d by different writers returned nil, want 1",
 			wins, concurrentWriters, seq)
 	}
 
-	wantSentinel(tb, ruleConcurrent, fmt.Sprintf("a losing append of seq %d", seq), wrong, rejection)
+	return errors.Join(winners, wantSentinel(ruleConcurrent, fmt.Sprintf("a losing append of seq %d", seq), wrong,
+		rejection))
 }
 
-func contextRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
-
-	j := newJournal()
-	done, cancel := context.WithCancel(tb.Context())
+func doneContextCase(ctx context.Context, j sagas.Journal) error {
+	done, cancel := context.WithCancel(ctx)
 
 	cancel()
 
-	wantError(tb, ruleDoneContext, "Append of seq 1 with a done context", j.Append(done, journalEvent(1)))
-	wantNil(tb, ruleDoneContext, "Append of another event at seq 1 after a done context",
-		j.Append(tb.Context(), otherEvent(1)))
+	setup := errors.Join(
+		wantError(ruleDoneContext, "Append of seq 1 with a done context", j.Append(done, journalEvent(1))),
+		wantNil(ruleDoneContext, "Append of another event at seq 1 after a done context",
+			j.Append(ctx, otherEvent(1))),
+	)
 
 	reader, ok := j.(sagas.EventReader)
 	if !ok {
-		return
+		return errors.Join(setup, notReader(ruleDoneContext))
 	}
 
-	events, err := reader.Events(done, "execution")
+	events, err := reader.Events(done, executionMain)
 	if err == nil {
-		ruleFailedf(tb, ruleDoneContext,
+		return errors.Join(setup, ruleFailedf(ruleDoneContext,
 			"Events of execution %q with a done context returned nil and %d events, want %v",
-			"execution", len(events), done.Err())
-
-		return
+			executionMain, len(events), done.Err()))
 	}
 
-	wantSentinel(tb, ruleDoneContext, `Events of execution "execution" with a done context`, err, done.Err())
+	return errors.Join(setup, wantSentinel(ruleDoneContext,
+		fmt.Sprintf("Events of execution %q with a done context", executionMain), err, done.Err()))
 }
 
-func invalidEventRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
+func invalidEventCase(ctx context.Context, j sagas.Journal) error {
+	return errors.Join(
+		wantError(ruleInvalidEvent, "Append of a nil event", j.Append(ctx, nil)),
+		wantError(ruleInvalidEvent, "Append of an event with seq 0", j.Append(ctx, journalEvent(0))),
+	)
+}
 
-	j := newJournal()
+func unknownVersionCase(ctx context.Context, j sagas.Journal) error {
+	versions := []string{"v0.1.0", "v9.0.0"}
+	errs := make([]error, 0, len(versions))
 
-	wantError(tb, ruleInvalidEvent, "Append of a nil event", j.Append(tb.Context(), nil))
-	wantError(tb, ruleInvalidEvent, "Append of an event with seq 0", j.Append(tb.Context(), journalEvent(0)))
-
-	for _, version := range []string{"v0.1.0", "v9.0.0"} {
+	for _, version := range versions {
 		e := journalEvent(1)
 		e.Version = version
 		what := fmt.Sprintf("Append of an event with version %q", version)
-		wantError(tb, ruleUnknownVersion, what, j.Append(tb.Context(), e))
+		errs = append(errs, wantError(ruleUnknownVersion, what, j.Append(ctx, e)))
 	}
+
+	return errors.Join(errs...)
 }
 
-func resendRules(tb testing.TB, newJournal func() sagas.Journal) {
-	tb.Helper()
-
-	ctx := tb.Context()
-
-	zoned := newJournal()
-	wantNil(tb, ruleTimeZone, "Append of seq 1", zoned.Append(ctx, journalEvent(1)))
-
+func timeZoneCase(ctx context.Context, j sagas.Journal) error {
 	again := journalEvent(1)
 	again.Time = again.Time.In(time.FixedZone("zone", int(time.Hour/time.Second)))
-	wantNil(tb, ruleTimeZone, "Append of an equal instant in another zone", zoned.Append(ctx, again))
 
-	exact := newJournal()
+	return errors.Join(
+		wantNil(ruleTimeZone, "Append of seq 1", j.Append(ctx, journalEvent(1))),
+		wantNil(ruleTimeZone, "Append of an equal instant in another zone", j.Append(ctx, again)),
+	)
+}
+
+func exactResendCase(ctx context.Context, j sagas.Journal) error {
 	e := journalEvent(1)
-	wantNil(tb, ruleExactResend, "Append of seq 1", exact.Append(ctx, e))
-	wantNil(tb, ruleExactResend, "Append of the same event again", exact.Append(ctx, e))
+
+	return errors.Join(
+		wantNil(ruleExactResend, "Append of seq 1", j.Append(ctx, e)),
+		wantNil(ruleExactResend, "Append of the same event again", j.Append(ctx, e)),
+	)
 }
