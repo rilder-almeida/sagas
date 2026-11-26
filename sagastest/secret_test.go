@@ -210,7 +210,7 @@ func Test_SecretStoreCases(t *testing.T) {
 			}
 
 			assert.Equal(t, secretRules(), names)
-			assert.Equal(t, wantRules(tt.wantFailing, tt.wantFresh, ruleFreshStore), rules)
+			assert.Equal(t, wantRules(t, tt.wantFailing, tt.wantFresh, ruleFreshStore), rules)
 			assertWrapped(t, tt.wantWrapped, errors.Join(runErrs...))
 		})
 	}

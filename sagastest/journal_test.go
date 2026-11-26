@@ -847,7 +847,7 @@ func Test_JournalCases(t *testing.T) {
 			}
 
 			assert.Equal(t, journalRules(), names)
-			assert.Equal(t, wantRules(tt.wantFailing, tt.wantFresh, ruleFresh), rules, "reports: %v", reports)
+			assert.Equal(t, wantRules(t, tt.wantFailing, tt.wantFresh, ruleFresh), rules, "reports: %v", reports)
 			assertCauses(t, tt.wantCauses, reports)
 			assertWrapped(t, tt.wantWrapped, errors.Join(runErrs...))
 		})
@@ -868,7 +868,9 @@ func namedRule(t *testing.T, err error, rule, fresh string) string {
 	return rule
 }
 
-func wantRules(failing, fresh []string, freshRule string) map[string]string {
+func wantRules(t *testing.T, failing, fresh []string, freshRule string) map[string]string {
+	t.Helper()
+
 	rules := make(map[string]string, len(failing)+len(fresh))
 
 	for _, name := range failing {
@@ -876,6 +878,10 @@ func wantRules(failing, fresh []string, freshRule string) map[string]string {
 	}
 
 	for _, name := range fresh {
+		if slices.Contains(failing, name) {
+			t.Errorf("case %q is in both the failing list and the fresh list", name)
+		}
+
 		rules[name] = freshRule
 	}
 
