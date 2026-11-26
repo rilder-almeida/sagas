@@ -114,9 +114,9 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 
 	ok := true
 
-	for _, call := range rec.Attempts() {
-		if !named(call.Step) {
-			tb.Errorf("sagastest: step %q ran in the clean run, but Case.Flow does not name it", call.Step)
+	for _, attempt := range rec.Attempts() {
+		if !named(attempt.Step) {
+			tb.Errorf("sagastest: step %q ran in the clean run, but Case.Flow does not name it", attempt.Step)
 
 			ok = false
 		}

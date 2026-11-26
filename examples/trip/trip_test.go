@@ -333,8 +333,8 @@ func Test_newServices_refusals(t *testing.T) {
 
 			attempts := 0
 
-			for _, call := range rec.Attempts() {
-				if call.Step == tt.step && call.Phase != sagas.PhaseCompensate {
+			for _, attempt := range rec.Attempts() {
+				if attempt.Step == tt.step && attempt.Phase != sagas.PhaseCompensate {
 					attempts++
 				}
 			}
@@ -359,8 +359,8 @@ func tryTrip(w io.Writer, faults ...sagas.Middleware) error {
 		return reportErr
 	}
 
-	for _, call := range rec.Attempts() {
-		if _, err = fmt.Fprintln(w, call.Step, call.Phase, call.Attempt, call.Err); err != nil {
+	for _, attempt := range rec.Attempts() {
+		if _, err = fmt.Fprintln(w, attempt.Step, attempt.Phase, attempt.Attempt, attempt.Err); err != nil {
 			return err
 		}
 	}

@@ -10,8 +10,8 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-// Attempt is one recorded call of a step method. For a call that panics, Err wraps sagas.ErrPanic and the
-// *sagas.PanicError.
+// Attempt is one recorded call of a step method. Err is the error that the call returned. For a call that
+// panics, Err wraps sagas.ErrPanic and the *sagas.PanicError.
 type Attempt struct {
 	sagas.CallInfo
 

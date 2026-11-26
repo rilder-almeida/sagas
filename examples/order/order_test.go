@@ -146,26 +146,27 @@ func Test_newSaga(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		amount     int
-		wantReport string
-		wantHeld   bool
-		wantRisk   string
-		wantCalls  []string
+		name         string
+		amount       int
+		wantReport   string
+		wantHeld     bool
+		wantRisk     string
+		wantAttempts []string
 	}{
 		{
-			name:       "[Success] When: the order passes the fraud check ; Should: complete and keep the reservation",
-			amount:     fraudLimit,
-			wantReport: "ord-9: completed\n",
-			wantHeld:   true,
-			wantRisk:   "low",
-			wantCalls:  []string{"reserve execute", "fraud-check execute", "charge pivot", "ship execute"},
+			name: "[Success] When: the order passes the fraud check ; " +
+				"Should: complete and keep the reservation",
+			amount:       fraudLimit,
+			wantReport:   "ord-9: completed\n",
+			wantHeld:     true,
+			wantRisk:     "low",
+			wantAttempts: []string{"reserve execute", "fraud-check execute", "charge pivot", "ship execute"},
 		},
 		{
-			name:       "[Fail] When: the fraud check flags the order ; Should: release the reservation, no charge",
-			amount:     fraudLimit + 1,
-			wantReport: "ord-9: compensated, pending: [], undone: [reserve]\n",
-			wantCalls:  []string{"reserve execute", "fraud-check execute", "reserve compensate"},
+			name:         "[Fail] When: the fraud check flags the order ; Should: release the reservation, no charge",
+			amount:       fraudLimit + 1,
+			wantReport:   "ord-9: compensated, pending: [], undone: [reserve]\n",
+			wantAttempts: []string{"reserve execute", "fraud-check execute", "reserve compensate"},
 		},
 	}
 
@@ -195,13 +196,13 @@ func Test_newSaga(t *testing.T) {
 			assert.Equal(t, risk(tt.wantRisk), o.Risk)
 
 			recorded := rec.Attempts()
-			calls := make([]string, 0, len(recorded))
+			attempts := make([]string, 0, len(recorded))
 
-			for _, call := range recorded {
-				calls = append(calls, call.Step+" "+string(call.Phase))
+			for _, attempt := range recorded {
+				attempts = append(attempts, attempt.Step+" "+string(attempt.Phase))
 			}
 
-			assert.Equal(t, tt.wantCalls, calls)
+			assert.Equal(t, tt.wantAttempts, attempts)
 		})
 	}
 }
