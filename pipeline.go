@@ -213,53 +213,6 @@ func recoverer(meta *callMeta) MiddlewareFunc {
 	}
 }
 
-type graceBoundKey struct{}
-
-type graceBound struct {
-	grace time.Duration
-	mu    sync.Mutex
-	ended time.Time
-}
-
-func (b *graceBound) end(at time.Time) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.ended = at
-}
-
-func (b *graceBound) deadline() (time.Time, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.ended.IsZero() {
-		return time.Time{}, false
-	}
-
-	return b.ended.Add(b.grace), true
-}
-
-func withDeadline(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
-	return func(ctx context.Context, _ CallInfo, call Call) error {
-		parent, at, why := ctx, time.Now().Add(d), cause
-		if b, ok := ctx.Value(graceBoundKey{}).(*graceBound); ok {
-			if end, ended := b.deadline(); ended && !at.Before(end) {
-				parent, at, why = context.WithoutCancel(ctx), end, ErrGraceEnded
-			}
-		}
-
-		ctx, cancel := context.WithDeadlineCause(parent, at, why)
-		defer cancel()
-
-		err := call(ctx)
-		if err != nil && ctx.Err() != nil {
-			meta.end(context.Cause(ctx))
-		}
-
-		return err
-	}
-}
-
 func requireRan[S any](at *attemptState[S], meta *callMeta, out *encodedOutput) MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error {
 		defer at.close()

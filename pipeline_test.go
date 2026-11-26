@@ -1946,39 +1946,3 @@ func Test_recoverPanic(t *testing.T) {
 		})
 	}
 }
-
-func Test_graceBound_deadline(t *testing.T) {
-	t.Parallel()
-
-	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	tests := []struct {
-		name   string
-		ended  time.Time
-		want   time.Time
-		wantOK bool
-	}{
-		{
-			name: "[Success] When: the caller did not end ; Should: report no bound",
-		},
-		{
-			name:   "[Success] When: the caller ended at t ; Should: report t plus the grace period",
-			ended:  epoch.Add(time.Second),
-			want:   epoch.Add(time.Second + time.Minute),
-			wantOK: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			b := &graceBound{grace: time.Minute}
-			b.end(tt.ended)
-
-			got, ok := b.deadline()
-			assert.Equal(t, tt.want, got)
-			assert.Equal(t, tt.wantOK, ok)
-		})
-	}
-}
