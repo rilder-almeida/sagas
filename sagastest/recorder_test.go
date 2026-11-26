@@ -39,8 +39,8 @@ func withoutErr(attempts []Attempt) []Attempt {
 
 func idempotencyKeys(attempts []Attempt) []string {
 	keys := make([]string, len(attempts))
-	for i, c := range attempts {
-		keys[i] = c.IdempotencyKey()
+	for i, a := range attempts {
+		keys[i] = a.IdempotencyKey()
 	}
 
 	return keys
@@ -48,9 +48,9 @@ func idempotencyKeys(attempts []Attempt) []string {
 
 func errMessages(attempts []Attempt) []string {
 	msgs := make([]string, len(attempts))
-	for i, c := range attempts {
-		if c.Err != nil {
-			msgs[i] = c.Err.Error()
+	for i, a := range attempts {
+		if a.Err != nil {
+			msgs[i] = a.Err.Error()
 		}
 	}
 
@@ -284,8 +284,8 @@ func Test_Recorder_Wrap(t *testing.T) {
 			assert.Equal(t, tt.wantMsgs, errMessages(attempts))
 
 			for _, want := range tt.wantAttempts {
-				i := slices.IndexFunc(attempts, func(c Attempt) bool {
-					return c.Step == want.Step && c.Phase == want.Phase && c.Attempt == want.Attempt
+				i := slices.IndexFunc(attempts, func(a Attempt) bool {
+					return a.Step == want.Step && a.Phase == want.Phase && a.Attempt == want.Attempt
 				})
 				require.GreaterOrEqual(t, i, 0)
 				assertSameErr(t, want.Err, attempts[i].Err)
@@ -306,12 +306,12 @@ func Test_Recorder_Attempts(t *testing.T) {
 	}{
 		{
 			name:    "[Success] When: the caller rewrites an element ; Should: leave a second Attempts unchanged",
-			corrupt: func(c []Attempt) { c[0].Step = "changed" },
+			corrupt: func(attempts []Attempt) { attempts[0].Step = "changed" },
 		},
 		{
 			name: "[Success] When: the caller truncates and appends ; Should: leave a second Attempts unchanged",
-			corrupt: func(c []Attempt) {
-				_ = append(c[:0], recorded("x", sagas.PhaseExecute, 1, nil))
+			corrupt: func(attempts []Attempt) {
+				_ = append(attempts[:0], recorded("x", sagas.PhaseExecute, 1, nil))
 			},
 		},
 	}
