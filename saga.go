@@ -257,9 +257,9 @@ func WithMiddleware(mw ...Middleware) Option {
 // grace period can miss the journal, but Run reports it. An attempt on the grace context gets the earlier of its
 // attempt timeout and the grace end: the grace period after deadline D while the caller lives, or after t once the
 // caller ended. t is when Run first sees that end, never later than D. An attempt that runs at t gains no deadline.
-func WithRecoveryTimeout(t time.Duration) Option {
+func WithRecoveryTimeout(period time.Duration) Option {
 	return func(d *definition) {
-		d.recovery = t
+		d.recovery = period
 		d.given[keyWithRecoveryTimeout]++
 	}
 }
