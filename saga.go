@@ -252,11 +252,11 @@ func WithMiddleware(mw ...Middleware) Option {
 	}
 }
 
-// WithRecoveryTimeout sets the grace period after the caller's context ends. Zero means DefaultRecoveryTimeout. The
-// period holds only when every step, compensation and the journal honor their context. A call that returns after it can
-// miss the journal, but Run reports it. Let t be when Run first sees the caller end, never after its deadline D. Each
-// attempt of a pivot, a later action or a compensation ends by its timeout or by the grace end. That end is D plus the
-// period while a caller with D lives, then t plus the period. An attempt that runs at t gains no deadline.
+// WithRecoveryTimeout sets the grace period after the caller's context ends. Zero means DefaultRecoveryTimeout. Let t
+// be when Run first sees that end, never after its deadline D. The grace end is t plus the period, or D plus the period
+// before t. An attempt of the pivot, the forward-only zone or a compensation ends by its timeout or the grace end. One
+// that runs at t gains no deadline, but the grace end cuts it. The period holds only when every step, compensation and
+// the journal honor their context. A call that returns after the grace end can miss the journal, but Run reports it.
 func WithRecoveryTimeout(period time.Duration) Option {
 	return func(d *definition) {
 		d.recovery = period
