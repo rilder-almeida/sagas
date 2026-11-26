@@ -1897,3 +1897,55 @@ func Test_recoverPanic(t *testing.T) {
 		})
 	}
 }
+
+func Test_graceBound_deadline(t *testing.T) {
+	t.Parallel()
+
+	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		caller time.Time
+		ended  time.Time
+		want   time.Time
+		wantOK bool
+	}{
+		{
+			name: "[Success] When: the caller has no deadline and did not end ; Should: report no bound",
+		},
+		{
+			name:   "[Success] When: the caller lives with a deadline D ; Should: report D plus the grace period",
+			caller: epoch,
+			want:   epoch.Add(time.Minute),
+			wantOK: true,
+		},
+		{
+			name:   "[Success] When: the caller ended at t without a deadline ; Should: report t plus the grace period",
+			ended:  epoch.Add(time.Second),
+			want:   epoch.Add(time.Second + time.Minute),
+			wantOK: true,
+		},
+		{
+			name:   "[Success] When: the caller with a deadline ended at t ; Should: report t plus the grace period",
+			caller: epoch.Add(time.Hour),
+			ended:  epoch.Add(time.Second),
+			want:   epoch.Add(time.Second + time.Minute),
+			wantOK: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := &graceBound{grace: time.Minute, caller: tt.caller}
+			if !tt.ended.IsZero() {
+				b.end(tt.ended)
+			}
+
+			got, ok := b.deadline()
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}

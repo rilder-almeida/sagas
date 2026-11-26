@@ -1038,6 +1038,7 @@ func Test_Saga_Run(t *testing.T) {
 
 	for _, tt := range slices.Concat(
 		forwardRows(), pivotRows(), stopRows(), errorRows(), backwardRows(), runRows(), resendRows(), recoveryRows(),
+		deadlineRows(),
 	) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -2907,4 +2908,112 @@ func recoveryTimeoutRow() runRow {
 	row.wantCauseText = map[string]string{comp("a"): timedOutText("a", time.Second)}
 
 	return row
+}
+
+func deadlineText(ctx context.Context, name string, start time.Time) string {
+	if at, ok := ctx.Deadline(); ok {
+		return fmt.Sprintf("%s deadline %v", name, at.Sub(start))
+	}
+
+	return name + " no deadline"
+}
+
+func (r *recorder) deadlineOf(name string, start time.Time) func(context.Context, tripState) error {
+	return func(ctx context.Context, _ tripState) error {
+		r.add(deadlineText(ctx, name, start))
+
+		return nil
+	}
+}
+
+func deadlineRows() []runRow {
+	return []runRow{
+		callerDeadlineBoundRow(),
+		noCallerDeadlineRow(),
+		shorterTimeoutRow(),
+		runningAttemptBoundRow(),
+	}
+}
+
+func callerDeadlineBoundRow() runRow {
+	return runRow{
+		name: "[Success] When: the caller has a deadline D ; " +
+			"Should: keep D on a compensable step and give the pivot D plus the grace period",
+		steps: func(rec *recorder) Flow {
+			start := time.Now()
+
+			return Sequence(undoing("a", rec.deadlineOf("a", start), okAction), paying("p", rec.deadlineOf("p", start)))
+		},
+		opts:       []Option{WithRecoveryTimeout(5 * time.Second)},
+		deadline:   10 * time.Second,
+		wantStatus: StatusCompleted,
+		wantSteps:  map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded},
+		wantOrder:  [][2]string{{"a deadline 10s", "p deadline 15s"}},
+		wantTrail:  seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), closed),
+		wantZones:  []StepZone{{Name: "a", Zone: ZoneCompensable, Compensable: true}, {Name: "p", Zone: ZonePivot}},
+	}
+}
+
+func noCallerDeadlineRow() runRow {
+	row := callerDeadlineBoundRow()
+	row.name = "[Success] When: the caller has no deadline ; Should: give the pivot only its attempt timeout"
+	row.deadline = 0
+	row.wantOrder = [][2]string{{"a deadline 30s", "p deadline 30s"}}
+
+	return row
+}
+
+func shorterTimeoutRow() runRow {
+	row := callerDeadlineBoundRow()
+	row.name = "[Success] When: the pivot AttemptTimeout ends before the grace bound ; " +
+		"Should: give the pivot its timeout"
+	row.steps = func(rec *recorder) Flow {
+		start := time.Now()
+		p := paying("p", rec.deadlineOf("p", start))
+		p.AttemptTimeout = 2 * time.Second
+
+		return Sequence(undoing("a", rec.deadlineOf("a", start), okAction), p)
+	}
+	row.wantOrder = [][2]string{{"a deadline 10s", "p deadline 2s"}}
+
+	return row
+}
+
+func runningAttemptBoundRow() runRow {
+	return runRow{
+		name: "[Success] When: the caller ends at 1s while a forward-only attempt runs ; " +
+			"Should: keep that attempt without a grace deadline and give the next attempt 1s plus the grace period",
+		steps: func(rec *recorder) Flow {
+			start := time.Now()
+
+			var calls atomic.Int32
+
+			z := act("z", func(ctx context.Context, _ tripState) error {
+				if calls.Add(1) > 1 {
+					rec.add(deadlineText(ctx, "z2", start))
+
+					return nil
+				}
+
+				rec.add(deadlineText(ctx, "z1", start))
+				time.Sleep(2 * time.Second)
+				rec.add(deadlineText(ctx, "z1 after", start))
+
+				return errAlwaysFails
+			})
+			z.RecoveryPolicy = RecoveryPolicy{Initial: time.Second, NoJitter: true}
+
+			return Sequence(rec.undoable("a"), rec.pivot(), z)
+		},
+		opts:        []Option{WithRecoveryTimeout(10 * time.Second)},
+		cancelAfter: time.Second,
+		cancelCause: errStop,
+		wantStatus:  StatusCompleted,
+		wantSteps:   map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepSucceeded},
+		wantOrder: [][2]string{
+			{"z1 deadline 30s", "z1 after deadline 30s"}, {"z1 after deadline 30s", "z2 deadline 11s"},
+		},
+		wantTrail: seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), doneOf("z"), closed),
+		wantZones: pivotZones("z"),
+	}
 }

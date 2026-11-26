@@ -441,7 +441,9 @@ func endKind(status Status, rejected bool, appendKind *KindError) *KindError {
 type waitRelease func()
 
 func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRelease) {
-	grace, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	bound := &graceBound{grace: d}
+	bound.caller, _ = ctx.Deadline()
+	grace, cancel := context.WithCancelCause(context.WithValue(context.WithoutCancel(ctx), graceBoundKey{}, bound))
 	done := make(chan struct{})
 
 	go func() {
@@ -452,6 +454,8 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 		case <-grace.Done():
 			return
 		}
+
+		bound.end(time.Now())
 
 		timer := time.NewTimer(d)
 		defer timer.Stop()

@@ -213,9 +213,46 @@ func recoverer(meta *callMeta) MiddlewareFunc {
 	}
 }
 
-func withTimeout(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
+type graceBoundKey struct{}
+
+type graceBound struct {
+	grace  time.Duration
+	caller time.Time
+	mu     sync.Mutex
+	ended  time.Time
+}
+
+func (b *graceBound) end(at time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.ended = at
+}
+
+func (b *graceBound) deadline() (time.Time, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	switch {
+	case !b.ended.IsZero():
+		return b.ended.Add(b.grace), true
+	case !b.caller.IsZero():
+		return b.caller.Add(b.grace), true
+	default:
+		return time.Time{}, false
+	}
+}
+
+func withDeadline(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error {
-		ctx, cancel := context.WithTimeoutCause(ctx, d, cause)
+		at, why := time.Now().Add(d), cause
+		if b, ok := ctx.Value(graceBoundKey{}).(*graceBound); ok {
+			if end, known := b.deadline(); known && end.Before(at) {
+				at, why = end, ErrGraceEnded
+			}
+		}
+
+		ctx, cancel := context.WithDeadlineCause(ctx, at, why)
 		defer cancel()
 
 		err := call(ctx)
@@ -378,7 +415,7 @@ func attemptLayers[S any](
 	layers := make([]Middleware, 0, len(spec.middleware)+coreLayers)
 
 	if spec.timesOut() {
-		layers = append(layers, withTimeout(meta, spec.timeout, timeoutCause))
+		layers = append(layers, withDeadline(meta, spec.timeout, timeoutCause))
 	}
 
 	layers = append(layers, recoverer(meta), requireRan(at, meta, output))
