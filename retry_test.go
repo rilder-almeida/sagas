@@ -441,22 +441,36 @@ func Test_runAttempts(t *testing.T) {
 	tests := []struct {
 		name        string
 		draw        func(int64) int64
+		cause       error
+		wantSeen    []int
+		wantErr     error
 		wantElapsed time.Duration
 	}{
 		{
 			name:        "[Success] When: the draw is half the bound ; Should: wait half of each delay",
 			draw:        func(n int64) int64 { return n / 2 },
+			wantSeen:    []int{1, 2, 3},
 			wantElapsed: 300 * time.Millisecond,
 		},
 		{
 			name:        "[Success] When: the draw is zero ; Should: retry at once",
 			draw:        func(int64) int64 { return 0 },
+			wantSeen:    []int{1, 2, 3},
 			wantElapsed: 0,
 		},
 		{
 			name:        "[Success] When: the draw is the top of the range ; Should: wait just under each delay",
 			draw:        func(n int64) int64 { return n - 1 },
+			wantSeen:    []int{1, 2, 3},
 			wantElapsed: 600*time.Millisecond - 2,
+		},
+		{
+			name: "[Fail] When: an attempt ends with the cause ErrGraceEnded and the context lives ; " +
+				"Should: stop without a retry",
+			draw:     func(int64) int64 { return 0 },
+			cause:    ErrGraceEnded,
+			wantSeen: []int{1},
+			wantErr:  errA,
 		},
 	}
 
@@ -469,13 +483,19 @@ func Test_runAttempts(t *testing.T) {
 
 				var seen []int
 
-				call := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
+				script := scriptedCall(meta, []error{errA, errB, nil}, nil, 0, &seen)
+				call := func(ctx context.Context) error {
+					meta.end(tt.cause)
+
+					return script(ctx)
+				}
 
 				start := time.Now()
 				err := runAttempts(t.Context(), RetryPolicy{}, meta, call, tt.draw)
 
-				require.NoError(t, err)
-				assert.Equal(t, []int{1, 2, 3}, seen)
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Equal(t, tt.wantErr == nil, err == nil)
+				assert.Equal(t, tt.wantSeen, seen)
 				assert.Equal(t, tt.wantElapsed, time.Since(start))
 			})
 		})

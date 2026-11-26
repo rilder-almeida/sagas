@@ -442,8 +442,14 @@ type waitRelease func()
 
 func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRelease) {
 	bound := &graceBound{grace: d}
-	bound.caller, _ = ctx.Deadline()
 	grace, cancel := context.WithCancelCause(context.WithValue(context.WithoutCancel(ctx), graceBoundKey{}, bound))
+	expire := context.CancelFunc(func() {})
+
+	callerDeadline, hasDeadline := ctx.Deadline()
+	if hasDeadline {
+		grace, expire = context.WithDeadlineCause(grace, callerDeadline.Add(d), ErrGraceEnded)
+	}
+
 	done := make(chan struct{})
 
 	go func() {
@@ -452,6 +458,13 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 		select {
 		case <-ctx.Done():
 		case <-grace.Done():
+			return
+		}
+
+		if hasDeadline && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			bound.end(callerDeadline)
+			<-grace.Done()
+
 			return
 		}
 
@@ -469,6 +482,7 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 
 	return grace, func() {
 		cancel(nil)
+		expire()
 		<-done
 	}
 }

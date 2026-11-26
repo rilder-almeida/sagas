@@ -135,6 +135,14 @@ func graceEnded(grace context.Context) bool {
 	return errors.Is(context.Cause(grace), ErrGraceEnded)
 }
 
+func graceCut(grace context.Context, out *outcome) bool {
+	if errors.Is(out.cause, ErrGraceEnded) {
+		<-grace.Done()
+	}
+
+	return graceEnded(grace)
+}
+
 func (r *runner[S]) turn(grace context.Context, b *rollback[S], i int, blockedBelow bool) {
 	if r.rejected != nil {
 		return
@@ -184,7 +192,7 @@ func (r *runner[S]) undo(grace context.Context, b *rollback[S], i int) {
 
 	b.wg.Go(func() {
 		r.act(grace, j, step.compensation, func(done settled[S]) {
-			done.late, done.onGrace = graceEnded(grace), true
+			done.late, done.onGrace = graceCut(grace, &done.out), true
 			b.results <- done
 		})
 	})

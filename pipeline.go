@@ -216,10 +216,9 @@ func recoverer(meta *callMeta) MiddlewareFunc {
 type graceBoundKey struct{}
 
 type graceBound struct {
-	grace  time.Duration
-	caller time.Time
-	mu     sync.Mutex
-	ended  time.Time
+	grace time.Duration
+	mu    sync.Mutex
+	ended time.Time
 }
 
 func (b *graceBound) end(at time.Time) {
@@ -233,26 +232,23 @@ func (b *graceBound) deadline() (time.Time, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	switch {
-	case !b.ended.IsZero():
-		return b.ended.Add(b.grace), true
-	case !b.caller.IsZero():
-		return b.caller.Add(b.grace), true
-	default:
+	if b.ended.IsZero() {
 		return time.Time{}, false
 	}
+
+	return b.ended.Add(b.grace), true
 }
 
 func withDeadline(meta *callMeta, d time.Duration, cause error) MiddlewareFunc {
 	return func(ctx context.Context, _ CallInfo, call Call) error {
-		at, why := time.Now().Add(d), cause
+		parent, at, why := ctx, time.Now().Add(d), cause
 		if b, ok := ctx.Value(graceBoundKey{}).(*graceBound); ok {
-			if end, known := b.deadline(); known && end.Before(at) {
-				at, why = end, ErrGraceEnded
+			if end, ended := b.deadline(); ended && !at.Before(end) {
+				parent, at, why = context.WithoutCancel(ctx), end, ErrGraceEnded
 			}
 		}
 
-		ctx, cancel := context.WithDeadlineCause(ctx, at, why)
+		ctx, cancel := context.WithDeadlineCause(parent, at, why)
 		defer cancel()
 
 		err := call(ctx)

@@ -226,7 +226,7 @@ func (r *runner[S]) work(ctx, grace context.Context, reports chan<- report, j jo
 	}
 
 	r.act(ctx, j, r.saga.steps[j.step].action, func(done settled[S]) {
-		done.late, done.onGrace = graceEnded(grace), r.saga.steps[j.step].zone != ZoneCompensable
+		done.late, done.onGrace = graceCut(grace, &done.out), r.saga.steps[j.step].zone != ZoneCompensable
 		reports <- done
 	})
 }

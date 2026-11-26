@@ -2932,6 +2932,9 @@ func deadlineRows() []runRow {
 		noCallerDeadlineRow(),
 		shorterTimeoutRow(),
 		runningAttemptBoundRow(),
+		graceCutRow(),
+		forwardGraceCutRow(),
+		deadlineGraceCutRow(),
 	}
 }
 
@@ -3015,5 +3018,99 @@ func runningAttemptBoundRow() runRow {
 		},
 		wantTrail: seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z"), doneOf("z"), closed),
 		wantZones: pivotZones("z"),
+	}
+}
+
+func graceCutRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation starts after the caller ended and the grace end cuts its attempt ; " +
+			"Should: leave its outcome unrecorded and fail it with ErrGraceEnded",
+		steps: func(*recorder) Flow {
+			late := once("c", func(context.Context, tripState) error {
+				time.Sleep(2 * pause)
+
+				return errAlwaysFails
+			})
+
+			return Sequence(undoOnce("b", okAction, blockedOnCtx), late)
+		},
+		opts:           []Option{WithRecoveryTimeout(10 * pause)},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     noEndStatus,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): context.DeadlineExceeded.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
+		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded, "c": errStop},
+		wantUnrecorded: []string{comp("b")},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{ErrGraceEnded, errStop},
+		wantSteps:      map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:    []string{"b"},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"),
+		),
+	}
+}
+
+func forwardGraceCutRow() runRow {
+	return runRow{
+		name: "[Fail] When: a forward-only attempt starts after the caller ended and the grace end cuts it ; " +
+			"Should: leave its outcome unrecorded and fail it with ErrGraceEnded",
+		steps: func(rec *recorder) Flow {
+			p := paying("p", func(context.Context, tripState) error {
+				time.Sleep(2 * pause)
+
+				return nil
+			})
+
+			return Sequence(rec.undoable("a"), p, onceForward("z", blockedOnCtx))
+		},
+		opts:           []Option{WithRecoveryTimeout(10 * pause)},
+		cancelAfter:    pause,
+		cancelCause:    errStop,
+		wantStatus:     noEndStatus,
+		wantKind:       ErrIncomplete,
+		wantKinds:      map[string]*KindError{"z": ErrUnknown},
+		wantFailed:     []string{"z"},
+		wantErrText:    map[string]string{"z": context.DeadlineExceeded.Error()},
+		wantAttempts:   map[string]int{"z": 1},
+		wantCauseIs:    map[string]error{"z": ErrGraceEnded},
+		wantUnrecorded: []string{"z"},
+		wantErrs:       []error{ErrGraceEnded, errStop},
+		wantNotErrs:    []error{ErrCompensated, ErrJournal},
+		wantSteps:      map[string]stepStatus{"a": stepSucceeded, "p": stepSucceeded, "z": stepUnknown},
+		wantPending:    []string{"z"},
+		wantTrail:      seq(opened, startOf("a"), doneOf("a"), startOf("p"), doneOf("p"), startOf("z")),
+		wantZones:      pivotZones("z"),
+	}
+}
+
+func deadlineGraceCutRow() runRow {
+	return runRow{
+		name: "[Fail] When: a compensation starts while the caller lives with a deadline and runs to the grace end ; " +
+			"Should: leave its outcome unrecorded and fail it with ErrGraceEnded",
+		steps: func(*recorder) Flow {
+			return Sequence(undoOnce("b", okAction, blockedOnCtx), once("c", alwaysFails))
+		},
+		opts:           []Option{WithRecoveryTimeout(2 * pause)},
+		deadline:       5 * pause,
+		wantStatus:     noEndStatus,
+		wantKind:       ErrCompensationFailed,
+		wantKinds:      map[string]*KindError{comp("b"): ErrUnknown, "c": ErrFailed},
+		wantFailed:     []string{"c", comp("b")},
+		wantErrText:    map[string]string{comp("b"): context.DeadlineExceeded.Error(), "c": errAlwaysFails.Error()},
+		wantAttempts:   map[string]int{comp("b"): 1, "c": 1},
+		wantCauseIs:    map[string]error{comp("b"): ErrGraceEnded},
+		wantUnrecorded: []string{comp("b")},
+		wantNotErrs:    []error{ErrJournal},
+		wantErrs:       []error{ErrGraceEnded, context.DeadlineExceeded},
+		wantSteps:      map[string]stepStatus{"b": stepCompensationFailed, "c": stepFailed},
+		wantPending:    []string{"b"},
+		wantTrail: seq(
+			opened, startOf("b"), doneOf("b"), startOf("c"), failedOf("c"), compStartOf("b"),
+		),
 	}
 }

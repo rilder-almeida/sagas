@@ -417,7 +417,7 @@ func pipelineGraceBoundRow() pipelineRow {
 	spec.retry = RetryPolicy{Attempts: 1}
 
 	return pipelineRow{
-		name: "[Fail] When: the grace bound comes before the attempt timeout ; " +
+		name: "[Fail] When: the caller ended and the grace bound comes before the attempt timeout ; " +
 			"Should: end the attempt at the bound with the cause ErrGraceEnded",
 		spec: spec,
 		bound: func() *graceBound {
@@ -429,9 +429,12 @@ func pipelineGraceBoundRow() pipelineRow {
 		call: func(r *recorder) func(context.Context, *pipeState) error {
 			return func(ctx context.Context, _ *pipeState) error {
 				start := time.Now()
+				if at, ok := ctx.Deadline(); ok {
+					r.add("deadline " + at.Sub(start).String())
+				}
 
 				<-ctx.Done()
-				r.add(time.Since(start).String())
+				r.add("ended " + time.Since(start).String())
 
 				return ctx.Err()
 			}
@@ -440,7 +443,7 @@ func pipelineGraceBoundRow() pipelineRow {
 		wantAttempts: 1,
 		wantErrs:     []error{context.DeadlineExceeded},
 		wantCause:    []error{ErrGraceEnded},
-		wantTrace:    []string{"500ms"},
+		wantTrace:    []string{"deadline 500ms", "ended 500ms"},
 	}
 }
 
@@ -1951,29 +1954,15 @@ func Test_graceBound_deadline(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		caller time.Time
 		ended  time.Time
 		want   time.Time
 		wantOK bool
 	}{
 		{
-			name: "[Success] When: the caller has no deadline and did not end ; Should: report no bound",
+			name: "[Success] When: the caller did not end ; Should: report no bound",
 		},
 		{
-			name:   "[Success] When: the caller lives with a deadline D ; Should: report D plus the grace period",
-			caller: epoch,
-			want:   epoch.Add(time.Minute),
-			wantOK: true,
-		},
-		{
-			name:   "[Success] When: the caller ended at t without a deadline ; Should: report t plus the grace period",
-			ended:  epoch.Add(time.Second),
-			want:   epoch.Add(time.Second + time.Minute),
-			wantOK: true,
-		},
-		{
-			name:   "[Success] When: the caller with a deadline ended at t ; Should: report t plus the grace period",
-			caller: epoch.Add(time.Hour),
+			name:   "[Success] When: the caller ended at t ; Should: report t plus the grace period",
 			ended:  epoch.Add(time.Second),
 			want:   epoch.Add(time.Second + time.Minute),
 			wantOK: true,
@@ -1984,10 +1973,8 @@ func Test_graceBound_deadline(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			b := &graceBound{grace: time.Minute, caller: tt.caller}
-			if !tt.ended.IsZero() {
-				b.end(tt.ended)
-			}
+			b := &graceBound{grace: time.Minute}
+			b.end(tt.ended)
 
 			got, ok := b.deadline()
 			assert.Equal(t, tt.want, got)
