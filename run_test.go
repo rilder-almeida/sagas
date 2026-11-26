@@ -2516,6 +2516,7 @@ func assertSecrets(t *testing.T, secrets *scriptSecrets, writer string, held []l
 const (
 	visa4111 = "visa-4111"
 	visa5500 = "visa-5500"
+	visa9999 = "visa-9999"
 )
 
 type ledgerRerun struct {
@@ -2589,15 +2590,11 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 				"Should: refuse it with ErrExecutionExists and keep the secret of the first run",
 			initial:    ledgerState{Card: visa4111},
 			card:       visa5500,
-			rerun:      &ledgerRerun{initial: ledgerState{Card: "visa-9999"}, wantErr: ErrExecutionExists},
-			wantHidden: []string{visa4111, "visa-9999"},
+			rerun:      &ledgerRerun{initial: ledgerState{Card: visa9999}, wantErr: ErrExecutionExists},
+			wantHidden: []string{visa4111, visa9999},
 			wantEvents: 8,
 			wantSecrets: []ledgerSecret{
-				{
-					seq:   1,
-					field: cardField,
-					value: cardJSON,
-				},
+				{seq: 1, field: cardField, value: cardJSON},
 				{seq: seqCard, field: cardField, value: strconv.Quote(visa5500)},
 			},
 		},

@@ -21,9 +21,9 @@ type SecretKey struct {
 
 // SecretStore keeps the values of the state fields tagged sagas:"secret", apart from the journal, each under its
 // SecretKey. A Put on a held key replaces the value, as a resend does. A value survives a crash of the process once Put
-// returns nil. Get returns an error that wraps ErrNoSecret for a key the store does not hold. A value whose event never
-// lands, after a refused run, a failed append or a crash between Put and Append, stays under its own writer. No event
-// names it, and the core never removes it.
+// returns nil. Get returns an error that wraps ErrNoSecret for a key the store does not hold. A value whose event the
+// journal never stores, after ErrExecutionExists, ErrConcurrentWriter, a failed append or a crash between Put and
+// Append, stays under its own writer. No event names it, and the core never removes it.
 type SecretStore interface {
 	Put(ctx context.Context, key SecretKey, value jsontext.Value) error
 	Get(ctx context.Context, key SecretKey) (jsontext.Value, error)
