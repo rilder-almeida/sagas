@@ -789,8 +789,10 @@ func (l *eventLog) Observe(_ context.Context, e *sagas.Event) {
 }
 
 type queueClose struct {
-	err  error
-	seqs []int
+	err         error
+	seqs        []int
+	journalErr  error
+	journalSeqs []int
 }
 
 type factoryLog struct {
@@ -808,11 +810,11 @@ func (f *factoryLog) called(name string) int {
 	return len(f.names)
 }
 
-func (f *factoryLog) closed(c queueClose) {
+func (f *factoryLog) closed(c *queueClose) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.closes = append(f.closes, c)
+	f.closes = append(f.closes, *c)
 }
 
 func observed(t *testing.T, log *factoryLog, s *shopServices) {
@@ -820,15 +822,24 @@ func observed(t *testing.T, log *factoryLog, s *shopServices) {
 
 	events := &eventLog{}
 	queue := sagas.NewMemoryEventQueue()
-	s.opts = []sagas.Option{sagas.WithObserver(events), sagas.WithEventQueue(queue)}
+	journal := sagas.NewMemoryJournal()
+	s.opts = []sagas.Option{sagas.WithObserver(events), sagas.WithEventQueue(queue), sagas.WithJournal(journal)}
 
 	t.Cleanup(func() {
 		err := queue.Close(context.Background())
+		written, journalErr := journal.Events(context.Background(), runID)
+
+		journalSeqs := make([]int, 0, len(written))
+		for i := range written {
+			journalSeqs = append(journalSeqs, written[i].Seq)
+		}
 
 		events.mu.Lock()
 		defer events.mu.Unlock()
 
-		log.closed(queueClose{err: err, seqs: slices.Clone(events.seqs)})
+		log.closed(&queueClose{
+			err: err, seqs: slices.Clone(events.seqs), journalErr: journalErr, journalSeqs: journalSeqs,
+		})
 	})
 }
 
@@ -852,7 +863,9 @@ func assertQueues(t *testing.T, closes []queueClose, want int) {
 
 	for _, c := range closes {
 		require.NoError(t, c.err)
+		require.NoError(t, c.journalErr)
 		require.NotEmpty(t, c.seqs)
+		assert.Equal(t, c.journalSeqs, c.seqs)
 
 		for i, seq := range c.seqs {
 			assert.Equal(t, i+1, seq)

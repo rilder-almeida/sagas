@@ -135,6 +135,28 @@ func Test_Case_Run(t *testing.T) {
 	}
 }
 
+func Test_Case_Run_zero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{name: "[Fail] When: the Case is the zero value ; Should: panic with a value that names the case lists"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			services := newShopServices(sound, 1, chargeThenShip, lateCharge)
+
+			assert.PanicsWithValue(t, "sagastest: Case not built by a case list", func() {
+				assert.NoError(t, Case[*shopServices]{}.Run(t.Context(), services))
+			})
+		})
+	}
+}
+
 type traceServices struct {
 	trace *trace
 	steps []string
@@ -182,6 +204,7 @@ func Test_runCase(t *testing.T) {
 		want        []string
 		wantOwn     []string
 		wantJournal bool
+		wantSpare   int
 	}{
 		{
 			name: "[Success] When: the services have no Options method and two parallel steps ; " +
@@ -214,6 +237,20 @@ func Test_runCase(t *testing.T) {
 			wantJournal: true,
 		},
 		{
+			name: "[Success] When: Options returns a slice with spare capacity ; " +
+				"Should: leave the spare part of its backing array unchanged",
+			steps: []string{"a", "b"},
+			services: func(base traceServices, _ *Recorder, journal sagas.Journal) Services[probeState] {
+				opts := append(make([]sagas.Option, 0, 3), sagas.WithJournal(journal))
+
+				return &optionsServices{traceServices: base, opts: opts}
+			},
+			want:        []string{startA, endA, startB, endB},
+			wantOwn:     []string{},
+			wantJournal: true,
+			wantSpare:   2,
+		},
+		{
 			name: "[Success] When: Options returns its own WithMiddleware ; " +
 				"Should: let both that middleware and the kit middleware see each call",
 			steps: []string{"a", "b"},
@@ -233,6 +270,13 @@ func Test_runCase(t *testing.T) {
 				tr, own, kit, journal := &trace{}, NewRecorder(), NewRecorder(), sagas.NewMemoryJournal()
 				services := tt.services(traceServices{trace: tr, steps: tt.steps}, own, journal)
 
+				var spare []sagas.Option
+
+				if o, ok := services.(optioner); ok {
+					opts := o.Options()
+					spare = opts[len(opts):cap(opts)]
+				}
+
 				final, err := runCase(t.Context(), "serial", probeState{ID: runID}, services, kit)
 				require.NoError(t, err)
 
@@ -243,6 +287,11 @@ func Test_runCase(t *testing.T) {
 				assert.Equal(t, tt.steps, stepsOf(kit))
 				assert.Equal(t, tt.wantOwn, stepsOf(own))
 				assert.Equal(t, tt.wantJournal, journalErr == nil && len(events) > 0)
+				require.Len(t, spare, tt.wantSpare)
+
+				for i, o := range spare {
+					assert.Nil(t, o, "spare element %d", i)
+				}
 			})
 		})
 	}

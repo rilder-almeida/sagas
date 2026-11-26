@@ -103,7 +103,7 @@ func compensationCase[S any, W CompensationServices[S]](name string, state S, st
 
 		i := slices.IndexFunc(attempts, func(a Attempt) bool { return a.Step == step && a.Phase == sagas.PhaseExecute })
 		if i < 0 {
-			return caseFailure(ErrNotStarted, step, kind, "the step did not start", err)
+			return caseFailure(ErrNotStarted, step, kind, "its compensation is untested", err)
 		}
 
 		if !errors.Is(err, sagas.ErrCompensated) {
@@ -185,7 +185,7 @@ func pivotCase[S any, W Services[S]](name string, state S, p plan, clean *S) Cas
 		final, err := runCase(ctx, name, state, services, rec, fault)
 
 		if !started(rec, p.pivot, sagas.PhasePivot) {
-			return caseFailure(ErrNotStarted, p.pivot, caseUnknown, "the step did not start", err)
+			return caseFailure(ErrNotStarted, p.pivot, caseUnknown, "the pivot is untested", err)
 		}
 
 		var outcome error
@@ -251,7 +251,7 @@ func repeatCase[S any, W Services[S]](name string, state S, step string) Case[W]
 		final, err := runCase(ctx, name, state, services, rec, repeated(step, sagas.PhaseExecute))
 
 		if !started(rec, step, sagas.PhaseExecute) {
-			return caseFailure(ErrNotStarted, step, caseRepeated, "the step did not start", err)
+			return caseFailure(ErrNotStarted, step, caseRepeated, "its repeat is untested", err)
 		}
 
 		var outcome error
@@ -278,9 +278,7 @@ func TestCompensations[S any, W CompensationServices[S]](
 	runCases(t, cases, newServices)
 }
 
-// TestPivot runs each case of PivotCases in a subtest named after it, as TestCompensations does. For a saga with an
-// observer, newServices makes the queue with sagas.NewMemoryEventQueue, passes it in Options with
-// sagas.WithEventQueue, and closes it with Close in t.Cleanup.
+// TestPivot runs each case of PivotCases in a subtest named after it, as TestCompensations does.
 func TestPivot[S any, W Services[S]](t *testing.T, name string, state S, newServices func(*testing.T) W) {
 	t.Helper()
 

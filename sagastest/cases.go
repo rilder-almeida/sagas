@@ -11,7 +11,9 @@ import (
 
 // Services is the test type that holds the fakes of one case. Flow returns the flow over those fakes. Check checks the
 // fakes and the final state after the run. If the type also has an Options() []sagas.Option method, the kit builds the
-// saga with those options and adds its own middleware after them.
+// saga with those options and adds its own middleware after them. For a saga with an observer, the factory makes the
+// queue with sagas.NewMemoryEventQueue, passes it in Options with sagas.WithEventQueue, and closes it with Close in
+// t.Cleanup.
 type Services[S any] interface {
 	Flow() *sagas.Group
 	Check(ctx context.Context, final *S) error
@@ -24,7 +26,7 @@ type CompensationServices[S any] interface {
 	ExecuteLate(ctx context.Context, state *S, step, key string) error
 }
 
-// Case is one case of a kit, with the name of the case.
+// Case is one named case that a case list of this package builds. Run panics on a Case built another way.
 type Case[W any] struct {
 	Name string
 	run  func(ctx context.Context, services W) error
@@ -32,6 +34,10 @@ type Case[W any] struct {
 
 // Run runs the case on services. Its error wraps the sentinel error of the failure kind.
 func (c Case[W]) Run(ctx context.Context, services W) error {
+	if c.run == nil {
+		panic("sagastest: Case not built by a case list")
+	}
+
 	return c.run(ctx, services)
 }
 
@@ -42,7 +48,8 @@ var (
 	ErrNoStepToTest = errors.New("sagastest: no step to test")
 	// ErrNotStarted reports a step that the case exercises and that did not start.
 	ErrNotStarted = errors.New("sagastest: step did not start")
-	// ErrOutcome reports a run with the wrong error, the wrong pending steps, or the wrong final state.
+	// ErrOutcome reports a run with the wrong error, the wrong pending steps, a compensation after an unknown pivot, or
+	// the wrong final state.
 	ErrOutcome = errors.New("sagastest: wrong outcome")
 	// ErrCheck reports a failed Check.
 	ErrCheck = errors.New("sagastest: check failed")
