@@ -17,11 +17,15 @@ const (
 	DefaultMaxDelay = 30 * time.Second
 	// DefaultMultiplier is the delay growth factor used when RetryPolicy.Multiplier is zero.
 	DefaultMultiplier = 2.0
+	// UnlimitedAttempts is the Attempts value that sets no limit on the number of attempts.
+	UnlimitedAttempts = -1
+	// DefaultAttemptTimeout bounds each attempt of a call when its AttemptTimeout is zero.
+	DefaultAttemptTimeout = 30 * time.Second
 )
 
 // RetryPolicy sets how a step retries a call. The zero value is the default policy.
 type RetryPolicy struct {
-	// Attempts is the most calls made. Zero means DefaultAttempts.
+	// Attempts is the most calls made. Zero means DefaultAttempts, and UnlimitedAttempts sets no limit.
 	Attempts int
 	// Initial is the delay before the second attempt. Zero means DefaultInitialDelay.
 	Initial time.Duration
@@ -34,8 +38,35 @@ type RetryPolicy struct {
 	NoJitter bool
 }
 
+// RecoveryPolicy sets how a step retries its compensation, and its action when the step runs after the pivot. Initial,
+// Max, Multiplier and NoJitter work as in RetryPolicy. The zero value retries without a limit.
+type RecoveryPolicy struct {
+	// Attempts is the most calls made. Zero and UnlimitedAttempts set no limit.
+	Attempts   int
+	Initial    time.Duration
+	Max        time.Duration
+	Multiplier float64
+	NoJitter   bool
+	// AttemptTimeout bounds each attempt. Zero means DefaultAttemptTimeout.
+	AttemptTimeout time.Duration
+}
+
+func (p RecoveryPolicy) retry() RetryPolicy {
+	attempts := p.Attempts
+	if attempts == 0 {
+		attempts = UnlimitedAttempts
+	}
+
+	return RetryPolicy{
+		Attempts: attempts, Initial: p.Initial, Max: p.Max, Multiplier: p.Multiplier, NoJitter: p.NoJitter,
+	}
+}
+
 func (p RetryPolicy) attempts() int {
-	if p.Attempts > 0 {
+	switch {
+	case p.Attempts == UnlimitedAttempts:
+		return math.MaxInt
+	case p.Attempts > 0:
 		return p.Attempts
 	}
 
@@ -66,7 +97,7 @@ func (p RetryPolicy) multiplier() float64 {
 	return DefaultMultiplier
 }
 
-// NoRetry returns the policy of one attempt and no retry.
+// NoRetry returns the RetryPolicy of one attempt and no retry. It does not change RecoveryPolicy.
 func NoRetry() RetryPolicy { return RetryPolicy{Attempts: 1} }
 
 var errPermanent = errors.New("sagas: permanent")

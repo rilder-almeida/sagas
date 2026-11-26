@@ -18,6 +18,7 @@ type StepReport struct {
 	Description    string
 	RetryPolicy    RetryPolicy
 	AttemptTimeout time.Duration
+	RecoveryPolicy RecoveryPolicy
 	FailurePolicy  FailurePolicy
 	Pivot          bool
 	Compensate     bool
@@ -160,9 +161,16 @@ func inspectStep[S any](
 	}
 
 	report := StepReport{
-		Name: n.name, Description: set.description, RetryPolicy: set.retry, AttemptTimeout: set.timeout,
-		FailurePolicy: set.failure, Pivot: set.pivot, Compensate: m.compensate != nil, Enabled: m.enabled != nil,
-		Wrap: m.wrap != nil,
+		Name:           n.name,
+		Description:    set.description,
+		RetryPolicy:    set.retry,
+		AttemptTimeout: set.timeout,
+		RecoveryPolicy: set.recovery,
+		FailurePolicy:  set.failure,
+		Pivot:          set.pivot,
+		Compensate:     m.compensate != nil,
+		Enabled:        m.enabled != nil,
+		Wrap:           m.wrap != nil,
 	}
 
 	rules = append(rules, checkSettings(&report)...)

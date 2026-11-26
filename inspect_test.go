@@ -194,17 +194,20 @@ type badIDState struct {
 }
 
 const (
-	setName       = "set Name"
-	cycleText     = "form a cycle"
-	reserveName   = "reserve"
-	stepA         = `step "a"`
-	quotedA       = `"a"`
-	negAttempts   = "RetryPolicy.Attempts is negative"
-	badName       = "name may hold only ASCII letters"
-	noExecuteText = "has no Execute"
-	fullName      = "full"
-	executeMethod = "Execute"
-	wrapMethod    = "Wrap"
+	setName             = "set Name"
+	cycleText           = "form a cycle"
+	reserveName         = "reserve"
+	stepA               = `step "a"`
+	quotedA             = `"a"`
+	negAttempts         = "RetryPolicy.Attempts is negative and not UnlimitedAttempts"
+	retryPrefix         = "RetryPolicy"
+	recoveryPrefix      = "RecoveryPolicy"
+	negRecoveryAttempts = "RecoveryPolicy.Attempts is negative and not UnlimitedAttempts"
+	badName             = "name may hold only ASCII letters"
+	noExecuteText       = "has no Execute"
+	fullName            = "full"
+	executeMethod       = "Execute"
+	wrapMethod          = "Wrap"
 )
 
 type inspectRow struct {
@@ -222,18 +225,27 @@ func inspectSuccessRows() []inspectRow {
 	trip := Inspect[tripState]
 	full := &fullStep{
 		Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
-		FailurePolicy: BlockAll,
-		do:            okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
+		FailurePolicy: BlockAll, RecoveryPolicy: RecoveryPolicy{Attempts: 4},
+		do: okAction, undo: okAction, pred: okPredicate, wrap: okMiddleware(),
 	}
 
 	return []inspectRow{
 		{
 			name:    "[Success] When: a step sets every field and has every method ; Should: report all of them",
 			inspect: trip, flow: full,
-			wantReports: []StepReport{{
-				Name: fullName, Description: "books the room", RetryPolicy: NoRetry(), AttemptTimeout: time.Second,
-				FailurePolicy: BlockAll, Compensate: true, Enabled: true, Wrap: true,
-			}},
+			wantReports: []StepReport{
+				{
+					Name:           fullName,
+					Description:    "books the room",
+					RetryPolicy:    NoRetry(),
+					AttemptTimeout: time.Second,
+					FailurePolicy:  BlockAll,
+					RecoveryPolicy: RecoveryPolicy{Attempts: 4},
+					Compensate:     true,
+					Enabled:        true,
+					Wrap:           true,
+				},
+			},
 		},
 		{
 			name:    "[Success] When: the type declares Execute on the value receiver ; Should: find it",
@@ -312,7 +324,7 @@ func inspectStepRows() []inspectRow {
 	timed := act("a", okAction)
 	timed.AttemptTimeout = -time.Second
 	retried := act("a", okAction)
-	retried.RetryPolicy = RetryPolicy{Attempts: -1}
+	retried.RetryPolicy = RetryPolicy{Attempts: -2}
 	unknown := undoing("a", okAction, okAction)
 	unknown.FailurePolicy = "stop"
 

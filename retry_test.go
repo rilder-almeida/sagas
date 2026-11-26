@@ -518,3 +518,97 @@ func Test_NoRetry(t *testing.T) {
 		})
 	}
 }
+
+func Test_RetryPolicy_attempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		attempts int
+		want     int
+	}{
+		{
+			name: "[Success] When: Attempts is zero ; Should: return DefaultAttempts",
+			want: DefaultAttempts,
+		},
+		{
+			name:     "[Success] When: Attempts is 5 ; Should: return 5",
+			attempts: 5,
+			want:     5,
+		},
+		{
+			name:     "[Success] When: Attempts is UnlimitedAttempts ; Should: return the largest int",
+			attempts: UnlimitedAttempts,
+			want:     math.MaxInt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, RetryPolicy{Attempts: tt.attempts}.attempts())
+		})
+	}
+}
+
+func Test_RecoveryPolicy_retry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		policy       RecoveryPolicy
+		want         RetryPolicy
+		wantAttempts int
+		wantInitial  time.Duration
+		wantMax      time.Duration
+	}{
+		{
+			name:         "[Success] When: the policy is zero ; Should: give unlimited attempts and the default delays",
+			want:         RetryPolicy{Attempts: UnlimitedAttempts},
+			wantAttempts: math.MaxInt,
+			wantInitial:  DefaultInitialDelay,
+			wantMax:      DefaultMaxDelay,
+		},
+		{
+			name:         "[Success] When: Attempts is UnlimitedAttempts ; Should: give unlimited attempts",
+			policy:       RecoveryPolicy{Attempts: UnlimitedAttempts},
+			want:         RetryPolicy{Attempts: UnlimitedAttempts},
+			wantAttempts: math.MaxInt,
+			wantInitial:  DefaultInitialDelay,
+			wantMax:      DefaultMaxDelay,
+		},
+		{
+			name:         "[Success] When: Attempts is 2 ; Should: give 2 attempts",
+			policy:       RecoveryPolicy{Attempts: 2},
+			want:         RetryPolicy{Attempts: 2},
+			wantAttempts: 2,
+			wantInitial:  DefaultInitialDelay,
+			wantMax:      DefaultMaxDelay,
+		},
+		{
+			name: "[Success] When: every delay field is set ; Should: carry each one and drop AttemptTimeout",
+			policy: RecoveryPolicy{
+				Initial: time.Second, Max: time.Minute, Multiplier: 1.5, NoJitter: true, AttemptTimeout: time.Hour,
+			},
+			want: RetryPolicy{
+				Attempts: UnlimitedAttempts, Initial: time.Second, Max: time.Minute, Multiplier: 1.5, NoJitter: true,
+			},
+			wantAttempts: math.MaxInt,
+			wantInitial:  time.Second,
+			wantMax:      time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.policy.retry()
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantAttempts, got.attempts())
+			assert.Equal(t, tt.wantInitial, got.initial())
+			assert.Equal(t, tt.wantMax, got.maxDelay())
+		})
+	}
+}

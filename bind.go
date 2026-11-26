@@ -22,11 +22,12 @@ type Step[S, R any] struct {
 	Name string
 	// Description is free text that Inspect reports.
 	Description string
-	// RetryPolicy is the retry policy of the action and the compensation, bounded by the caller's context and then
-	// by WithRecoveryTimeout.
+	// RetryPolicy is the retry policy of the action of a step before the pivot, bounded by the caller's context.
 	RetryPolicy RetryPolicy
-	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
+	// AttemptTimeout bounds each attempt of Execute before the pivot. Zero means DefaultAttemptTimeout.
 	AttemptTimeout time.Duration
+	// RecoveryPolicy is the retry policy of the compensation, and of the action of a step after the pivot.
+	RecoveryPolicy RecoveryPolicy
 	// FailurePolicy sets what the saga does when the compensation of this step fails. Empty means Block.
 	FailurePolicy FailurePolicy
 }
@@ -43,7 +44,7 @@ type Pivot[S, R any] struct {
 	// RetryPolicy is the retry policy of the pivot action, bounded by WithRecoveryTimeout after the caller's context
 	// ends.
 	RetryPolicy RetryPolicy
-	// AttemptTimeout bounds each attempt of Execute. Zero sets no limit.
+	// AttemptTimeout bounds each attempt of Execute. Zero means DefaultAttemptTimeout.
 	AttemptTimeout time.Duration
 }
 
@@ -54,6 +55,7 @@ type stepSettings struct {
 	description string
 	retry       RetryPolicy
 	timeout     time.Duration
+	recovery    RecoveryPolicy
 	failure     FailurePolicy
 	pivot       bool
 }

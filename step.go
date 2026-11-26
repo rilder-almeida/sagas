@@ -47,7 +47,12 @@ func checkSettings(s *StepReport) ruleList {
 		rules = append(rules, "AttemptTimeout is negative")
 	}
 
-	rules = append(rules, checkRetry(s.RetryPolicy)...)
+	rules = append(rules, checkRetry("RetryPolicy", s.RetryPolicy)...)
+	rules = append(rules, checkRetry("RecoveryPolicy", s.RecoveryPolicy.retry())...)
+
+	if s.RecoveryPolicy.AttemptTimeout < 0 {
+		rules = append(rules, "RecoveryPolicy.AttemptTimeout is negative")
+	}
 
 	switch s.FailurePolicy {
 	case "", Block, Continue, BlockAll:
@@ -62,31 +67,31 @@ func checkSettings(s *StepReport) ruleList {
 	return rules
 }
 
-func checkRetry(p RetryPolicy) ruleList {
+func checkRetry(prefix string, p RetryPolicy) ruleList {
 	var rules ruleList
 
-	if p.Attempts < 0 {
-		rules = append(rules, "RetryPolicy.Attempts is negative")
+	if p.Attempts < UnlimitedAttempts {
+		rules = append(rules, prefix+".Attempts is negative and not UnlimitedAttempts")
 	}
 
 	if p.Initial < 0 {
-		rules = append(rules, "RetryPolicy.Initial is negative")
+		rules = append(rules, prefix+".Initial is negative")
 	}
 
 	if p.Max < 0 {
-		rules = append(rules, "RetryPolicy.Max is negative")
+		rules = append(rules, prefix+".Max is negative")
 	}
 
 	switch {
 	case p.Multiplier < 0:
-		rules = append(rules, "RetryPolicy.Multiplier is negative")
+		rules = append(rules, prefix+".Multiplier is negative")
 	case p.Multiplier > 0 && p.Multiplier < 1:
-		rules = append(rules, "RetryPolicy.Multiplier is below 1")
+		rules = append(rules, prefix+".Multiplier is below 1")
 	default:
 	}
 
 	if p.Initial >= 0 && p.Max >= 0 && p.maxDelay() < p.initial() {
-		rules = append(rules, "RetryPolicy.Max is below RetryPolicy.Initial after defaults")
+		rules = append(rules, prefix+".Max is below "+prefix+".Initial after defaults")
 	}
 
 	return rules

@@ -261,50 +261,91 @@ func Test_checkRetry(t *testing.T) {
 
 	tests := []struct {
 		name   string
+		prefix string
 		policy RetryPolicy
 		want   ruleList
 	}{
 		{
-			name: "[Success] When: the policy is the zero value ; Should: report nothing",
+			name:   "[Success] When: the policy is the zero value ; Should: report nothing",
+			prefix: retryPrefix,
 		},
 		{
 			name:   "[Success] When: the policy is NoRetry ; Should: report nothing",
-			policy: NoRetry(),
+			prefix: retryPrefix, policy: NoRetry(),
 		},
 		{
-			name:   "[Fail] When: Attempts is negative ; Should: name RetryPolicy.Attempts",
-			policy: RetryPolicy{Attempts: -1},
-			want:   ruleList{negAttempts},
+			name:   "[Success] When: Attempts is UnlimitedAttempts ; Should: report nothing",
+			prefix: retryPrefix, policy: RetryPolicy{Attempts: UnlimitedAttempts},
+		},
+		{
+			name:   "[Fail] When: Attempts is below UnlimitedAttempts ; Should: name RetryPolicy.Attempts",
+			prefix: retryPrefix, policy: RetryPolicy{Attempts: -2},
+			want: ruleList{negAttempts},
 		},
 		{
 			name:   "[Fail] When: Initial is negative ; Should: name RetryPolicy.Initial",
-			policy: RetryPolicy{Initial: -1},
-			want:   ruleList{"RetryPolicy.Initial is negative"},
+			prefix: retryPrefix, policy: RetryPolicy{Initial: -1},
+			want: ruleList{"RetryPolicy.Initial is negative"},
 		},
 		{
 			name:   "[Fail] When: Max is negative ; Should: name RetryPolicy.Max",
-			policy: RetryPolicy{Max: -1},
-			want:   ruleList{"RetryPolicy.Max is negative"},
+			prefix: retryPrefix, policy: RetryPolicy{Max: -1},
+			want: ruleList{"RetryPolicy.Max is negative"},
 		},
 		{
 			name:   "[Fail] When: Multiplier is negative ; Should: name RetryPolicy.Multiplier",
-			policy: RetryPolicy{Multiplier: -1},
-			want:   ruleList{"RetryPolicy.Multiplier is negative"},
+			prefix: retryPrefix, policy: RetryPolicy{Multiplier: -1},
+			want: ruleList{"RetryPolicy.Multiplier is negative"},
 		},
 		{
 			name:   "[Fail] When: Multiplier is between zero and one ; Should: name RetryPolicy.Multiplier",
-			policy: RetryPolicy{Multiplier: 0.5},
-			want:   ruleList{"RetryPolicy.Multiplier is below 1"},
+			prefix: retryPrefix, policy: RetryPolicy{Multiplier: 0.5},
+			want: ruleList{"RetryPolicy.Multiplier is below 1"},
 		},
 		{
 			name:   "[Fail] When: the default Max is below Initial ; Should: name RetryPolicy.Max",
-			policy: RetryPolicy{Initial: time.Minute},
-			want:   ruleList{"RetryPolicy.Max is below RetryPolicy.Initial after defaults"},
+			prefix: retryPrefix, policy: RetryPolicy{Initial: time.Minute},
+			want: ruleList{"RetryPolicy.Max is below RetryPolicy.Initial after defaults"},
 		},
 		{
 			name:   "[Fail] When: two fields are bad ; Should: report one text each",
-			policy: RetryPolicy{Attempts: -1, Multiplier: -1},
-			want:   ruleList{negAttempts, "RetryPolicy.Multiplier is negative"},
+			prefix: retryPrefix, policy: RetryPolicy{Attempts: -2, Multiplier: -1},
+			want: ruleList{negAttempts, "RetryPolicy.Multiplier is negative"},
+		},
+		{
+			name:   "[Success] When: the RecoveryPolicy prefix has UnlimitedAttempts ; Should: report nothing",
+			prefix: recoveryPrefix, policy: RetryPolicy{Attempts: UnlimitedAttempts},
+		},
+		{
+			name:   "[Fail] When: the RecoveryPolicy prefix has Attempts below UnlimitedAttempts ; Should: name it",
+			prefix: recoveryPrefix, policy: RetryPolicy{Attempts: -2},
+			want: ruleList{negRecoveryAttempts},
+		},
+		{
+			name:   "[Fail] When: the RecoveryPolicy prefix has a negative Initial ; Should: name the field",
+			prefix: recoveryPrefix,
+			policy: RetryPolicy{Initial: -1},
+			want:   ruleList{"RecoveryPolicy.Initial is negative"},
+		},
+		{
+			name:   "[Fail] When: the RecoveryPolicy prefix has a negative Max ; Should: name RecoveryPolicy.Max",
+			prefix: recoveryPrefix, policy: RetryPolicy{Max: -1},
+			want: ruleList{"RecoveryPolicy.Max is negative"},
+		},
+		{
+			name:   "[Fail] When: the RecoveryPolicy prefix has a negative Multiplier ; Should: name the field",
+			prefix: recoveryPrefix, policy: RetryPolicy{Multiplier: -1},
+			want: ruleList{"RecoveryPolicy.Multiplier is negative"},
+		},
+		{
+			name:   "[Fail] When: the RecoveryPolicy prefix has a Multiplier below one ; Should: name the field",
+			prefix: recoveryPrefix, policy: RetryPolicy{Multiplier: 0.5},
+			want: ruleList{"RecoveryPolicy.Multiplier is below 1"},
+		},
+		{
+			name:   "[Fail] When: the RecoveryPolicy prefix has the default Max below Initial ; Should: name Max",
+			prefix: recoveryPrefix, policy: RetryPolicy{Initial: time.Minute},
+			want: ruleList{"RecoveryPolicy.Max is below RecoveryPolicy.Initial after defaults"},
 		},
 	}
 
@@ -312,7 +353,7 @@ func Test_checkRetry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, checkRetry(tt.policy))
+			assert.Equal(t, tt.want, checkRetry(tt.prefix, tt.policy))
 		})
 	}
 }
@@ -369,9 +410,40 @@ func Test_checkSettings(t *testing.T) {
 			want:   ruleList{"AttemptTimeout is negative"},
 		},
 		{
-			name:   "[Fail] When: the retry policy has a negative field ; Should: name the field",
-			report: StepReport{RetryPolicy: RetryPolicy{Attempts: -1}},
+			name:   "[Fail] When: RetryPolicy.Attempts is below UnlimitedAttempts ; Should: name the field",
+			report: StepReport{RetryPolicy: RetryPolicy{Attempts: -2}},
 			want:   ruleList{negAttempts},
+		},
+		{
+			name:   "[Success] When: RetryPolicy.Attempts is UnlimitedAttempts ; Should: report nothing",
+			report: StepReport{RetryPolicy: RetryPolicy{Attempts: UnlimitedAttempts}},
+		},
+		{
+			name:   "[Success] When: RetryPolicy.Attempts is zero ; Should: report nothing",
+			report: StepReport{RetryPolicy: RetryPolicy{Attempts: 0}},
+		},
+		{
+			name:   "[Fail] When: RecoveryPolicy.Attempts is below UnlimitedAttempts ; Should: name the field",
+			report: StepReport{RecoveryPolicy: RecoveryPolicy{Attempts: -2}, Compensate: true},
+			want:   ruleList{negRecoveryAttempts},
+		},
+		{
+			name:   "[Success] When: RecoveryPolicy.Attempts is UnlimitedAttempts ; Should: report nothing",
+			report: StepReport{RecoveryPolicy: RecoveryPolicy{Attempts: UnlimitedAttempts}, Compensate: true},
+		},
+		{
+			name:   "[Success] When: RecoveryPolicy.Attempts is zero ; Should: report nothing",
+			report: StepReport{RecoveryPolicy: RecoveryPolicy{Attempts: 0}, Compensate: true},
+		},
+		{
+			name:   "[Fail] When: RecoveryPolicy.AttemptTimeout is negative ; Should: report it",
+			report: StepReport{RecoveryPolicy: RecoveryPolicy{AttemptTimeout: -time.Second}, Compensate: true},
+			want:   ruleList{"RecoveryPolicy.AttemptTimeout is negative"},
+		},
+		{
+			name:   "[Fail] When: RecoveryPolicy has a negative Max ; Should: name RecoveryPolicy.Max",
+			report: StepReport{RecoveryPolicy: RecoveryPolicy{Max: -1}, Compensate: true},
+			want:   ruleList{"RecoveryPolicy.Max is negative"},
 		},
 		{
 			name:   "[Fail] When: three settings are bad ; Should: report one text each",

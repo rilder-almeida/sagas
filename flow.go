@@ -232,6 +232,11 @@ func settingsOf(f Flow, embed *reflect.StructField) stepSettings {
 
 	if !pivot {
 		s.failure = FailurePolicy(v.FieldByName("FailurePolicy").String())
+		s.recovery, ok = reflect.TypeAssert[RecoveryPolicy](v.FieldByName("RecoveryPolicy"))
+
+		if !ok {
+			panic(fmt.Sprintf("sagas: field RecoveryPolicy of %s is not a RecoveryPolicy", v.Type()))
+		}
 	}
 
 	return s
