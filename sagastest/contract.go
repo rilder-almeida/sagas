@@ -87,7 +87,7 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 
 	rec := NewRecorder()
 
-	c, err := runCase(tb.Context(), setup, rec.Middleware())
+	c, err := runCase(tb.Context(), setup, rec)
 	if err != nil {
 		tb.Errorf("sagastest: the clean run failed: %v", err)
 
@@ -101,7 +101,7 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 		return plan{}, nil, false
 	}
 
-	if len(p.steps) > 0 && len(rec.Calls()) == 0 {
+	if len(p.steps) > 0 && len(rec.Attempts()) == 0 {
 		tb.Error("sagastest: the clean run recorded no call: Setup must pass mw to sagas.WithMiddleware, " +
 			"or every step is disabled in the setup state")
 
@@ -114,7 +114,7 @@ func probe[S any](tb testing.TB, setup Setup[S]) (plan, *S, bool) {
 
 	ok := true
 
-	for _, call := range rec.Calls() {
+	for _, call := range rec.Attempts() {
 		if !named(call.Step) {
 			tb.Errorf("sagastest: step %q ran in the clean run, but Case.Flow does not name it", call.Step)
 
@@ -172,19 +172,19 @@ func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) b
 	tb.Helper()
 
 	rec := NewRecorder()
-	mw := []sagas.Middleware{rec.Middleware(), Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute))}
+	mw := []sagas.Middleware{rec, Fail(step, sagas.Permanent(errTrigger), OnPhase(sagas.PhaseExecute))}
 
 	if kind == caseTwice {
 		mw = []sagas.Middleware{
-			rec.Middleware(), Panic(step, OnPhase(sagas.PhaseExecute)), repeated(step, sagas.PhaseCompensate),
+			rec, Panic(step, OnPhase(sagas.PhaseExecute)), repeated(step, sagas.PhaseCompensate),
 		}
 	}
 
 	ctx := tb.Context()
 	c, err := runCase(ctx, setup, mw...)
 
-	i := slices.IndexFunc(rec.Calls(), func(call Call) bool {
-		return call.Step == step && call.Phase == sagas.PhaseExecute
+	i := slices.IndexFunc(rec.Attempts(), func(a Attempt) bool {
+		return a.Step == step && a.Phase == sagas.PhaseExecute
 	})
 	if i < 0 {
 		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, "+
@@ -199,7 +199,7 @@ func compensationCase[S any](tb testing.TB, setup Setup[S], step, kind string) b
 		return true
 	}
 
-	if kind == caseLate && !late(ctx, tb, &c, step, rec.Calls()[i].Key) {
+	if kind == caseLate && !late(ctx, tb, &c, step, rec.Attempts()[i].IdempotencyKey()) {
 		return true
 	}
 
@@ -274,8 +274,8 @@ func pivotAttempts(p plan) int {
 }
 
 func started(rec *Recorder, step string, phase sagas.Phase) bool {
-	return slices.ContainsFunc(rec.Calls(), func(call Call) bool {
-		return call.Step == step && call.Phase == phase
+	return slices.ContainsFunc(rec.Attempts(), func(a Attempt) bool {
+		return a.Step == step && a.Phase == phase
 	})
 }
 
@@ -283,7 +283,7 @@ func pivotCase[S any](tb testing.TB, setup Setup[S], p plan, clean *S) {
 	tb.Helper()
 
 	rec := NewRecorder()
-	c, err := runCase(tb.Context(), setup, rec.Middleware(), Unknown(p.pivot, OnPhase(sagas.PhasePivot), OnAttempts(1)))
+	c, err := runCase(tb.Context(), setup, rec, Unknown(p.pivot, OnPhase(sagas.PhasePivot), OnAttempts(1)))
 
 	if !started(rec, p.pivot, sagas.PhasePivot) {
 		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so the pivot is untested",
@@ -337,7 +337,7 @@ func incompletePivot(tb testing.TB, pivot string, err error, rec *Recorder) {
 		tb.Errorf("sagastest: step %q, case %q: pending steps are %q, want only the pivot", pivot, caseUnknown, pending)
 	}
 
-	if slices.ContainsFunc(rec.Calls(), func(call Call) bool { return call.Phase == sagas.PhaseCompensate }) {
+	if slices.ContainsFunc(rec.Attempts(), func(a Attempt) bool { return a.Phase == sagas.PhaseCompensate }) {
 		tb.Errorf("sagastest: step %q, case %q: a compensation ran after the unknown outcome", pivot, caseUnknown)
 	}
 }
@@ -346,7 +346,7 @@ func repeatCase[S any](tb testing.TB, setup Setup[S], step string) {
 	tb.Helper()
 
 	rec := NewRecorder()
-	c, err := runCase(tb.Context(), setup, rec.Middleware(), repeated(step, sagas.PhaseExecute))
+	c, err := runCase(tb.Context(), setup, rec, repeated(step, sagas.PhaseExecute))
 
 	if !started(rec, step, sagas.PhaseExecute) {
 		tb.Errorf("sagastest: step %q, case %q: the step did not start, Run returned %v, so its repeat is untested",

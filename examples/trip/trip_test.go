@@ -315,7 +315,7 @@ func Test_newServices_refusals(t *testing.T) {
 			rec := sagastest.NewRecorder()
 			svc := newServices()
 
-			saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(rec.Middleware()))
+			saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(rec))
 			require.NoError(t, err)
 
 			state := newTrips()[0]
@@ -333,7 +333,7 @@ func Test_newServices_refusals(t *testing.T) {
 
 			attempts := 0
 
-			for _, call := range rec.Calls() {
+			for _, call := range rec.Attempts() {
 				if call.Step == tt.step && call.Phase != sagas.PhaseCompensate {
 					attempts++
 				}
@@ -346,7 +346,7 @@ func Test_newServices_refusals(t *testing.T) {
 
 func tryTrip(w io.Writer, faults ...sagas.Middleware) error {
 	rec := sagastest.NewRecorder()
-	mw := append([]sagas.Middleware{rec.Middleware()}, faults...)
+	mw := append([]sagas.Middleware{rec}, faults...)
 	svc := newServices()
 
 	saga, err := sagas.New[trip]("trip", svc.flow, sagas.WithMiddleware(mw...))
@@ -359,7 +359,7 @@ func tryTrip(w io.Writer, faults ...sagas.Middleware) error {
 		return reportErr
 	}
 
-	for _, call := range rec.Calls() {
+	for _, call := range rec.Attempts() {
 		if _, err = fmt.Fprintln(w, call.Step, call.Phase, call.Attempt, call.Err); err != nil {
 			return err
 		}

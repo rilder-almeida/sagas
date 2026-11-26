@@ -14,21 +14,21 @@ import (
 
 type groupBuilder func(items ...sagas.Flow) *sagas.Group
 
-func runRecorded(t *testing.T, group groupBuilder, inner []sagas.Middleware, steps ...sagas.Flow) ([]Call, error) {
+func runRecorded(t *testing.T, group groupBuilder, inner []sagas.Middleware, steps ...sagas.Flow) ([]Attempt, error) {
 	t.Helper()
 
 	rec := NewRecorder()
-	mw := append([]sagas.Middleware{rec.Middleware()}, inner...)
+	mw := append([]sagas.Middleware{rec}, inner...)
 
 	saga, err := sagas.New[probeState]("recorded", group(steps...), sagas.WithMiddleware(mw...))
 	require.NoError(t, err)
 
 	runErr := saga.Run(context.Background(), &probeState{ID: runID})
 
-	return rec.Calls(), runErr
+	return rec.Attempts(), runErr
 }
 
-func withoutErr(calls []Call) []Call {
+func withoutErr(calls []Attempt) []Attempt {
 	out := slices.Clone(calls)
 	for i := range out {
 		out[i].Err = nil
@@ -37,7 +37,16 @@ func withoutErr(calls []Call) []Call {
 	return out
 }
 
-func errMessages(calls []Call) []string {
+func idempotencyKeys(calls []Attempt) []string {
+	keys := make([]string, len(calls))
+	for i, c := range calls {
+		keys[i] = c.IdempotencyKey()
+	}
+
+	return keys
+}
+
+func errMessages(calls []Attempt) []string {
 	msgs := make([]string, len(calls))
 	for i, c := range calls {
 		if c.Err != nil {
@@ -116,16 +125,20 @@ func Test_NewRecorder(t *testing.T) {
 				assert.Len(t, calls, tt.wantSeen)
 			}
 
-			assert.Empty(t, fresh.Calls())
+			assert.Empty(t, fresh.Attempts())
 		})
 	}
 }
 
-func Test_Recorder_Middleware(t *testing.T) {
+func recorded(step string, phase sagas.Phase, attempt int, err error) Attempt {
+	return Attempt{Saga: "recorded", Execution: runID, Step: step, Phase: phase, Attempt: attempt, Err: err}
+}
+
+func Test_Recorder_Wrap(t *testing.T) {
 	t.Parallel()
 
-	exec := func(step, key string, attempt int, err error) Call {
-		return Call{Step: step, Phase: sagas.PhaseExecute, Attempt: attempt, Key: key, Err: err}
+	exec := func(step string, attempt int, err error) Attempt {
+		return recorded(step, sagas.PhaseExecute, attempt, err)
 	}
 
 	tests := []struct {
@@ -133,7 +146,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 		flow      groupBuilder
 		build     func() []sagas.Flow
 		inner     []sagas.Middleware
-		wantCalls []Call
+		wantCalls []Attempt
+		wantKeys  []string
 		wantMsgs  []string
 		wantErr   bool
 		wantPanic bool
@@ -148,7 +162,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 					plain("a"), plain("b"), plain("c"),
 				}
 			},
-			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil), exec("c", keyC, 1, nil)},
+			wantCalls: []Attempt{exec("a", 1, nil), exec("b", 1, nil), exec("c", 1, nil)},
+			wantKeys:  []string{keyA, keyB, keyC},
 			wantMsgs:  []string{"", "", ""},
 		},
 		{
@@ -159,7 +174,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 					plain("a"), plain("b"), newProbe("c", sagas.NoRetry(), errBoom),
 				}
 			},
-			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil), exec("c", keyC, 1, errBoom)},
+			wantCalls: []Attempt{exec("a", 1, nil), exec("b", 1, nil), exec("c", 1, errBoom)},
+			wantKeys:  []string{keyA, keyB, keyC},
 			wantMsgs:  []string{"", "", errBoom.Error()},
 			wantErr:   true,
 		},
@@ -169,7 +185,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 			build: func() []sagas.Flow {
 				return []sagas.Flow{plain("a"), plain("b")}
 			},
-			wantCalls: []Call{exec("a", keyA, 1, nil), exec("b", keyB, 1, nil)},
+			wantCalls: []Attempt{exec("a", 1, nil), exec("b", 1, nil)},
+			wantKeys:  []string{keyA, keyB},
 			wantMsgs:  []string{"", ""},
 			unordered: true,
 		},
@@ -179,7 +196,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 			build: func() []sagas.Flow {
 				return []sagas.Flow{newProbe("a", fastRetry(), errBoom)}
 			},
-			wantCalls: []Call{exec("a", keyA, 1, errBoom), exec("a", keyA, 2, errBoom)},
+			wantCalls: []Attempt{exec("a", 1, errBoom), exec("a", 2, errBoom)},
+			wantKeys:  []string{keyA, keyA},
 			wantMsgs:  []string{errBoom.Error(), errBoom.Error()},
 			wantErr:   true,
 		},
@@ -189,11 +207,12 @@ func Test_Recorder_Middleware(t *testing.T) {
 			build: func() []sagas.Flow {
 				return []sagas.Flow{newUndo("a", nil), newProbe("b", sagas.NoRetry(), errBoom)}
 			},
-			wantCalls: []Call{
-				exec("a", keyA, 1, nil),
-				exec("b", keyB, 1, errBoom),
-				{Step: "a", Phase: sagas.PhaseCompensate, Attempt: 1, Key: keyA},
+			wantCalls: []Attempt{
+				exec("a", 1, nil),
+				exec("b", 1, errBoom),
+				recorded("a", sagas.PhaseCompensate, 1, nil),
 			},
+			wantKeys: []string{keyA, keyB, keyA},
 			wantMsgs: []string{"", errBoom.Error(), ""},
 			wantErr:  true,
 		},
@@ -203,7 +222,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 			build: func() []sagas.Flow {
 				return []sagas.Flow{newPivot("a")}
 			},
-			wantCalls: []Call{{Step: "a", Phase: sagas.PhasePivot, Attempt: 1, Key: keyA}},
+			wantCalls: []Attempt{recorded("a", sagas.PhasePivot, 1, nil)},
+			wantKeys:  []string{keyA},
 			wantMsgs:  []string{""},
 		},
 		{
@@ -214,7 +234,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 				return []sagas.Flow{plain("a")}
 			},
 			inner:     []sagas.Middleware{Panic("a")},
-			wantCalls: []Call{exec("a", keyA, 1, sagas.ErrPanic)},
+			wantCalls: []Attempt{exec("a", 1, sagas.ErrPanic)},
+			wantKeys:  []string{keyA},
 			wantMsgs:  []string{`sagas: panic: sagastest: injected panic in step "a"`},
 			wantErr:   true,
 			wantPanic: true,
@@ -227,7 +248,8 @@ func Test_Recorder_Middleware(t *testing.T) {
 			build: func() []sagas.Flow {
 				return []sagas.Flow{newPanicProbe("a")}
 			},
-			wantCalls: []Call{exec("a", keyA, 1, sagas.ErrPanic)},
+			wantCalls: []Attempt{exec("a", 1, sagas.ErrPanic)},
+			wantKeys:  []string{keyA},
 			wantMsgs:  []string{"sagas: panic: " + errBoom.Error()},
 			wantErr:   true,
 			wantPanic: true,
@@ -252,14 +274,16 @@ func Test_Recorder_Middleware(t *testing.T) {
 
 			if tt.unordered {
 				assert.ElementsMatch(t, withoutErr(tt.wantCalls), withoutErr(calls))
+				assert.ElementsMatch(t, tt.wantKeys, idempotencyKeys(calls))
 			} else {
 				assert.Equal(t, withoutErr(tt.wantCalls), withoutErr(calls))
+				assert.Equal(t, tt.wantKeys, idempotencyKeys(calls))
 			}
 
 			assert.Equal(t, tt.wantMsgs, errMessages(calls))
 
 			for _, want := range tt.wantCalls {
-				i := slices.IndexFunc(calls, func(c Call) bool {
+				i := slices.IndexFunc(calls, func(c Attempt) bool {
 					return c.Step == want.Step && c.Phase == want.Phase && c.Attempt == want.Attempt
 				})
 				require.GreaterOrEqual(t, i, 0)
@@ -272,20 +296,20 @@ func Test_Recorder_Middleware(t *testing.T) {
 	}
 }
 
-func Test_Recorder_Calls(t *testing.T) {
+func Test_Recorder_Attempts(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		corrupt func([]Call) []Call
+		corrupt func([]Attempt) []Attempt
 	}{
 		{
-			name:    "[Success] When: the caller rewrites an element ; Should: leave a second Calls unchanged",
-			corrupt: func(c []Call) []Call { c[0].Step = "changed"; return c },
+			name:    "[Success] When: the caller rewrites an element ; Should: leave a second Attempts unchanged",
+			corrupt: func(c []Attempt) []Attempt { c[0].Step = "changed"; return c },
 		},
 		{
-			name:    "[Success] When: the caller truncates and appends ; Should: leave a second Calls unchanged",
-			corrupt: func(c []Call) []Call { return append(c[:0], Call{Step: "x"}) },
+			name:    "[Success] When: the caller truncates and appends ; Should: leave a second Attempts unchanged",
+			corrupt: func(c []Attempt) []Attempt { return append(c[:0], recorded("x", sagas.PhaseExecute, 1, nil)) },
 		},
 	}
 
@@ -295,17 +319,18 @@ func Test_Recorder_Calls(t *testing.T) {
 
 			rec := NewRecorder()
 			probe := plain("a")
-			saga, err := sagas.New[probeState]("recorded", probe, sagas.WithMiddleware(rec.Middleware()))
+			saga, err := sagas.New[probeState]("recorded", probe, sagas.WithMiddleware(rec))
 			require.NoError(t, err)
 			require.NoError(t, saga.Run(context.Background(), &probeState{ID: runID}))
 
-			first := rec.Calls()
-			want := []Call{{Step: "a", Phase: sagas.PhaseExecute, Attempt: 1, Key: keyA}}
+			first := rec.Attempts()
+			want := []Attempt{recorded("a", sagas.PhaseExecute, 1, nil)}
 			require.Equal(t, want, first)
+			require.Equal(t, keyA, first[0].IdempotencyKey())
 
 			tt.corrupt(first)
 
-			assert.Equal(t, want, rec.Calls())
+			assert.Equal(t, want, rec.Attempts())
 		})
 	}
 }

@@ -176,7 +176,7 @@ func Test_newSaga(t *testing.T) {
 			svc := newServices()
 			rec := sagastest.NewRecorder()
 
-			saga, err := svc.build(nil, rec.Middleware())
+			saga, err := svc.build(nil, rec)
 			require.NoError(t, err)
 
 			o := order{ID: "ord-9", Item: "lamp", Amount: tt.amount}
@@ -194,7 +194,7 @@ func Test_newSaga(t *testing.T) {
 			assert.Equal(t, tt.wantHeld, id == "SKU-1")
 			assert.Equal(t, risk(tt.wantRisk), o.Risk)
 
-			recorded := rec.Calls()
+			recorded := rec.Attempts()
 			calls := make([]string, 0, len(recorded))
 
 			for _, call := range recorded {

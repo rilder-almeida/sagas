@@ -10,58 +10,51 @@ import (
 	"github.com/rilder-almeida/sagas"
 )
 
-// Call is one recorded call of a step method.
-type Call struct {
-	Step    string
-	Phase   sagas.Phase
-	Attempt int
-	Key     string
-	// Err is the error the call returned, and for a panic it wraps sagas.ErrPanic and the *sagas.PanicError.
+// Attempt is one recorded call of a step method. For a call that panics, Err wraps sagas.ErrPanic and the
+// *sagas.PanicError.
+type Attempt struct {
+	sagas.CallInfo
+
 	Err error
 }
 
-// Recorder records every call that passes through its middleware. It is safe for concurrent use.
+// Recorder is middleware that records every call that passes through it. It is safe for concurrent use.
 type Recorder struct {
-	mu    sync.Mutex
-	calls []Call
+	mu       sync.Mutex
+	attempts []Attempt
 }
 
 // NewRecorder returns an empty Recorder.
 func NewRecorder() *Recorder { return &Recorder{} }
 
-// Middleware returns the middleware that records each call and returns its error unchanged. A panic is recorded and
-// then raised again.
-func (r *Recorder) Middleware() sagas.MiddlewareFunc {
-	return func(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
-		defer func() {
-			if v := recover(); v != nil {
-				r.record(info, panicError(v))
-				panic(v)
-			}
-		}()
+// Wrap records the call and returns its error unchanged. A panic is recorded and then raised again.
+func (r *Recorder) Wrap(ctx context.Context, info sagas.CallInfo, call sagas.Call) error {
+	defer func() {
+		if v := recover(); v != nil {
+			r.record(info, panicError(v))
+			panic(v)
+		}
+	}()
 
-		err := call(ctx)
-		r.record(info, markPanic(err))
+	err := call(ctx)
+	r.record(info, markPanic(err))
 
-		return err
-	}
+	return err
 }
 
-// Calls returns a copy of the recorded calls in the order they returned.
-func (r *Recorder) Calls() []Call {
+// Attempts returns a copy of the recorded attempts in the order they returned.
+func (r *Recorder) Attempts() []Attempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return slices.Clone(r.calls)
+	return slices.Clone(r.attempts)
 }
 
 func (r *Recorder) record(info sagas.CallInfo, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.calls = append(r.calls, Call{
-		Step: info.Step, Phase: info.Phase, Attempt: info.Attempt, Key: info.IdempotencyKey(), Err: err,
-	})
+	r.attempts = append(r.attempts, Attempt{CallInfo: info, Err: err})
 }
 
 type recordedPanicError struct {
