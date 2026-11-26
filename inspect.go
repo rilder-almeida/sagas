@@ -99,7 +99,11 @@ func examine[S any](flow Flow) (inspection[S], error) {
 
 	in.graph, graphErrs = checkGraph(in.reports, r.parents)
 	errs = append(errs, graphErrs...)
-	errs = append(errs, checkZones(in.reports, &in.graph)...)
+
+	if len(graphErrs) == 0 {
+		errs = append(errs, checkZones(in.reports, &in.graph)...)
+	}
+
 	errs = append(errs, concurrentOutputs(in.reports, outputs, &in.graph)...)
 
 	idField, stateErr := examineState(reflect.TypeFor[S]())

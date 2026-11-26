@@ -199,6 +199,7 @@ const (
 	reserveName         = "reserve"
 	stepA               = `step "a"`
 	stepB               = `step "b"`
+	morePivots          = "more than one Pivot"
 	quotedA             = `"a"`
 	negAttempts         = "RetryPolicy.Attempts is negative and not UnlimitedAttempts"
 	retryPrefix         = "RetryPolicy"
@@ -645,6 +646,10 @@ func inspectGraphRows() []inspectRow {
 	pivotUndo := &pivotUndoStep{Name: "p", do: okAction, undo: okAction}
 	pivotIf := &pivotIfStep{Name: "p", do: okAction, pred: okPredicate}
 	loop := Parallel(Sequence(a, b), Sequence(b, a))
+	recovering := act("z", okAction)
+	recovering.RecoveryPolicy = RecoveryPolicy{Attempts: 2}
+	retried := act("z", okAction)
+	retried.RetryPolicy = NoRetry()
 
 	return []inspectRow{
 		{
@@ -670,22 +675,30 @@ func inspectGraphRows() []inspectRow {
 			name:    "[Fail] When: two steps are pivots ; Should: reject it naming both",
 			inspect: trip, flow: Sequence(p, q),
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"more than one Pivot", `"p"`, `"q"`},
+			wantContains: []string{morePivots, `"p"`, `"q"`},
 		},
 		{
 			name:         "[Fail] When: a cycle and two pivots exist ; Should: report the cycle and the count",
 			inspect:      trip,
 			flow:         Parallel(loop, p, q),
 			wantErrs:     []error{ErrCycle, ErrInvalidStep},
-			wantContains: []string{"more than one Pivot"},
+			wantContains: []string{morePivots},
 			wantAbsent:   []string{noReach},
 		},
 		{
 			name:    "[Fail] When: two pivots and a step parallel to both exist ; Should: report only the pivot count",
 			inspect: trip, flow: Parallel(Sequence(p, q), c),
 			wantErrs:     []error{ErrInvalidStep},
-			wantContains: []string{"more than one Pivot"},
+			wantContains: []string{morePivots},
 			wantAbsent:   []string{noReach},
+		},
+		{
+			name: "[Fail] When: two pivots exist and a step after both sets RecoveryPolicy ; " +
+				"Should: report only the pivot count",
+			inspect: trip, flow: Sequence(p, q, recovering),
+			wantErrs:     []error{ErrInvalidStep},
+			wantContains: []string{morePivots},
+			wantAbsent:   []string{recoveryNoEffect},
 		},
 		{
 			name:    "[Fail] When: a step is parallel to the pivot ; Should: reject it naming the step",
@@ -717,6 +730,14 @@ func inspectGraphRows() []inspectRow {
 			wantErrs:   []error{ErrCycle},
 			wantNoErrs: []error{ErrInvalidStep},
 			wantAbsent: []string{noReach},
+		},
+		{
+			name: "[Fail] When: a cycle and one pivot exist and a step after the pivot sets RetryPolicy ; " +
+				"Should: report only the cycle",
+			inspect: trip, flow: Parallel(loop, Sequence(p, retried)),
+			wantErrs:   []error{ErrCycle},
+			wantNoErrs: []error{ErrInvalidStep},
+			wantAbsent: []string{retryAfterPivot},
 		},
 		{
 			name:    "[Fail] When: a cycle exists and the pivot has Compensate ; Should: report both errors",

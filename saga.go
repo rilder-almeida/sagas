@@ -118,7 +118,7 @@ func build[S any](name string, d *definition, in *inspection[S]) *Saga[S] {
 			n.policy = Block
 		}
 
-		n.buildCalls(name, rep, n.zone, &in.methods[i], d.middleware)
+		n.buildCalls(name, rep, &in.methods[i], d.middleware)
 
 		s.blockAll = s.blockAll || n.policy == BlockAll
 		s.steps = append(s.steps, n)
@@ -143,19 +143,18 @@ func (n *stepNode[S]) stepZone() StepZone {
 	return StepZone{Name: n.name, Zone: n.zone, Compensable: n.compensation != nil}
 }
 
-func (n *stepNode[S]) buildCalls(
-	saga string, rep *StepReport, zone Zone, m *stepMethods[S], middleware []Middleware,
-) {
+func (n *stepNode[S]) buildCalls(saga string, rep *StepReport, m *stepMethods[S], middleware []Middleware) {
 	spec := callSpec{
 		saga: saga, step: rep.Name, phase: PhaseExecute, retry: rep.RetryPolicy,
 		timeout: attemptTimeout(rep.AttemptTimeout), middleware: middleware, wrap: m.wrap,
 	}
+	recovery, recoveryTimeout := rep.RecoveryPolicy.retry(), attemptTimeout(rep.RecoveryPolicy.AttemptTimeout)
 
 	switch {
 	case rep.Pivot:
 		spec.phase = PhasePivot
-	case zone == ZoneForwardOnly:
-		spec.retry, spec.timeout = rep.RecoveryPolicy.retry(), attemptTimeout(rep.RecoveryPolicy.AttemptTimeout)
+	case n.zone == ZoneForwardOnly:
+		spec.retry, spec.timeout = recovery, recoveryTimeout
 	default:
 	}
 
@@ -165,8 +164,7 @@ func (n *stepNode[S]) buildCalls(
 		return
 	}
 
-	spec.phase = PhaseCompensate
-	spec.retry, spec.timeout = rep.RecoveryPolicy.retry(), attemptTimeout(rep.RecoveryPolicy.AttemptTimeout)
+	spec.phase, spec.retry, spec.timeout = PhaseCompensate, recovery, recoveryTimeout
 	n.compensation = pipeline(&spec, m.compensate)
 }
 

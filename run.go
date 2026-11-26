@@ -455,10 +455,10 @@ func graceContext(ctx context.Context, d time.Duration) (context.Context, waitRe
 			return
 		}
 
-		bound.end(time.Now())
-
 		timer := time.NewTimer(d)
 		defer timer.Stop()
+
+		bound.end(time.Now())
 
 		select {
 		case <-timer.C:

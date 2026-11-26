@@ -412,6 +412,38 @@ func pipelineTimeoutRow() pipelineRow {
 	}
 }
 
+func pipelineGraceBoundRow() pipelineRow {
+	spec := compensationSpec()
+	spec.retry = RetryPolicy{Attempts: 1}
+
+	return pipelineRow{
+		name: "[Fail] When: the grace bound comes before the attempt timeout ; " +
+			"Should: end the attempt at the bound with the cause ErrGraceEnded",
+		spec: spec,
+		bound: func() *graceBound {
+			b := &graceBound{grace: time.Second / 2}
+			b.end(time.Now())
+
+			return b
+		},
+		call: func(r *recorder) func(context.Context, *pipeState) error {
+			return func(ctx context.Context, _ *pipeState) error {
+				start := time.Now()
+
+				<-ctx.Done()
+				r.add(time.Since(start).String())
+
+				return ctx.Err()
+			}
+		},
+		wantKind:     outcomeUnknown,
+		wantAttempts: 1,
+		wantErrs:     []error{context.DeadlineExceeded},
+		wantCause:    []error{ErrGraceEnded},
+		wantTrace:    []string{"500ms"},
+	}
+}
+
 func pipelineCompensationRow() pipelineRow {
 	return pipelineRow{
 		name: "[Success] When: a compensation has a timeout set ; Should: run with a deadline",
@@ -934,6 +966,7 @@ type pipelineRow struct {
 	wantLabel    *KindError
 	cancelAfter  time.Duration
 	cancelCause  error
+	bound        func() *graceBound
 }
 
 func actionSpec() callSpec {
@@ -1423,6 +1456,22 @@ func pipelinePhaseRows() []pipelineRow {
 	}
 }
 
+func pipelineContext(t *testing.T, tt *pipelineRow) (context.Context, context.CancelCauseFunc) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancelCause(t.Context())
+
+	if tt.cancelCause != nil {
+		time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
+	}
+
+	if tt.bound != nil {
+		ctx = context.WithValue(ctx, graceBoundKey{}, tt.bound())
+	}
+
+	return ctx, cancel
+}
+
 func Test_pipeline(t *testing.T) {
 	t.Parallel()
 
@@ -1433,6 +1482,7 @@ func Test_pipeline(t *testing.T) {
 		pipelineUserPanicRow(),
 		pipelineFreshCopyRow(),
 		pipelineTimeoutRow(),
+		pipelineGraceBoundRow(),
 		pipelineHistoryRow(),
 		pipelineReplacedRow(),
 		pipelineStoppedBackoffRow(),
@@ -1481,12 +1531,8 @@ func Test_pipeline(t *testing.T) {
 					spec.wrap = tt.wrap(rec)
 				}
 
-				ctx, cancel := context.WithCancelCause(t.Context())
+				ctx, cancel := pipelineContext(t, &tt)
 				defer cancel(nil)
-
-				if tt.cancelCause != nil {
-					time.AfterFunc(tt.cancelAfter, func() { cancel(tt.cancelCause) })
-				}
 
 				call := pipeline(&spec, stateOutput(tt.call(rec)))
 				got := call(ctx, &callMeta{execution: infoExecution}, baseFor(t, &tt))

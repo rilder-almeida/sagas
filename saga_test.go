@@ -925,9 +925,9 @@ func Test_stepNode_buildCalls(t *testing.T) {
 
 			report := &StepReport{Name: payStep, Pivot: tt.pivot, RetryPolicy: NoRetry()}
 
-			var n stepNode[tripState]
+			n := stepNode[tripState]{zone: ZoneCompensable}
 
-			n.buildCalls(tripName, report, ZoneCompensable, methods, []Middleware{phased(rec, "mw")})
+			n.buildCalls(tripName, report, methods, []Middleware{phased(rec, "mw")})
 
 			require.Equal(t, outcomeSuccess, callOnce(t, n.action).kind)
 			require.Equal(t, tt.wantCompensation, n.compensation != nil)
