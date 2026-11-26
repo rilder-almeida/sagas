@@ -103,11 +103,11 @@ func compensationCase[S any, W CompensationServices[S]](name string, state S, st
 
 		i := slices.IndexFunc(attempts, func(a Attempt) bool { return a.Step == step && a.Phase == sagas.PhaseExecute })
 		if i < 0 {
-			return caseFailure(ErrNotStarted, step, kind, "its compensation is untested", err)
+			return kitFailure(ErrNotStarted, step+" "+kind, "its compensation is untested", err)
 		}
 
 		if !errors.Is(err, sagas.ErrCompensated) {
-			return caseFailure(ErrOutcome, step, kind, "Run did not return sagas.ErrCompensated", err)
+			return kitFailure(ErrOutcome, step+" "+kind, "Run did not return sagas.ErrCompensated", err)
 		}
 
 		var lateErr error
@@ -116,7 +116,7 @@ func compensationCase[S any, W CompensationServices[S]](name string, state S, st
 		}
 
 		if checkErr := services.Check(ctx, final); checkErr != nil {
-			return caseFailure(ErrCheck, step, kind, "Check", errors.Join(checkErr, lateErr))
+			return kitFailure(ErrCheck, step+" "+kind, "Check", errors.Join(checkErr, lateErr))
 		}
 
 		return nil
@@ -185,7 +185,7 @@ func pivotCase[S any, W Services[S]](name string, state S, p plan, clean *S) Cas
 		final, err := runCase(ctx, name, state, services, rec, fault)
 
 		if !started(rec, p.pivot, sagas.PhasePivot) {
-			return caseFailure(ErrNotStarted, p.pivot, caseUnknown, "the pivot is untested", err)
+			return kitFailure(ErrNotStarted, p.pivot+" "+caseUnknown, "the pivot is untested", err)
 		}
 
 		var outcome error
@@ -201,7 +201,7 @@ func pivotCase[S any, W Services[S]](name string, state S, p plan, clean *S) Cas
 
 func checked[S any, W Services[S]](ctx context.Context, services W, final *S, step, kind string) error {
 	if err := services.Check(ctx, final); err != nil {
-		return caseFailure(ErrCheck, step, kind, "Check", err)
+		return kitFailure(ErrCheck, step+" "+kind, "Check", err)
 	}
 
 	return nil
@@ -209,11 +209,11 @@ func checked[S any, W Services[S]](ctx context.Context, services W, final *S, st
 
 func completedPivot[S any](pivot string, err error, got, clean *S) error {
 	if err != nil {
-		return caseFailure(ErrOutcome, pivot, caseUnknown, "Run did not return nil", err)
+		return kitFailure(ErrOutcome, pivot+" "+caseUnknown, "Run did not return nil", err)
 	}
 
 	if !reflect.DeepEqual(got, clean) {
-		return caseFailure(ErrOutcome, pivot, caseUnknown,
+		return kitFailure(ErrOutcome, pivot+" "+caseUnknown,
 			fmt.Sprintf("the final state %+v differs from the clean run %+v", *got, *clean), nil)
 	}
 
@@ -222,7 +222,7 @@ func completedPivot[S any](pivot string, err error, got, clean *S) error {
 
 func incompletePivot(pivot string, err error, rec *Recorder) error {
 	if !errors.Is(err, sagas.ErrIncomplete) {
-		return caseFailure(ErrOutcome, pivot, caseUnknown, "Run did not return sagas.ErrIncomplete", err)
+		return kitFailure(ErrOutcome, pivot+" "+caseUnknown, "Run did not return sagas.ErrIncomplete", err)
 	}
 
 	var errs []error
@@ -234,12 +234,12 @@ func incompletePivot(pivot string, err error, rec *Recorder) error {
 			pending = runErr.Pending
 		}
 
-		errs = append(errs, caseFailure(ErrOutcome, pivot, caseUnknown,
+		errs = append(errs, kitFailure(ErrOutcome, pivot+" "+caseUnknown,
 			fmt.Sprintf("pending steps are %q, want only the pivot", pending), nil))
 	}
 
 	if slices.ContainsFunc(rec.Attempts(), func(a Attempt) bool { return a.Phase == sagas.PhaseCompensate }) {
-		errs = append(errs, caseFailure(ErrOutcome, pivot, caseUnknown, "a compensation ran", nil))
+		errs = append(errs, kitFailure(ErrOutcome, pivot+" "+caseUnknown, "a compensation ran", nil))
 	}
 
 	return errors.Join(errs...)
@@ -251,12 +251,12 @@ func repeatCase[S any, W Services[S]](name string, state S, step string) Case[W]
 		final, err := runCase(ctx, name, state, services, rec, repeated(step, sagas.PhaseExecute))
 
 		if !started(rec, step, sagas.PhaseExecute) {
-			return caseFailure(ErrNotStarted, step, caseRepeated, "its repeat is untested", err)
+			return kitFailure(ErrNotStarted, step+" "+caseRepeated, "its repeat is untested", err)
 		}
 
 		var outcome error
 		if err != nil {
-			outcome = caseFailure(ErrOutcome, step, caseRepeated, "Run did not return nil", err)
+			outcome = kitFailure(ErrOutcome, step+" "+caseRepeated, "Run did not return nil", err)
 		}
 
 		return errors.Join(outcome, checked(ctx, services, final, step, caseRepeated))

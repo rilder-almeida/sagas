@@ -79,6 +79,12 @@ func (failsPutStore) Put(context.Context, sagas.SecretKey, jsontext.Value) error
 	return fs.ErrPermission
 }
 
+type deniesGetStore struct{ *sagas.MemorySecretStore }
+
+func (deniesGetStore) Get(context.Context, sagas.SecretKey) (jsontext.Value, error) {
+	return nil, fs.ErrPermission
+}
+
 func holdingSecret(t *testing.T) *sagas.MemorySecretStore {
 	t.Helper()
 
@@ -137,6 +143,13 @@ func Test_SecretStoreCases(t *testing.T) {
 			name:         "[Fail] When: Get returns nil and a nil error on an empty store ; Should: refuse the probe",
 			newStore:     func(*testing.T) sagas.SecretStore { return alwaysNilStore{sagas.NewMemorySecretStore()} },
 			wantProbeErr: true,
+		},
+		{
+			name: "[Fail] When: Get returns another error ; " +
+				"Should: refuse the probe with the error as its cause",
+			newStore:     func(*testing.T) sagas.SecretStore { return deniesGetStore{sagas.NewMemorySecretStore()} },
+			wantProbeErr: true,
+			wantWrapped:  []error{fs.ErrPermission},
 		},
 		{
 			name: "[Fail] When: the probe holds a value ; Should: refuse the probe before any case",

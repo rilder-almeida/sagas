@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/rilder-almeida/sagas"
@@ -60,7 +61,7 @@ func TestSecretStore(t *testing.T, newStore func(*testing.T) sagas.SecretStore) 
 func wantNoSecret(ctx context.Context, rule string, s sagas.SecretStore, key sagas.SecretKey) error {
 	value, err := s.Get(ctx, key)
 	if !errors.Is(err, sagas.ErrNoSecret) {
-		return ruleFailure(ErrSecretStoreContract, rule, fmt.Sprintf(
+		return kitFailure(ErrSecretStoreContract, "rule "+strconv.Quote(rule), fmt.Sprintf(
 			"Get of field %q returned value %q, want an error wrapping %v", key.Field, value, sagas.ErrNoSecret), err)
 	}
 
@@ -70,7 +71,7 @@ func wantNoSecret(ctx context.Context, rule string, s sagas.SecretStore, key sag
 func wantSecret(ctx context.Context, rule string, s sagas.SecretStore, want jsontext.Value) error {
 	got, err := s.Get(ctx, secretKey(fieldHeld))
 	if err != nil || !bytes.Equal(got, want) {
-		return ruleFailure(ErrSecretStoreContract, rule,
+		return kitFailure(ErrSecretStoreContract, "rule "+strconv.Quote(rule),
 			fmt.Sprintf("Get of field %q returned value %q, want %q and no error", fieldHeld, got, want), err)
 	}
 
@@ -79,7 +80,7 @@ func wantSecret(ctx context.Context, rule string, s sagas.SecretStore, want json
 
 func putSecret(ctx context.Context, rule string, s sagas.SecretStore, value jsontext.Value) error {
 	if err := s.Put(ctx, secretKey(fieldHeld), value); err != nil {
-		return ruleFailure(ErrSecretStoreContract, rule,
+		return kitFailure(ErrSecretStoreContract, "rule "+strconv.Quote(rule),
 			fmt.Sprintf("Put of %q returned an error, want nil", value), err)
 	}
 

@@ -83,17 +83,8 @@ func runCase[S any, W Services[S]](
 	return &final, saga.Run(WithoutConcurrency(ctx), &final)
 }
 
-func caseFailure(sentinel error, step, kind, what string, cause error) error {
-	err := fmt.Errorf("%w: %s %s: %s", sentinel, step, kind, what)
-	if cause == nil {
-		return err
-	}
-
-	return fmt.Errorf("%w: %w", err, cause)
-}
-
-func ruleFailure(sentinel error, rule, what string, cause error) error {
-	err := fmt.Errorf("%w: rule %q: %s", sentinel, rule, what)
+func kitFailure(sentinel error, subject, what string, cause error) error {
+	err := fmt.Errorf("%w: %s: %s", sentinel, subject, what)
 	if cause == nil {
 		return err
 	}

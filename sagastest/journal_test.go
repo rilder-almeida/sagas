@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -474,6 +476,30 @@ func (j *rejectsSamePointer) Append(ctx context.Context, e *sagas.Event) error {
 	return j.MemoryJournal.Append(ctx, e)
 }
 
+type deniesEvents struct{ *sagas.MemoryJournal }
+
+func (deniesEvents) Events(context.Context, string) ([]sagas.Event, error) {
+	return nil, fs.ErrPermission
+}
+
+type wrongLosers struct{ *sagas.MemoryJournal }
+
+func (j wrongLosers) Append(ctx context.Context, e *sagas.Event) error {
+	if e == nil || e.Writer == journalEvent(1).Writer {
+		return j.MemoryJournal.Append(ctx, e)
+	}
+
+	if e.Writer == strconv.Itoa(concurrentWriters-1) {
+		return fs.ErrExist
+	}
+
+	if err := j.MemoryJournal.Append(ctx, e); err != nil {
+		return fs.ErrPermission
+	}
+
+	return nil
+}
+
 type journalRow struct {
 	name         string
 	newJournal   func(*testing.T) sagas.Journal
@@ -488,16 +514,6 @@ func journalRows() []journalRow {
 		{
 			name:       "[Success] When: the journal is the memory journal ; Should: report nothing",
 			newJournal: func(*testing.T) sagas.Journal { return sagas.NewMemoryJournal() },
-		},
-		{
-			name: "[Fail] When: the probe holds an event ; Should: refuse the probe before any case",
-			newJournal: func(t *testing.T) sagas.Journal {
-				t.Helper()
-
-				return holdingEvent(t)
-			},
-			wantProbeErr: true,
-			wantCauses:   []string{`Events of execution "execution" returned 1 events, want 0`},
 		},
 		{
 			name: "[Fail] When: the journal keeps the caller pointer ; Should: report an accepted changed resend",
@@ -585,10 +601,12 @@ func journalRows() []journalRow {
 			wantCauses:  []string{`Events of execution "missing" returned 0 events and a nil error`},
 		},
 		{
-			name:         "[Fail] When: the journal has no Events method ; Should: refuse the probe as no EventReader",
-			newJournal:   func(*testing.T) sagas.Journal { return appendOnly{sagas.NewMemoryJournal()} },
-			wantProbeErr: true,
-			wantCauses:   []string{"does not implement sagas.EventReader"},
+			name: "[Fail] When: losing writers return two different wrong errors ; " +
+				"Should: report the losers with both errors as causes",
+			newJournal:  func(*testing.T) sagas.Journal { return wrongLosers{sagas.NewMemoryJournal()} },
+			wantFailing: []string{ruleConcurrent},
+			wantCauses:  []string{"a losing append of seq 1 returned an error"},
+			wantWrapped: []error{fs.ErrExist, fs.ErrPermission},
 		},
 		{
 			name:        "[Fail] When: the journal accepts a gap ; Should: report that seq 3 after seq 1 was accepted",
@@ -729,6 +747,35 @@ func journalRows() []journalRow {
 	}
 }
 
+func journalProbeRows() []journalRow {
+	return []journalRow{
+		{
+			name: "[Fail] When: the probe holds an event ; Should: refuse the probe before any case",
+			newJournal: func(t *testing.T) sagas.Journal {
+				t.Helper()
+
+				return holdingEvent(t)
+			},
+			wantProbeErr: true,
+			wantCauses:   []string{`Events of execution "execution" returned 1 events, want 0`},
+		},
+		{
+			name: "[Fail] When: Events returns another error ; " +
+				"Should: refuse the probe with the error as its cause",
+			newJournal:   func(*testing.T) sagas.Journal { return deniesEvents{sagas.NewMemoryJournal()} },
+			wantProbeErr: true,
+			wantCauses:   []string{`Events of execution "execution" returned an error, want an error wrapping`},
+			wantWrapped:  []error{fs.ErrPermission},
+		},
+		{
+			name:         "[Fail] When: the journal has no Events method ; Should: refuse the probe as no EventReader",
+			newJournal:   func(*testing.T) sagas.Journal { return appendOnly{sagas.NewMemoryJournal()} },
+			wantProbeErr: true,
+			wantCauses:   []string{"does not implement sagas.EventReader"},
+		},
+	}
+}
+
 func holdingEvent(t *testing.T) *sagas.MemoryJournal {
 	t.Helper()
 
@@ -749,7 +796,7 @@ func journalRules() []string {
 func Test_JournalCases(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range journalRows() {
+	for _, tt := range slices.Concat(journalProbeRows(), journalRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
