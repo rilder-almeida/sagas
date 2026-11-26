@@ -172,17 +172,14 @@ func Test_sagaDeliverer_Observe(t *testing.T) {
 
 				want := journalEvents(t, journal, execution)
 
-				var (
-					wantFirst  []Event
-					wantPanics int
-				)
+				var wantFirst, wantPanics []Event
 
 				if tt.wantFirstSees {
 					wantFirst = want
 				}
 
 				if tt.wantPanicLogs {
-					wantPanics = len(want)
+					wantPanics = want
 				}
 
 				assert.Zero(t, elapsed)

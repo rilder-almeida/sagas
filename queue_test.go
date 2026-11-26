@@ -328,16 +328,61 @@ func subscribeLogs(q *MemoryEventQueue, n int) []*eventLog {
 	return logs
 }
 
+const probeSaga = "probe"
+
+type subscribeRow struct {
+	name             string
+	early            int
+	late             int
+	before           []Observer
+	queuedBeforeLate bool
+	wantPanicLogs    bool
+}
+
+func (r *subscribeRow) feed(tb testing.TB, q *MemoryEventQueue, execution string) ([]*eventLog, []Event) {
+	tb.Helper()
+
+	sent := []Event{
+		{Saga: probeSaga, Execution: execution, Seq: 1},
+		{Saga: probeSaga, Execution: execution, Seq: 2},
+	}
+
+	held := &eventLog{}
+	if r.queuedBeforeLate {
+		held = heldLog()
+		q.Subscribe(held)
+	}
+
+	require.NoError(tb, q.Enqueue(tb.Context(), &sent[0]))
+	synctest.Wait()
+
+	var late []*eventLog
+
+	if r.queuedBeforeLate {
+		require.NoError(tb, q.Enqueue(tb.Context(), &sent[1]))
+		late = subscribeLogs(q, r.late)
+	} else {
+		late = subscribeLogs(q, r.late)
+		require.NoError(tb, q.Enqueue(tb.Context(), &sent[1]))
+	}
+
+	held.release()
+
+	return late, sent
+}
+
+func (r *subscribeRow) panicsWanted(sent []Event) []Event {
+	if !r.wantPanicLogs {
+		return nil
+	}
+
+	return sent
+}
+
 func Test_MemoryEventQueue_Subscribe(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name          string
-		early         int
-		late          int
-		before        []Observer
-		wantPanicLogs int
-	}{
+	tests := []subscribeRow{
 		{name: "[Success] When: one subscriber comes before the events ; Should: get both events", early: 1},
 		{
 			name:  "[Success] When: one subscriber comes between two events ; Should: get only the second event",
@@ -345,8 +390,13 @@ func Test_MemoryEventQueue_Subscribe(t *testing.T) {
 		},
 		{name: "[Success] When: no subscriber comes before the first event ; Should: drop it for nobody", late: 2},
 		{
+			name: "[Success] When: a subscriber comes while the second event waits in the queue ; " +
+				"Should: get the second event",
+			early: 1, late: 1, queuedBeforeLate: true,
+		},
+		{
 			name:  "[Fail] When: a direct subscriber panics on each event ; Should: log each panic and feed the others",
-			early: 1, before: []Observer{&eventLog{panics: true}}, wantPanicLogs: 2,
+			early: 1, before: []Observer{&eventLog{panics: true}}, wantPanicLogs: true,
 		},
 		{
 			name:  "[Success] When: Subscribe gets nil ; Should: ignore it and feed the others",
@@ -367,13 +417,8 @@ func Test_MemoryEventQueue_Subscribe(t *testing.T) {
 				}
 
 				early := subscribeLogs(q, tt.early)
+				late, sent := tt.feed(t, q, execution)
 
-				require.NoError(t, q.Enqueue(t.Context(), &Event{Saga: ledgerName, Execution: execution, Seq: 1}))
-				synctest.Wait()
-
-				late := subscribeLogs(q, tt.late)
-
-				require.NoError(t, q.Enqueue(t.Context(), &Event{Saga: ledgerName, Execution: execution, Seq: 2}))
 				require.NoError(t, q.Close(t.Context()))
 
 				for _, log := range early {
@@ -384,21 +429,21 @@ func Test_MemoryEventQueue_Subscribe(t *testing.T) {
 					assert.Equal(t, []int{2}, log.seqs())
 				}
 
-				assertPanicLogs(t, defaultLog(t).records(t, execution, slog.LevelError.String()), tt.wantPanicLogs)
+				assertPanicLogs(t, defaultLog(t).records(t, execution, slog.LevelError.String()), tt.panicsWanted(sent))
 			})
 		})
 	}
 }
 
-func assertPanicLogs(tb testing.TB, logged []map[string]any, want int) {
+func assertPanicLogs(tb testing.TB, logged []map[string]any, want []Event) {
 	tb.Helper()
 
-	require.Len(tb, logged, want)
+	require.Len(tb, logged, len(want))
 
 	for i, rec := range logged {
 		assert.Equal(tb, "sagas: observer panicked", rec["msg"])
-		assert.Equal(tb, ledgerName, rec["saga"])
-		assert.InDelta(tb, float64(i+1), rec["seq"], 0)
+		assert.Equal(tb, want[i].Saga, rec["saga"])
+		assert.InDelta(tb, float64(want[i].Seq), rec["seq"], 0)
 		assert.Equal(tb, (&PanicError{Value: errObserverPanic}).Error(), rec["error"])
 	}
 }

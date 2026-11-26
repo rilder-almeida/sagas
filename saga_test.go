@@ -977,6 +977,10 @@ func newSharedQueue(tb testing.TB, row *queueRow) *sharedQueue {
 
 	shared := &sharedQueue{queue: NewMemoryEventQueue(WithQueueSize(row.size)), raw: &eventLog{}}
 
+	if row.raw == rawFree {
+		shared.raw = &eventLog{delay: time.Second}
+	}
+
 	if row.raw == rawHeld {
 		shared.raw = heldLog()
 	}
