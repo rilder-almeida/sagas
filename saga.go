@@ -221,7 +221,8 @@ func WithJournal(j Journal) Option {
 }
 
 // WithSecretStore sets the secret store that keeps the secret values of each run. Left out, a run uses a fresh
-// MemorySecretStore.
+// MemorySecretStore, which keeps a secret value only for the length of the run. A durable journal needs a durable
+// secret store.
 func WithSecretStore(s SecretStore) Option {
 	return func(d *definition) {
 		d.secrets = s

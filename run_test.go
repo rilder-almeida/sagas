@@ -2586,7 +2586,7 @@ func Test_Saga_Run_fieldValues(t *testing.T) {
 			},
 		},
 		{
-			name: "[Success] When: a second run of the same execution shares the journal and the secret store ; " +
+			name: "[Fail] When: a second run of the same execution shares the journal and the secret store ; " +
 				"Should: refuse it with ErrExecutionExists and keep the secret of the first run",
 			initial:    ledgerState{Card: visa4111},
 			card:       visa5500,

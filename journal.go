@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	// ErrJournal reports a failed Append whose error is not ErrExecutionExists, not ErrConcurrentWriter, and not the
-	// error of the context of the caller after the grace period ends.
+	// ErrJournal reports a failed Append or SecretStore.Put whose error is not ErrExecutionExists, not
+	// ErrConcurrentWriter, and not the error of the context of the caller after the grace period ends.
 	ErrJournal = &KindError{name: "journal", message: "sagas: journal failure"}
 	// ErrExecutionExists is returned when the journal rejects the first event because it already holds events for it.
 	ErrExecutionExists = &KindError{name: "execution-exists", message: "sagas: execution exists"}
